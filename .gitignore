@@ -1,0 +1,19 @@
+# 快取
+_cache/
+
+# 輸出：報告(.md)進版控當研究成果，其餘(csv/log/json/pickle)排除
+outputs/*
+!outputs/*.md
+
+# 環境與密鑰（不要把 FinMind token 進版控）
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 系統
+.DS_Store

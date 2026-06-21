@@ -1,0 +1,5 @@
+# tw-swing-factor 依賴
+# Python 3.9+
+pandas>=1.5
+numpy>=1.23
+requests>=2.28
