@@ -38,12 +38,18 @@ def _cache_path(dataset: str, stock_id: str) -> Path:
 
 
 def _load_cache(dataset: str, stock_id: str, max_age_hours: int = 12) -> Optional[pd.DataFrame]:
+    """
+    讀快取。當 config.SNAPSHOT_END_DATE 有值時：快取永久有效（鎖住資料快照，
+    避免邊界漂移）。要更新資料就改 SNAPSHOT_END_DATE 或手動清 _cache/。
+    SNAPSHOT_END_DATE 為空字串時退回原本的 max_age_hours 過期邏輯。
+    """
     p = _cache_path(dataset, stock_id)
     if not p.exists():
         return None
-    age_h = (time.time() - p.stat().st_mtime) / 3600
-    if age_h > max_age_hours:
-        return None
+    if not getattr(config, "SNAPSHOT_END_DATE", ""):
+        age_h = (time.time() - p.stat().st_mtime) / 3600
+        if age_h > max_age_hours:
+            return None
     try:
         with open(p, "rb") as f:
             return pickle.load(f)
@@ -93,8 +99,22 @@ def _finmind_get(dataset: str, data_id: str, start_date: str, end_date: str) -> 
 
 
 def _date_range(history_days: int = None):
+    """
+    抓取視窗 [start, end]。
+    - 若 config.SNAPSHOT_END_DATE 有值（推薦），end 鎖在那天，回測視窗不會
+      隨日曆漂移；換快照才更新（可避免 IS Sharpe 因邊界漂移而改變）。
+    - 若 SNAPSHOT_END_DATE 為空，退回 datetime.now()（探索 / debug 用）。
+    """
     history_days = history_days or config.HISTORY_DAYS
-    end = datetime.now()
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
+    if snap:
+        try:
+            end = datetime.strptime(snap, "%Y-%m-%d")
+        except ValueError:
+            print(f"[data] 警告：SNAPSHOT_END_DATE='{snap}' 格式不對，退回 now()")
+            end = datetime.now()
+    else:
+        end = datetime.now()
     start = end - timedelta(days=history_days)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 

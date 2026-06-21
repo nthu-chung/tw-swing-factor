@@ -38,17 +38,33 @@ import backtest
 import universe as uni
 
 
-# 與體檢一致的三組權重（key 必須是 factors.SCORE_COLUMNS 的鍵）
+# ── 候選權重組 ──────────────────────────────────────────────────────────
+# 2026-06-21 修權重輪：以 IS Sharpe 為篩選指標，找能擊敗 momentum_only(IS 1.40)
+# 的組合。每個多因子組合都是「純動能 + 一個低相關補強因子」，每次只動一個東西,
+# 才能歸因增量；多因子混雜（如 mom_quality）會讓「贏 / 輸是哪個因子的功勞」糊掉。
+# key 必須是 factors.SCORE_COLUMNS 的鍵。
 WEIGHT_SETS = {
-    "mom_quality(上線)": {
+    # ── 對照組（已知數字，用來驗證跑出來的結果跟先前一致）───────────
+    "mom_quality(上線)": {  # 已知 IS Sharpe ≈ 0.41
         "momentum": 0.50, "ma_alignment": 0.20, "margin_health": 0.30,
     },
-    "legacy_9(體檢前)": {
+    "legacy_9(體檢前)": {   # 已知 IS Sharpe ≈ 0.24
         "momentum": 0.20, "inst_mid": 0.15, "inst_long": 0.15, "inst_dip_buy": 0.05,
         "margin_health": 0.05, "ma_alignment": 0.10, "bb_pullback": 0.10,
         "ma_squeeze": 0.10, "vol_dryup": 0.05,
     },
-    "momentum_only": {"momentum": 1.0},
+    "momentum_only": {"momentum": 1.0},  # 已知 IS Sharpe ≈ 1.40，本輪基準
+
+    # ── 候選 A：mom + margin_health（margin 與 mom 較不共線）────────
+    "mom80_margin20": {"momentum": 0.80, "margin_health": 0.20},
+    "mom70_margin30": {"momentum": 0.70, "margin_health": 0.30},
+
+    # ── 候選 B：mom + ma_alignment（共線 0.68，預期沒增量；當對照證偽）
+    "mom80_maalign20": {"momentum": 0.80, "ma_alignment": 0.20},
+
+    # ── 候選 C：mom + 法人（短中窗、且體檢 t≈1.99 接近顯著）─────────
+    "mom80_instmid20":   {"momentum": 0.80, "inst_mid": 0.20},
+    "mom80_instdip20":   {"momentum": 0.80, "inst_dip_buy": 0.20},
 }
 
 # bootstrap 設定
@@ -255,15 +271,21 @@ def _print_and_save(df, boot, bh, sp, pool, rebalance, pick):
     lines = [
         "# 階段三：樣本外（OOS）驗證報告",
         "",
-        f"> universe top{pool}｜rebalance {rebalance}日 / 持有{pick}檔｜trend 退場",
+        "> ⚠️ **本檔由 `validate_oos.py` 每次跑都會自動覆寫**。下方候選裡的",
+        "> 「mom_quality(上線)」是 WEIGHT_SETS dict key 的歷史殘留標籤,實際",
+        "> 上線權重以 `config.FACTOR_WEIGHTS` 為準。最新決策見",
+        "> [WEIGHT_FIX_REPORT.md](./WEIGHT_FIX_REPORT.md)。",
+        ">",
+        f"> 資料快照 {getattr(config, 'SNAPSHOT_END_DATE', 'now') or 'now'}｜"
+        f"universe top{pool}｜rebalance {rebalance}日 / 持有{pick}檔｜trend 退場",
         f"> 全期 {sp['is_start']} ~ {sp['os_end']}（{sp['n_total']} 交易日）",
         f"> **IS** {sp['is_start']} ~ {sp['is_end']}　|　embargo {config.EMBARGO_DAYS}日　|　"
         f"**OS** {sp['os_start']} ~ {sp['os_end']}",
         "",
         "## 為什麼做這個",
         "",
-        "已上線的 `mom_quality` 權重是用**全期 IC** 挑的。本報告檢驗它在後段「沒被特別",
-        "擬合」的時間（OS）是否仍有 edge，避免把 in-sample 過擬合的權重拿去實盤。",
+        "驗證上線權重在後段「沒被特別擬合」的時間（OS）是否仍有 edge，避免把",
+        "in-sample 過擬合的權重拿去實盤。",
         "",
         "## (1) IS / OS 績效對比",
         "",

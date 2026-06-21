@@ -51,6 +51,22 @@ FINMIND_SLEEP = 0.35
 # 抓多久的歷史供回測（含暖身期，因子需要 MA60 等）
 HISTORY_DAYS = 730  # 約 2 年
 
+# ── 資料快照（防漂移）──────────────────────────────────────────────────
+# 2026-06-22 加：原本資料抓取用 datetime.now() 算結束日，每天都會往後滑動，
+# 加上 12h 快取過期會回 FinMind 重抓 → IS/OS 切點和籌碼資料每天微微不同。
+# 在 IS 16 個月、~80 筆交易的小樣本上，這種邊界漂移會讓 Sharpe 改變到讓
+# 不同權重排名翻轉（實證：2026-06-20 mom_quality IS Sharpe=0.41，
+# 2026-06-22 同一程式碼變 1.33，純粹來自資料邊界 + FinMind 籌碼補修）。
+#
+# 解法：鎖一個資料快照日，所有回測都以這天為資料截止。要更新快照才主動推進。
+# 環境變數 SWING_SNAPSHOT_END 可覆寫（給 ad-hoc 實驗用）。
+# 設成空字串 "" 則退回 datetime.now()（debug / 探索用，正式回測請鎖日）。
+SNAPSHOT_END_DATE = os.getenv("SWING_SNAPSHOT_END", "2026-06-22").strip()
+
+# 快取策略：當 SNAPSHOT_END_DATE 鎖住時，快取永久有效（以 mtime > snapshot 視為新）
+# 否則維持 12h 過期重抓。
+CACHE_TTL_HOURS_DEFAULT = 12
+
 
 # ── Universe（選股池）─────────────────────────────────────────────────
 # 快速原型用的小集合（涵蓋不同產業 / 大中小型），跑通後再換全市場。
@@ -110,20 +126,34 @@ TREND_GUARD_ENABLED = True   # MA20>MA60 且 MA60上揚 且 收盤>MA60
 
 # ── 多因子權重 ──────────────────────────────────────────────────────────
 # 每個因子輸出 0~1 標準化分數，乘以權重後加總、再正規化成 0~100。
-# 這是「快速原型」的初始權重，之後用回測/IC 來調整。
+# composite_score 會自動以實際 key 的權重和正規化。
 #
-# 設計理念（波段找成長股）：動能 + 籌碼為主軸，回檔/糾結是「進場時機」的修飾。
-# 不要過度堆因子（紀律：複雜度↔穩定性反向）；目前 9 個已偏多，待 IC 驗證後砍掉沒用的。
-# ⚠️ 2026-06-20 因子體檢後改版（見 outputs/FACTOR_AUDIT_REPORT.md）：
-# 原始 9 因子把 35% 權重押在無效/反向的「買弱」群（ma_squeeze 反向、
-# vol_dryup/bb_pullback 翻號無效、inst_long 翻號+冗餘），跟有效訊號對賭。
-# 改成「動能+品質」3 因子（mom_quality 組，回測 Sharpe 1.53 / 年化 62%）。
-# 只留產業中性化後 t>2 且子期間都站得住的因子：momentum / ma_alignment / margin_health。
-# composite_score 會自動以實際 key 的權重和正規化，故只放這 3 個即可。
+# 演化史（嚴格依鐵則：永遠分 IS/OS 看，不要只看全期 → 否則被普漲 OS 騙）：
+#
+# (1) 原始 9 因子（FACTOR_WEIGHTS_LEGACY_9）：35% 權重押在「買弱」群
+#     （ma_squeeze 反向 / vol_dryup / bb_pullback / inst_long 翻號），
+#     IS Sharpe 0.54、IS 年化 +15.1%（資料快照 2026-06-22, top100 trend 退場）。
+# (2) mom_quality 3 因子（LEGACY_MOMQ）：用全期 IC 挑出 momentum + ma_alignment
+#     + margin_health。全期 Sharpe 1.53 看起來漂亮，但 IS 段只有 0.41~1.33
+#     （資料漂移範圍很大，第二天再跑就翻 3 倍），OS +267% 純粹是普漲 beta
+#     （top100 等權買進持有 +170%、98% 個股漲）。被全期數字騙了一輪。
+# (3) momentum_only（目前上線，2026-06-22）：IS Sharpe 1.50 / 年化 +40.5% /
+#     MaxDD -19.4% / 80 筆。在所有候選裡 IS 第二高（與 mom80_instmid20 的 1.54
+#     差距在誤差內），但因子數最少、最不依賴噪音邊際因子，依「複雜度↔穩定性
+#     反向」鐵則選定。詳見 outputs/WEIGHT_FIX_REPORT.md（候選對比 + 決策推導）。
+#
+# ⚠️ 已知保留：
+#  - IS 也只有 16 個月、80 筆，純動能的 1.50 仍可能含運氣。要等更長資料才確定。
+#  - 動能策略在反轉期會集體失靈，需搭配市場濾網（VIX / 大盤 MA200）當總開關。
+#  - 回測視窗 = config.SNAPSHOT_END_DATE 鎖住的那天，避免邊界漂移。
 FACTOR_WEIGHTS = {
-    "momentum":      0.50,   # ★真 alpha：中性化IC +0.098/t2.45、分層單調+0.90、兩半皆正
-    "ma_alignment":  0.20,   # ★真 alpha：中性化IC +0.073/t2.10、子期間穩定
-    "margin_health": 0.30,   # ★真 alpha：中性化IC +0.058/t2.30（資券結構健康）
+    "momentum": 1.0,  # ★真 alpha：中性化IC +0.098/t2.45、分層單調+0.90、兩半皆正
+}
+
+# 上一版上線權重（mom_quality）。被證明：(a) 全期 +1.53 純粹被 OS 普漲拉高，
+# (b) IS 段 1.33 < momentum_only 1.50（資料快照 2026-06-22）。保留備查。
+FACTOR_WEIGHTS_LEGACY_MOMQ = {
+    "momentum": 0.50, "ma_alignment": 0.20, "margin_health": 0.30,
 }
 
 # 體檢前的原始 9 因子權重（保留備查，勿刪——切回可比較）
