@@ -369,6 +369,8 @@ def fetch_market_index(history_days: int = None) -> pd.DataFrame:
     cached = _load_cache("market", "TAIEX")
     if cached is not None:
         return cached
+    # 大盤抓更長歷史（市場濾網 MA200 暖身用），預設 MARKET_HISTORY_DAYS。
+    history_days = history_days or getattr(config, "MARKET_HISTORY_DAYS", config.HISTORY_DAYS)
     start, end = _date_range(history_days)
     df = _finmind_get("TaiwanStockPrice", "TAIEX", start, end)
     if df.empty:
