@@ -70,6 +70,9 @@ def screen(
     name_map = uni.get_name_map()
     industry_map = uni.get_industry_map()
 
+    # 大盤基準（RS / 抗跌因子用），只抓一次，注入每檔 bundle。
+    market = data.fetch_market_index()
+
     rows = []
     skipped = {"no_data": 0, "liquidity": 0, "trend": 0, "no_asof": 0, "excluded": 0}
 
@@ -84,6 +87,7 @@ def screen(
             continue
 
         bundle = data.fetch_bundle(sid)
+        bundle["market"] = market
         price = bundle.get("price")
         if price is None or price.empty:
             skipped["no_data"] += 1
