@@ -1,8 +1,9 @@
 # 階段三：樣本外（OOS）驗證報告
 
-> ⚠️ **本檔由 `validate_oos.py` 每次跑都會自動覆寫**。本輪(2026-06-22)上線權重
-> 已改為 `momentum_only`,本檔下方仍出現「mom_quality(上線)」字樣只是 dict key
-> 沒改的歷史殘留。**最新結論與決策請看 [WEIGHT_FIX_REPORT.md](./WEIGHT_FIX_REPORT.md)。**
+> ⚠️ **本檔由 `validate_oos.py` 每次跑都會自動覆寫**。下方候選裡的
+> 「mom_quality(上線)」是 WEIGHT_SETS dict key 的歷史殘留標籤,實際
+> 上線權重以 `config.FACTOR_WEIGHTS` 為準。最新決策見
+> [WEIGHT_FIX_REPORT.md](./WEIGHT_FIX_REPORT.md)。
 >
 > 資料快照 2026-06-22｜universe top100｜rebalance 5日 / 持有5檔｜trend 退場
 > 全期 2024-06-21 ~ 2026-06-18（483 交易日）
@@ -33,6 +34,14 @@ in-sample 過擬合的權重拿去實盤。
 | mom80_instmid20 | OS | 30 | 40% | +107.9% | +160.1% | 3.41 | -19.8% |
 | mom80_instdip20 | IS | 84 | 31% | +1.6% | +5.6% | 0.19 | -25.8% |
 | mom80_instdip20 | OS | 28 | 46% | +208.0% | +243.3% | 4.65 | -17.8% |
+| mom80_rs20 | IS | 76 | 34% | +60.7% | +39.2% | 1.42 | -22.4% |
+| mom80_rs20 | OS | 30 | 37% | +126.9% | +179.3% | 3.61 | -20.4% |
+| mom80_downside20 | IS | 87 | 31% | +41.9% | +30.1% | 1.07 | -25.9% |
+| mom80_downside20 | OS | 36 | 31% | +115.2% | +167.9% | 3.47 | -14.5% |
+| mom80_downday20 | IS | 83 | 34% | +8.4% | +12.9% | 0.36 | -31.0% |
+| mom80_downday20 | OS | 34 | 32% | +109.2% | +163.6% | 3.18 | -17.6% |
+| mom70_downside30 | IS | 82 | 32% | +31.6% | +27.5% | 0.76 | -27.5% |
+| mom70_downside30 | OS | 36 | 36% | +146.5% | +197.0% | 3.85 | -16.8% |
 
 > 看點：① mom_quality 在 **OS** 是否仍優於 legacy_9；② OS 的 Sharpe/年化是否
 > 沒有相對 IS 崩掉（崩掉=過擬合）。

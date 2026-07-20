@@ -357,6 +357,43 @@ def fetch_vix(history_days: int = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ── 市場層級：大盤加權指數（RS / 抗跌因子的基準）─────────────────────────
+# 相對強勢 (relative strength)、下行 beta、抗跌度等因子都需要一條「大盤」序列
+# 當基準。用 FinMind 的 TAIEX（發行量加權股價指數），full OHLCV、純 FinMind
+# 來源（不引入 yfinance 個股）。快取檔 market__TAIEX.pkl，與個股命名空間分開。
+def fetch_market_index(history_days: int = None) -> pd.DataFrame:
+    """
+    回傳大盤加權指數（TAIEX）日資料：date, open, high, low, close, volume。
+    來源 FinMind TaiwanStockPrice / data_id=TAIEX。失敗回空 DataFrame。
+    """
+    cached = _load_cache("market", "TAIEX")
+    if cached is not None:
+        return cached
+    start, end = _date_range(history_days)
+    df = _finmind_get("TaiwanStockPrice", "TAIEX", start, end)
+    if df.empty:
+        return df
+    rename = {
+        "date": "date",
+        "open": "open",
+        "max": "high",
+        "min": "low",
+        "close": "close",
+        "Trading_Volume": "volume",
+        "Trading_money": "turnover",
+    }
+    df = df.rename(columns=rename)
+    keep = [c for c in ["date", "open", "high", "low", "close", "volume", "turnover"] if c in df.columns]
+    df = df[keep].copy()
+    df["date"] = pd.to_datetime(df["date"])
+    for c in ["open", "high", "low", "close", "volume", "turnover"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+    _save_cache("market", "TAIEX", df)
+    return df
+
+
 # ── 整合：一次取得單檔所有資料 ──────────────────────────────────────────
 def fetch_bundle(stock_id: str, history_days: int = None) -> dict:
     """

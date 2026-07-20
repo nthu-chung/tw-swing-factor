@@ -65,6 +65,15 @@ WEIGHT_SETS = {
     # ── 候選 C：mom + 法人（短中窗、且體檢 t≈1.99 接近顯著）─────────
     "mom80_instmid20":   {"momentum": 0.80, "inst_mid": 0.20},
     "mom80_instdip20":   {"momentum": 0.80, "inst_dip_buy": 0.20},
+
+    # ── 候選 D：mom + 相對強勢 / 抗跌（弱市防禦研究，2026-07-21 加）──────
+    #   假設：加 RS/抗跌能在弱市帶來增量 edge（降 MaxDD / 改善弱市段報酬）。
+    #   體檢已知：rs 與 mom 共線 0.83（冗餘）；downside/down_day 全期 IC 反向。
+    #   這裡用 IS/OS 檢驗它們在投組層級是否真的不拖累純動能。
+    "mom80_rs20":        {"momentum": 0.80, "rs": 0.20},
+    "mom80_downside20":  {"momentum": 0.80, "downside_resilience": 0.20},
+    "mom80_downday20":   {"momentum": 0.80, "down_day_rs": 0.20},
+    "mom70_downside30":  {"momentum": 0.70, "downside_resilience": 0.30},
 }
 
 # bootstrap 設定

@@ -61,6 +61,79 @@ def _align(price: pd.DataFrame, inst: pd.DataFrame, margin: pd.DataFrame) -> pd.
     return df
 
 
+# ── 相對強勢 / 抗跌：滾動下行統計 ───────────────────────────────────────
+def _rolling_downside_stats(stock_ret: np.ndarray, mkt_ret: np.ndarray,
+                            window: int, min_down: int):
+    """
+    對每個時點 t，用過去 `window` 天中「大盤下跌日」計算：
+      - 下行 beta：cov(個股, 大盤 | 大盤跌) / var(大盤 | 大盤跌)
+                   低/負 = 大盤跌時個股跟跌少，抗跌。
+      - 下跌日相對報酬：mean(個股日報酬 − 大盤日報酬 | 大盤跌)
+                        >0 = 大盤跌時個股相對抗跌。
+    全因果（只看 t 之前含 t 的視窗）。下跌日不足 min_down 回 NaN。
+    """
+    n = len(stock_ret)
+    beta = np.full(n, np.nan)
+    dd_excess = np.full(n, np.nan)
+    s = stock_ret.astype(float)
+    mk = mkt_ret.astype(float)
+    for t in range(window - 1, n):
+        sw = s[t - window + 1:t + 1]
+        mw = mk[t - window + 1:t + 1]
+        valid = ~(np.isnan(sw) | np.isnan(mw))
+        sw = sw[valid]; mw = mw[valid]
+        mask = mw < 0
+        k = int(mask.sum())
+        if k < min_down:
+            continue
+        sd = sw[mask]; md = mw[mask]
+        var = md.var()
+        if var > 0:
+            beta[t] = float(np.cov(sd, md, ddof=0)[0, 1] / var)
+        dd_excess[t] = float((sd - md).mean())
+    return beta, dd_excess
+
+
+def _attach_relative_strength(df: pd.DataFrame, market: pd.DataFrame) -> pd.DataFrame:
+    """
+    以 df（個股，已對齊交易日）與 market（大盤 TAIEX）算相對強勢 / 抗跌因子。
+    把大盤收盤用 merge_asof(backward) 對齊到個股交易日（防未來函數：只用 ≤當日）。
+    market 缺失時，相關欄位全部給 NaN（分數階段會轉成 0，不影響既有因子）。
+    """
+    n = len(df)
+    if market is None or market.empty:
+        df["mkt_close"] = np.nan
+        df["rs_excess"] = np.nan
+        df["downside_beta"] = np.nan
+        df["down_day_excess"] = np.nan
+        return df
+
+    mkt = market[["date", "close"]].rename(columns={"close": "mkt_close"}).copy()
+    # 統一 datetime 精度，避免 merge_asof 因 ns/us dtype 不一致而報錯
+    mkt["date"] = mkt["date"].astype("datetime64[ns]")
+    mkt = mkt.sort_values("date")
+    df = df.copy()
+    df["date"] = df["date"].astype("datetime64[ns]")
+    df = pd.merge_asof(df.sort_values("date"), mkt, on="date", direction="backward")
+
+    close = df["close"]
+    mkt_close = df["mkt_close"]
+
+    # (1) 相對強勢：60日「相對大盤」超額報酬 = 個股報酬 − 大盤報酬（比值型，scale-free）
+    stock_lb = close / close.shift(config.RS_LOOKBACK)
+    mkt_lb = mkt_close / mkt_close.shift(config.RS_LOOKBACK)
+    df["rs_excess"] = stock_lb / mkt_lb - 1.0
+
+    # (2)/(3) 下行 beta + 下跌日相對報酬（滾動視窗，只看大盤下跌日）
+    stock_ret = close.pct_change().values
+    mkt_ret = mkt_close.pct_change().values
+    beta, dd_excess = _rolling_downside_stats(
+        stock_ret, mkt_ret, config.DOWNSIDE_WINDOW, config.DOWNSIDE_MIN_DOWN_DAYS)
+    df["downside_beta"] = beta
+    df["down_day_excess"] = dd_excess
+    return df
+
+
 # ── 主函式 ──────────────────────────────────────────────────────────────
 def compute_factors(bundle: dict) -> pd.DataFrame:
     """
@@ -72,6 +145,7 @@ def compute_factors(bundle: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = _align(price, bundle.get("inst"), bundle.get("margin"))
+    df = _attach_relative_strength(df, bundle.get("market"))
 
     close = df["close"]
     high = df["high"]
@@ -213,6 +287,24 @@ def compute_factors(bundle: dict) -> pd.DataFrame:
         return (s_ret + s_high) / 2.0
     df["score_momentum"] = df.apply(_momentum, axis=1)
 
+    # ── 相對強勢 / 抗跌因子分數（弱市防禦研究；對稱映射，見 config 註解）──
+    # (1) rs：相對大盤超額報酬。±20% 對映 0~1（打平大盤=0.5）。逆勢相對強勢。
+    df["score_rs"] = df["rs_excess"].apply(
+        lambda x: _scale(x, -config.RS_EXCESS_FULL, config.RS_EXCESS_FULL) if pd.notna(x) else 0.0)
+
+    # (2) downside_resilience：下行 beta 越低（甚至負）越抗跌，分數越高。
+    #     beta<=0.4 → 1；beta>=1.8 → 0；線性內插。負 beta（逆勢上漲）夾在 1。
+    def _downside(b):
+        if pd.isna(b):
+            return 0.0
+        lo, hi = config.DOWNSIDE_BETA_DEFENSIVE, config.DOWNSIDE_BETA_AGGRESSIVE
+        return _clip01((hi - b) / (hi - lo))
+    df["score_downside_resilience"] = df["downside_beta"].apply(_downside)
+
+    # (3) down_day_rs：大盤下跌日的平均相對報酬。±0.6%/日 對映 0~1（打平=0.5）。
+    df["score_down_day_rs"] = df["down_day_excess"].apply(
+        lambda x: _scale(x, -config.DOWNDAY_RS_FULL, config.DOWNDAY_RS_FULL) if pd.notna(x) else 0.0)
+
     return df
 
 
@@ -227,6 +319,10 @@ SCORE_COLUMNS = {
     "bb_pullback": "score_bb_pullback",
     "ma_squeeze": "score_ma_squeeze",
     "vol_dryup": "score_vol_dryup",
+    # 相對強勢 / 抗跌（弱市防禦研究，2026-07-20 加）
+    "rs": "score_rs",
+    "downside_resilience": "score_downside_resilience",
+    "down_day_rs": "score_down_day_rs",
 }
 
 
