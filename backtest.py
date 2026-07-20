@@ -129,6 +129,32 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
     return panel.reset_index(drop=True)
 
 
+# ── 市場濾網 / 擇時 overlay：大盤(TAIEX) risk-off 判定（全因果）──────────
+def market_riskoff_map(rule: Optional[str] = None) -> Dict:
+    """
+    回傳 {date -> bool}，True = risk-off（大盤走弱、該降曝險）。
+    全因果：只用到「當日收盤」算 MA / 波動（回測在 T 訊號、T+1 開盤動作）。
+    暖身期（MA/vol 尚為 NaN）一律視為 risk-on（無法判斷時不亂空手）。
+    規則見 config.MARKET_FILTER_RULE：ma200 / ma60 / ma20 / vol。
+    """
+    rule = rule or config.MARKET_FILTER_RULE
+    m = data.fetch_market_index()
+    if m is None or m.empty:
+        return {}
+    m = m.sort_values("date").reset_index(drop=True)
+    c = m["close"]
+    if rule in config.MARKET_FILTER_MA:
+        win = config.MARKET_FILTER_MA[rule]
+        ma = c.rolling(win).mean()
+        ro = (c < ma).where(ma.notna(), False)
+    elif rule == "vol":
+        vol = c.pct_change().rolling(config.MARKET_FILTER_VOL_WINDOW).std() * np.sqrt(252)
+        ro = (vol > config.MARKET_FILTER_VOL_THRESHOLD).where(vol.notna(), False)
+    else:
+        return {}
+    return {d: bool(x) for d, x in zip(m["date"], ro)}
+
+
 # ── (1) 整體回測：事件驅動 + 每日權益曲線 ───────────────────────────────
 def backtest_portfolio(symbols: Optional[List[str]] = None,
                        sample: bool = True,
@@ -184,6 +210,14 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     all_dates = sorted(panel["date"].unique())
     date_pos = {d: i for i, d in enumerate(all_dates)}
 
+    # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
+    filter_on = bool(getattr(config, "MARKET_FILTER_ENABLED", False))
+    riskoff_map = market_riskoff_map() if filter_on else {}
+    riskoff_weight = float(getattr(config, "MARKET_FILTER_RISKOFF_WEIGHT", 0.0))
+    n_filter_exits = 0
+    n_regime_switches = 0
+    _prev_riskoff = False
+
     # 投組狀態
     equity = 1.0
     cash = 1.0
@@ -201,6 +235,17 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         return price_cache[sid].iloc[idx], idx
 
     for di, d in enumerate(all_dates):
+        # ── 0) 市場濾網：用「訊號日(前一日)收盤」的 regime 決定今日目標曝險 ──
+        riskoff = False
+        target_positions = max_positions
+        if filter_on and di > 0:
+            riskoff = riskoff_map.get(all_dates[di - 1], False)
+            if riskoff != _prev_riskoff:
+                n_regime_switches += 1
+                _prev_riskoff = riskoff
+            if riskoff:
+                target_positions = int(round(max_positions * riskoff_weight))
+
         # ── 1) 先處理當日出場（用今天的 K 棒）────────────────────────
         for sid in list(positions.keys()):
             pos = positions[sid]
@@ -232,13 +277,49 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 })
                 del positions[sid]
 
+        # ── 1.5) 市場濾網：risk-off 時把曝險降到目標，超額部位以今日開盤出場 ──
+        #   （T+1 開盤動作，與進場同慣例；先出綜合分最弱者、留最強動能股）
+        if filter_on and riskoff and len(positions) > target_positions:
+            ordered = sorted(positions.items(), key=lambda kv: kv[1]["composite"])
+            n_to_exit = len(positions) - target_positions
+            for sid, pos in ordered:
+                if n_to_exit <= 0:
+                    break
+                bar, idx = _price_row(sid, d)
+                if bar is None or idx <= pos["entry_idx"]:
+                    continue  # 無資料 / 進場當天不出
+                exit_price = float(bar["open"])
+                if not np.isfinite(exit_price) or exit_price <= 0:
+                    continue
+                proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                cash += proceeds
+                gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
+                net = proceeds / pos["cost"] - 1.0
+                days_held = idx - pos["entry_idx"]
+                trades.append({
+                    "stock_id": sid, "name": pos["name"],
+                    "signal_date": pos["signal_date"],
+                    "entry_date": pos["entry_date"], "exit_date": d,
+                    "entry_price": round(pos["entry_price"], 2),
+                    "exit_price": round(exit_price, 2),
+                    "hold_bars": days_held,
+                    "gross_ret": round(gross, 4),
+                    "ret": round(net, 4),
+                    "exit_reason": "market_filter",
+                    "composite": round(pos["composite"], 2),
+                })
+                del positions[sid]
+                n_filter_exits += 1
+                n_to_exit -= 1
+
         # ── 2) 逢 rebalance 日，用空位進場（T+1 開盤＝今天的 open）──────
         # 訊號日是「昨天」(d-1)，今天開盤進場。
         if di > 0 and (di - 1) % rebalance_every == 0:
             signal_date = all_dates[di - 1]
             candidates = picks_by_date.get(signal_date, [])
+            entry_cap = target_positions if filter_on else max_positions
             for sid, comp, name in candidates:
-                if len(positions) >= max_positions:
+                if len(positions) >= entry_cap:
                     break
                 if sid in positions:
                     continue  # 已持有不重複買
@@ -327,6 +408,13 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         "max_drawdown": round(max_dd, 4),
         "exit_breakdown": exit_breakdown,
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
+        "market_filter": {
+            "enabled": filter_on,
+            "rule": config.MARKET_FILTER_RULE if filter_on else None,
+            "riskoff_weight": riskoff_weight if filter_on else None,
+            "n_filter_exits": n_filter_exits,
+            "n_regime_switches": n_regime_switches,
+        },
         "params": {
             "exit_mode": config.BT_EXIT_MODE,
             "ma_exit": config.BT_MA_EXIT,
