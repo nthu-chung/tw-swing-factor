@@ -131,7 +131,8 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        start_date: Optional[str] = None,
                        end_date: Optional[str] = None,
                        rebalance_every: int = 5,
-                       top_n: int = 3) -> Dict:
+                       top_n: int = 3,
+                       picks_by_date: Optional[Dict] = None) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -164,20 +165,33 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         price_cache[sid] = p
         date_idx_map[sid] = {d: i for i, d in enumerate(p["date"])}
 
-    panel = _prepare_panel(symbols, config.MIN_COMPOSITE, start_date, end_date)
-    if panel.empty:
-        return {"error": "panel 為空，無法回測"}
-
-    # 訊號查表：date -> 已過濾且排序的候選（stock_id, composite, name）
-    sig = panel[panel["composite"] >= config.MIN_COMPOSITE].copy()
-    if config.TREND_GUARD_ENABLED and "trend_ok" in sig.columns:
-        sig = sig[sig["trend_ok"] == True]  # noqa: E712
-    picks_by_date: Dict = {}
-    for d, grp in sig.groupby("date"):
-        g = grp.sort_values("composite", ascending=False)
-        picks_by_date[d] = list(zip(g["stock_id"], g["composite"], g["name"]))
-
-    all_dates = sorted(panel["date"].unique())
+    # picks_by_date 可由外部注入（例如 sector_rotation：族群輪動選股）。外部注入時
+    # 跳過 composite/趨勢過濾（呼叫端自理），並用價格快取的交易日曆當 all_dates，
+    # 避免重建整個 panel（省時、且不受 FACTOR_WEIGHTS 影響）。
+    external_picks = picks_by_date is not None
+    if not external_picks:
+        panel = _prepare_panel(symbols, config.MIN_COMPOSITE, start_date, end_date)
+        if panel.empty:
+            return {"error": "panel 為空，無法回測"}
+        # 訊號查表：date -> 已過濾且排序的候選（stock_id, composite, name）
+        sig = panel[panel["composite"] >= config.MIN_COMPOSITE].copy()
+        if config.TREND_GUARD_ENABLED and "trend_ok" in sig.columns:
+            sig = sig[sig["trend_ok"] == True]  # noqa: E712
+        picks_by_date = {}
+        for d, grp in sig.groupby("date"):
+            g = grp.sort_values("composite", ascending=False)
+            picks_by_date[d] = list(zip(g["stock_id"], g["composite"], g["name"]))
+        all_dates = sorted(panel["date"].unique())
+    else:
+        if not picks_by_date:
+            return {"error": "picks_by_date 為空，無法回測"}
+        cal = sorted(set().union(*[set(p["date"]) for p in price_cache.values()])) if price_cache else []
+        lo = min(picks_by_date)  # 從第一個有訊號的日子開始（含當日，隔日才進場）
+        all_dates = [d for d in cal if d >= lo]
+        if start_date:
+            all_dates = [d for d in all_dates if d >= pd.to_datetime(start_date)]
+        if end_date:
+            all_dates = [d for d in all_dates if d <= pd.to_datetime(end_date)]
     date_pos = {d: i for i, d in enumerate(all_dates)}
 
     # 投組狀態
