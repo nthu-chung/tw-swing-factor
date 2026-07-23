@@ -10,6 +10,9 @@
 - 系統 `python3` 是 3.14，套件裝不起來。**一律用 `.venv/bin/python`**（已建好，python3.11）。
 - 若 `.venv` 不在：`python3.11 -m venv .venv && .venv/bin/pip install pandas numpy requests scipy yfinance`
 - FinMind token 自動複用 `../taiwan-industry-analyzer/backend/.env`，免設定。
+- **重現任何 top100/200/300 回測前,先跑 `.venv/bin/python build_universe.py`
+  建池**(產 `outputs/universe_top*.json`,已 gitignore、不進版控)。否則
+  `uni.get_universe(top_n=100)` 會**靜默降級到 14 檔小集合**,回測數字與報告完全對不上。
 - 資料快照(2026-06-22 加):`config.SNAPSHOT_END_DATE="2026-06-22"` 鎖住資料截止日。
   在 snapshot 鎖住時 **`_cache/` 永久有效**(換 snapshot 才主動推進);若要重抓,
   改 SNAPSHOT 或手動清 cache(top100 約 2~3 分鐘)。設成 `""` 退回 `datetime.now()`,
