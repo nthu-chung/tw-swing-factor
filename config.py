@@ -100,6 +100,35 @@ EXCLUDE_FINANCE = True          # 排除金融保險（產業別含「金融」�
 EXCLUDE_ETF_PREFIX0 = True      # 排除 00 開頭 ETF
 MIN_AVG_VOLUME_LOTS = 500       # 近20日均量門檻（張），低於視為流動性不足
 
+# ── 動態 universe（long-only；只決定「當日可選哪些股票」）──────────────
+# 重要：動態排名能消除「拿期末 top100 回套整段歷史」的直接 look-ahead，
+# 但若候選池本身仍是期末 top300，仍殘留 candidate-pool survivorship bias。
+# 論文級驗證應把候選池換成「歷史上所有曾上市櫃股票（含下市）」。
+DYNAMIC_UNIVERSE_ENABLED = True
+DYNAMIC_UNIVERSE_TOP_N = 100          # 每個訊號日成交值排名前 N 才可被選
+DYNAMIC_UNIVERSE_CANDIDATE_POOL = 300 # 現階段用既有 top300 當 bootstrap 候選池
+DYNAMIC_UNIVERSE_LOOKBACK = 20        # 用截至訊號日的近 N 個交易日平均成交值/量
+DYNAMIC_UNIVERSE_MIN_OBS = 20         # 暖身不足不納入
+DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS = MIN_AVG_VOLUME_LOTS
+DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER = 0.0  # 新台幣；0 表示只靠 top-N + 成交量
+
+# 價格來源。FinMind 的 TaiwanStockPrice 是未還原價；論文級研究建議改用
+# TaiwanStockPriceAdj（backer/sponsor）並用 SWING_PRICE_DATASET 覆寫。
+PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
+
+# ── 未還原價 fail-closed 閘門（2026-07-24 加）──────────────────────────────
+# 未還原價會被公司行動（除權息/分割/減資）污染 → 假停損/假 MA 出場、選股排名被
+# 機械性壓低。backtest._prepare_panel 會在未還原價且偵測到斷點時直接 raise，拒絕
+# 產出假績效。要跑污染 smoke test 才顯式打開逃生門（結果 summary 會戳
+# integrity_bypassed=True，不可當已驗證數字）。
+ALLOW_UNADJUSTED_BACKTEST = os.getenv("SWING_ALLOW_UNADJUSTED", "").strip() == "1"
+# 斷點偵測門檻：台股單日漲跌幅 ±10%，任何隔夜/收盤跳空 > 11% 幾乎必為公司行動或
+# 壞列，故用 0.11（比 price_integrity 預設 0.20 嚴），才攔得到 3~10% 的除權息缺口
+# 以外、10~20% 的分割/減資（0.20 會漏接約 76/82 筆真斷點）。
+PRICE_INTEGRITY_RETURN_THRESHOLD = float(
+    os.getenv("SWING_PRICE_INTEGRITY_THRESHOLD", "0.11").strip() or "0.11"
+)
+
 
 # ── 因子參數 ────────────────────────────────────────────────────────────
 # 技術面
@@ -158,17 +187,22 @@ TREND_GUARD_ENABLED = True   # MA20>MA60 且 MA60上揚 且 收盤>MA60
 #     + margin_health。全期 Sharpe 1.53 看起來漂亮，但 IS 段只有 0.41~1.33
 #     （資料漂移範圍很大，第二天再跑就翻 3 倍），OS +267% 純粹是普漲 beta
 #     （top100 等權買進持有 +170%、98% 個股漲）。被全期數字騙了一輪。
-# (3) momentum_only（目前上線，2026-06-22）：IS Sharpe 1.50 / 年化 +40.5% /
+# (3) momentum_only（2026-06-22 static-universe 基線）：IS Sharpe 1.50 / 年化 +40.5% /
 #     MaxDD -19.4% / 80 筆。在所有候選裡 IS 第二高（與 mom80_instmid20 的 1.54
 #     差距在誤差內），但因子數最少、最不依賴噪音邊際因子，依「複雜度↔穩定性
 #     反向」鐵則選定。詳見 outputs/WEIGHT_FIX_REPORT.md（候選對比 + 決策推導）。
+#
+# (4) 2026-07-23 動態 universe 修正：單一五日再平衡相位為 -4.4%，但其餘
+#     四個等價相位皆為正；動態 top-5 對同日 universe 的20日超額約 +2.84pp。
+#     所以 -4.4% 只能證明執行相位不穩，不能否定動能。momentum-only 仍只作
+#     最簡單 baseline；較接近實際操作的族群/法人/突破研究見 rotation_research.py。
 #
 # ⚠️ 已知保留：
 #  - IS 也只有 16 個月、80 筆，純動能的 1.50 仍可能含運氣。要等更長資料才確定。
 #  - 動能策略在反轉期會集體失靈，需搭配市場濾網（VIX / 大盤 MA200）當總開關。
 #  - 回測視窗 = config.SNAPSHOT_END_DATE 鎖住的那天，避免邊界漂移。
 FACTOR_WEIGHTS = {
-    "momentum": 1.0,  # ★真 alpha：中性化IC +0.098/t2.45、分層單調+0.90、兩半皆正
+    "momentum": 1.0,  # 研究 baseline；不可把單一IC或單一再平衡相位當最終結論
 }
 
 # 上一版上線權重（mom_quality）。被證明：(a) 全期 +1.53 純粹被 OS 普漲拉高，

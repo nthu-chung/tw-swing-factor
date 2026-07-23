@@ -4,6 +4,13 @@
 
 > 這套系統的定位不是「再做一個會喊強力買進的選股器」，而是一個**能證偽的研究框架**——先用快速原型跑通流程，看哪些因子真的有預測力，再決定要不要相信它。
 
+> ⛔ **2026-07-23 重大稽核更新**：未還原價格已實際污染回測。國巨 2025-08-25
+> 的分割前後斷點被誤記為約 -73.6% 的 hard-stop，並可能改變最佳退場規則。
+> 因此既有 IS / pseudo-OOS 績效全部降級為「未校正暫存結果」；公司行動與
+> 完整 PIT universe 重跑前，只能說「族群＋法人＋突破」值得 forward-test，
+> 不能宣稱策略已證明有效。最新稽核見
+> [ROTATION_STRATEGY_REVIEW.html](./outputs/ROTATION_STRATEGY_REVIEW.html)。
+
 ---
 
 ## 為什麼做這個
@@ -26,6 +33,13 @@ tw-swing-factor/
 ├── factors.py       # 多因子計算：每日因子值 + 0~1 標準化分數 + 綜合評分
 ├── screener.py      # 選股引擎：算因子→過濾→評分→排序→輸出清單
 ├── backtest.py      # 回測 + 因子IC：驗證選股到底有沒有用
+├── rotation_research.py # 族群/法人預篩→價量突破→T+1買賣的 IS/OOS 研究
+├── current_watchlist.py # TWSE 官方資料即時初篩（非回測策略 parity）
+├── market_flow_monitor.py # 每日 rank/churn/breadth/法人流監測
+├── rank_flow_strategy.py # 四種 causal rank-flow 訊號與 T+1 事件研究
+├── quiet_sponsor_strategy.py # 法人吸收＋低波壓縮突破的 forward-only 原型
+├── price_integrity.py # 公司行動／異常價格斷點 fail-closed 稽核
+├── STRATEGY_REGISTRY.md # 所有既有策略、狀態、偏誤與下一個證偽測試
 ├── main.py          # 統一入口（命令列）
 ├── _cache/          # 原始資料快取（自動產生，已 gitignore）
 └── outputs/         # 選股清單 / 回測結果 CSV（自動產生）
@@ -69,6 +83,63 @@ python3 main.py ic
 ```
 
 輸出會印在畫面，同時存到 `outputs/`。
+
+### Long-only 動態 universe（研究模式）
+
+不要再用期末 top100 固定回套整段歷史。現在可用較寬的候選池，在每個訊號日只依
+「截至當日」的近20日平均成交值重排 top100：
+
+```bash
+# 先準備 bootstrap 候選池（目前仍是 current top300，非完整 PIT）
+.venv/bin/python build_universe.py 300
+
+# long-only；每日 universe top100；每次最多挑5檔
+.venv/bin/python main.py backtest --pool 300 --universe-top 100 --top 5
+
+# legacy static universe 只供對照
+.venv/bin/python main.py backtest --pool 100 --static-universe --top 5
+```
+
+動態 universe 只改變「當日可被選的股票」，不做空、不建立 short leg。現有
+current top300 仍有候選池生存者偏誤，所以回測 metadata 會明確標示
+`survivorship_free=False`。論文級資料升級建議見
+[DATA_SOURCE_RESEARCH.md](./DATA_SOURCE_RESEARCH.md)。
+
+### 族群輪動＋法人＋突破研究
+
+```bash
+.venv/bin/python rotation_research.py
+```
+
+固定流程為：動態 universe → 粗產業族群強度與法人買盤 → 個股 20 日價量突破 →
+次日開盤買入。比較純動能、族群篩選、族群＋法人＋突破，以及 MA10 / MA20 /
+固定 20 / 40 日等出場；輸出 `rotation_is_oos.csv`、`rotation_trades.csv` 與
+`theme_case_audit.csv`。這是研究候選，不是自動交易建議。
+
+### Live dynamic-universe 與 rank-flow 新策略實驗
+
+```bash
+# 官方 TWSE 資料；每日 ADV20 前300後才重算 flow rank
+.venv/bin/python market_flow_monitor.py \
+  --as-of 2026-07-23 --calendar-days 90 --universe-size 300 --top-n 20
+
+# 四個固定 rank-flow 假說；T+1 open、5/10/20日事件研究
+.venv/bin/python rank_flow_strategy.py \
+  --metrics outputs/market_flow_metrics_20260723.csv \
+  --breadth outputs/market_flow_breadth_20260723.csv
+
+# 下一版：需120個乾淨ATR觀察；歷史不足時應輸出零訊號
+.venv/bin/python quiet_sponsor_strategy.py \
+  --metrics outputs/market_flow_metrics_20260723.csv
+```
+
+Live monitor 會把 >20% 價格斷點及後續20個該股觀察日先 quarantine，再建動態池與
+排名，不猜公司行動調整倍數。2026-04-24~07-23 的 62 日探索窗中，四個
+rank-flow 變體都沒有跨 5／10／20 日一致超額，故目前**不能單獨作買進策略**；
+完整失敗結果與下一版假說見
+[RANK_FLOW_EXPERIMENT_REVIEW.md](./outputs/RANK_FLOW_EXPERIMENT_REVIEW.md) 與
+[NEW_STRATEGY_EXPERIMENTS.md](./NEW_STRATEGY_EXPERIMENTS.md)。`quiet_sponsor`
+目前因只有62日而輸出 `insufficient_history`／零訊號，規則不為此縮短。
 
 ---
 

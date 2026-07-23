@@ -73,6 +73,36 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
     return sorted(set(out))
 
 
+def get_research_candidates(universe_top_n: int = None,
+                            candidate_pool_n: int = None) -> List[str]:
+    """Return the candidate set used to build a daily dynamic universe.
+
+    ``universe_top_n`` is the desired number of eligible names per date.  When
+    dynamic-universe mode is enabled, candidates must be broader than that
+    daily target; the current bootstrap uses the saved current top300 file.
+
+    This removes direct *daily ranking* look-ahead, but it does not make a
+    current top300 candidate file survivorship-free.  The backtest metadata
+    reports this limitation explicitly.
+    """
+    target = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    if not config.DYNAMIC_UNIVERSE_ENABLED:
+        return get_universe(top_n=target)
+
+    pool = candidate_pool_n or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL
+    if pool < target:
+        raise ValueError(
+            f"動態 universe 候選池({pool})不可小於每日目標({target})"
+        )
+    ids = get_universe(top_n=pool)
+    if len(ids) < target:
+        raise ValueError(
+            f"候選池只有 {len(ids)} 檔，少於動態 universe 目標 {target}；"
+            f"請先跑 `.venv/bin/python build_universe.py {pool}`"
+        )
+    return ids
+
+
 def get_industry_map() -> Dict[str, str]:
     """stock_id -> 產業別。"""
     info = data.fetch_stock_info()

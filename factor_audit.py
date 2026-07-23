@@ -46,14 +46,22 @@ MIN_CROSS = 5  # 每日橫斷面至少 N 檔才算一個有效的橫斷面 IC
 # Panel 建立 / 快取
 # ──────────────────────────────────────────────────────────────────────
 def build_panel(top_n: int, reuse: bool) -> pd.DataFrame:
-    cache_path = config.CACHE_DIR / f"audit_panel_top{top_n}.pkl"
+    mode = (
+        f"dynamic_top{top_n}_candidate{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}"
+        if config.DYNAMIC_UNIVERSE_ENABLED else f"static_top{top_n}"
+    )
+    cache_path = config.CACHE_DIR / f"audit_panel_{mode}.pkl"
     if reuse and cache_path.exists():
         print(f"[audit] 重用 panel：{cache_path}")
         return pickle.load(open(cache_path, "rb"))
 
-    symbols = uni.get_universe(top_n=top_n)
+    symbols = uni.get_research_candidates(universe_top_n=top_n)
     print(f"[audit] universe = {len(symbols)} 檔，建立 panel（會抓資料/算因子，請稍候）...")
-    panel = backtest._prepare_panel(symbols, 0.0, None, None)
+    panel = backtest._prepare_panel(
+        symbols, 0.0, None, None,
+        dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
+        universe_top_n=top_n,
+    )
 
     # 補上產業別（產業中性化要用）
     ind_map = uni.get_industry_map()

@@ -1,5 +1,9 @@
 # 上線權重修正報告 — momentum_only
 
+> ⚠️ **歷史 static-top100 報告。** 存在 universe selection bias；後續單一動態
+> 路徑又被證明有相位敏感度。最新策略研究見
+> [ROTATION_STRATEGY_REVIEW.html](./ROTATION_STRATEGY_REVIEW.html)。
+
 > 2026-06-22 接力研究。資料快照 `SNAPSHOT_END_DATE=2026-06-22`、universe top100、
 > rebalance 5 日 / 持有 5 檔、trend 退場。
 >

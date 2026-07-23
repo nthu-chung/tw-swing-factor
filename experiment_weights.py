@@ -87,7 +87,7 @@ def main():
     top_n = 100
     rebalance = 5
     pick = 5
-    symbols = uni.get_universe(top_n=top_n)
+    symbols = uni.get_research_candidates(universe_top_n=top_n)
     print(f"[experiment] universe={len(symbols)} 檔，rebalance={rebalance}日，最多持有{pick}檔\n")
 
     orig = copy.deepcopy(config.FACTOR_WEIGHTS)

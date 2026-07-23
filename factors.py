@@ -43,11 +43,19 @@ def _align(price: pd.DataFrame, inst: pd.DataFrame, margin: pd.DataFrame) -> pd.
     """以 price 的交易日為主軸，把 inst / margin 以 asof（<=當日）對齊。"""
     df = price.copy().sort_values("date").reset_index(drop=True)
 
+    inst_cols = ["foreign_net", "trust_net", "dealer_net", "inst_net"]
     if inst is not None and not inst.empty:
-        inst_s = inst.sort_values("date")
-        df = pd.merge_asof(df, inst_s, on="date", direction="backward")
+        # 法人買賣超是「流量(flow)」：沒有申報的交易日代表當日淨額 = 0，不可向後
+        # 延用舊值（merge_asof backward 會把前一次的買超灌到無申報日，虛增 inst_1d/
+        # 6d/12d，並讓 rotation_research 的 inst_6d>0 群組濾網在無申報日假通過）。
+        # 改成以交易日為軸精確 left-merge + 缺漏補 0，與 market_flow_monitor 一致。
+        cols = [c for c in inst_cols if c in inst.columns]
+        inst_s = inst[["date"] + cols].sort_values("date")
+        df = df.merge(inst_s, on="date", how="left")
+        for c in inst_cols:
+            df[c] = df[c].fillna(0.0) if c in df.columns else 0.0
     else:
-        for c in ["foreign_net", "trust_net", "dealer_net", "inst_net"]:
+        for c in inst_cols:
             df[c] = 0.0
 
     if margin is not None and not margin.empty:

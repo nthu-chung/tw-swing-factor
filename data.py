@@ -33,28 +33,47 @@ _SESSION = requests.Session()
 
 
 # ── 快取工具 ────────────────────────────────────────────────────────────
+def _snapshot_tag() -> str:
+    """快取檔名的快照戳記。鎖快照時用日期,live 時用 'live'（維持 TTL 過期）。"""
+    return getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+
+
 def _cache_path(dataset: str, stock_id: str) -> Path:
-    return config.CACHE_DIR / f"{dataset}__{stock_id}.pkl"
+    # 2026-07-24 修:把 snapshot 編進檔名。舊版 key 不含 snapshot,改 cutoff 卻靜默
+    # 回傳舊快取（look-ahead）。現在 snapshot 一改 → 檔名 miss → 真重抓;舊快照檔留存
+    # 供 bit-identical 重現。
+    return config.CACHE_DIR / f"{dataset}__{stock_id}__{_snapshot_tag()}.pkl"
 
 
 def _load_cache(dataset: str, stock_id: str, max_age_hours: int = 12) -> Optional[pd.DataFrame]:
     """
     讀快取。當 config.SNAPSHOT_END_DATE 有值時：快取永久有效（鎖住資料快照，
-    避免邊界漂移）。要更新資料就改 SNAPSHOT_END_DATE 或手動清 _cache/。
+    避免邊界漂移），且快照戳已進檔名 → 不同快照不會互相命中。
     SNAPSHOT_END_DATE 為空字串時退回原本的 max_age_hours 過期邏輯。
     """
     p = _cache_path(dataset, stock_id)
     if not p.exists():
         return None
-    if not getattr(config, "SNAPSHOT_END_DATE", ""):
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
+    if not snap:
         age_h = (time.time() - p.stat().st_mtime) / 3600
         if age_h > max_age_hours:
             return None
     try:
         with open(p, "rb") as f:
-            return pickle.load(f)
+            df = pickle.load(f)
     except Exception:
         return None
+    # 安全網:凍結快照下,絕不回傳超過快照日的資料列（擋任何殘留的未來洩漏）。
+    if snap and isinstance(df, pd.DataFrame) and "date" in df.columns:
+        try:
+            end = pd.to_datetime(snap)
+            dts = pd.to_datetime(df["date"])
+            if (dts > end).any():
+                df = df[dts <= end].copy()
+        except Exception:
+            pass
+    return df
 
 
 def _save_cache(dataset: str, stock_id: str, df: pd.DataFrame) -> None:
@@ -77,11 +96,13 @@ def _finmind_get(dataset: str, data_id: str, start_date: str, end_date: str) -> 
         "data_id": data_id,
         "start_date": start_date,
         "end_date": end_date,
-        "token": config.FINMIND_TOKEN,
     }
+    headers = {"Authorization": f"Bearer {config.FINMIND_TOKEN}"}
     try:
         time.sleep(config.FINMIND_SLEEP)
-        resp = _SESSION.get(config.FINMIND_BASE, params=params, timeout=30)
+        resp = _SESSION.get(
+            config.FINMIND_BASE, params=params, headers=headers, timeout=30
+        )
         resp.raise_for_status()
         payload = resp.json()
         data = payload.get("data") or []
@@ -94,7 +115,8 @@ def _finmind_get(dataset: str, data_id: str, start_date: str, end_date: str) -> 
         print(f"[data] {dataset} {data_id} HTTP {code}：{e}")
         return pd.DataFrame()
     except Exception as e:
-        print(f"[data] {dataset} {data_id} 失敗：{e}")
+        # 不印 request headers / 完整 URL，避免認證資訊進入 log。
+        print(f"[data] {dataset} {data_id} 連線失敗：{type(e).__name__}")
         return pd.DataFrame()
 
 
@@ -142,16 +164,43 @@ def fetch_stock_info() -> pd.DataFrame:
 
 
 # ── 2. 日線 OHLCV ──────────────────────────────────────────────────────
+def _clean_price_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize price data and remove non-tradable placeholder bars.
+
+    FinMind raw histories can contain suspended/no-trade rows with zero OHLCV.
+    They are not executable bars and must not enter rolling factors, liquidity
+    ranks, stop-loss checks, or mark-to-market returns.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    out = df.copy()
+    if "date" in out.columns:
+        out["date"] = pd.to_datetime(out["date"])
+    numeric = ["open", "high", "low", "close", "volume", "turnover"]
+    for c in numeric:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    required = [c for c in ["open", "high", "low", "close", "volume"] if c in out.columns]
+    if required:
+        mask = out[required].notna().all(axis=1) & (out[required] > 0).all(axis=1)
+        out = out[mask]
+    return out.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+
+
 def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     """
     日線資料，欄位：date, open, high, low, close, volume(股), turnover
     volume 用 Trading_Volume（成交股數）。
     """
-    cached = _load_cache("price", stock_id)
+    dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
+    cache_key = "price_adj" if dataset == "TaiwanStockPriceAdj" else "price"
+    cached = _load_cache(cache_key, stock_id)
     if cached is not None:
-        return cached
+        out = _clean_price_frame(cached)
+        out.attrs["price_dataset"] = dataset
+        return out
     start, end = _date_range(history_days)
-    df = _finmind_get("TaiwanStockPrice", stock_id, start, end)
+    df = _finmind_get(dataset, stock_id, start, end)
     if df.empty:
         return df
     rename = {
@@ -170,8 +219,9 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     for c in ["open", "high", "low", "close", "volume", "turnover"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
-    _save_cache("price", stock_id, df)
+    df = _clean_price_frame(df)
+    df.attrs["price_dataset"] = dataset
+    _save_cache(cache_key, stock_id, df)
     return df
 
 
