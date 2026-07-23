@@ -141,3 +141,69 @@
 - **每週**：檢查 rank persistence、族群擴散、候選命中與假突破。
 - **每月**：凍結一次 forward snapshot，禁止回頭調參。
 - **每次改策略**：先寫 prove/kill，再跑實驗；保留所有失敗結果。
+
+## 9. 程式強制機制（2026-07-24 系統稽核後上線）
+
+以前這份規範只是「文件承諾」，程式並未強制。以下修正讓 §1、§6、§7 由程式**硬性強制**：
+
+| 規範承諾 | 強制點（程式） | 行為 |
+|---|---|---|
+| 未還原價異常斷點 fail-closed（§1/§6） | `backtest._assert_price_integrity`（`_prepare_panel` 與外部注入 picks 兩條路都擋） | 未還原價 + 偵測到 >11% 斷點 → **raise 拒跑**，寫 `outputs/price_integrity_audit.csv` |
+| 逃生門（僅 smoke） | `SWING_ALLOW_UNADJUSTED=1` | 放行但 `summary.data.integrity_bypassed=True`，結果不得當已驗證 |
+| Frozen snapshot 不漂移（§1） | `data._cache_path` 把 `SNAPSHOT_END_DATE` 編進檔名 + `_load_cache` 裁超過快照的列 | 改 cutoff → cache miss → **真重抓**；不再靜默回舊/未來資料 |
+| 訊號時間 vs 可成交時間（§6） | `_check_exit` 的 `pending_ma_exit` | 收盤跌破 MA → **下一交易日開盤**成交，非當根收盤 |
+| 法人資料可得時間（§6） | `factors._align` 法人四欄精確日對齊補 0 | 無申報日 flow=0，不向後延用舊值 |
+| 上市/上櫃/ETF 覆蓋（§1/§6） | `current_watchlist._regular_equity_mask` | live screen 與 market_flow 排除 00 開頭 ETF |
+| 族群分類隨時間改變（§6） | `universe_meta.industry_pit=False` + `industry_asof` | 回測 metadata 明示產業分類非 PIT |
+| CI 下界>0 ≠ edge（§7） | `validate_oos` beta-aware verdict + 寫入 buy&hold 基準 | OS 普漲時自動降級結論，不再無條件宣稱「維持上線合理」 |
+
+## 10. 標準操作流程（指令級）
+
+> 先決定**價格路線**：未還原價下主回測預設**被擋**。要嘛用還原價（真績效），要嘛開逃生門（僅 smoke）。
+
+### A. 乾淨 clone 後重現既有結果
+```bash
+.venv/bin/pip install -r requirements.txt
+# universe 候選池 fixture 已進版控(outputs/universe_top*.json);若要重建:
+.venv/bin/python build_universe.py 300
+.venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 應 30 passed
+```
+
+### B. 推進研究窗（換資料）
+```bash
+export SWING_SNAPSHOT_END=2026-07-31        # 改截止日 → cache 自動 miss → 真重抓
+.venv/bin/python build_universe.py 300      # 重建候選池(注意仍非 PIT,見 §6)
+.venv/bin/python prefetch.py                # 依需要重抓
+```
+
+### C. 跑研究回測 / OOS / factor audit（三選一價格路線）
+```bash
+# 路線1(推薦、真績效):還原價
+export SWING_PRICE_DATASET=TaiwanStockPriceAdj   # 需 FinMind 付費/sponsor token
+.venv/bin/python main.py backtest --pool 300
+
+# 路線2(僅 smoke、結果標 bypassed):未還原價逃生門
+SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
+
+# 不設任何一個 → 未還原價偵測到斷點會直接 fail-closed raise(這是預期行為)
+```
+
+### D. 要「宣稱」一個策略前（唯一能升級到 Clean OOS/Forward-only 的路）
+```bash
+.venv/bin/python freeze_manifest.py --label <策略名>   # 凍結規則(immutable,不可覆寫)
+# …之後推進 SNAPSHOT_END 累積凍結日後的新資料…
+.venv/bin/python forward_test.py                       # 只驗證凍結後的 forward 窗
+```
+規則凍結後**不得回頭調參**（§8）。forward 交易數太少時持續累積，別急著下結論。
+
+### E. 每次宣稱前的例行稽核
+```bash
+.venv/bin/python universe_bias_audit.py     # 量化候選池倖存者/選池前視偏誤上界
+# 檢查 summary.data.integrity_bypassed 是否為 True、universe.industry_pit 是否 False
+```
+
+### F. 尚未修好的（仍是揭露、非強制）——升級結論前必須先處理
+- **候選池倖存者**：仍是「當前 top300」，缺歷史下市/轉板股（`UNIVERSE_BIAS_REPORT.md` 量化上界）。根治需外部下市清單，重建 survivorship-free PIT 全市場池。
+- **還原價**：預設仍未還原；真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。
+- **單一多頭窗**：資料僅 2024–2026，無足夠空頭；clean OOS 檢定力低，靠 forward-only 累積。
+- 在上述三項處理完之前，**所有絕對績效一律標「樂觀上界、待重驗」**，不得作為上線依據。
