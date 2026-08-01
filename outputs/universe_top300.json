@@ -6,7 +6,8 @@
     "close": 2410.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 1
+    "rank": 1,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2327",
@@ -15,7 +16,8 @@
     "close": 1080.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 2
+    "rank": 2,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2408",
@@ -24,7 +26,8 @@
     "close": 459.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 3
+    "rank": 3,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2344",
@@ -33,7 +36,8 @@
     "close": 218.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 4
+    "rank": 4,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2454",
@@ -42,7 +46,8 @@
     "close": 4390.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 5
+    "rank": 5,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3481",
@@ -51,7 +56,8 @@
     "close": 64.4,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 6
+    "rank": 6,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2303",
@@ -60,7 +66,8 @@
     "close": 145.5,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 7
+    "rank": 7,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2492",
@@ -69,7 +76,8 @@
     "close": 561.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 8
+    "rank": 8,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4958",
@@ -78,7 +86,8 @@
     "close": 642.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 9
+    "rank": 9,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2308",
@@ -87,7 +96,8 @@
     "close": 2150.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 10
+    "rank": 10,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3443",
@@ -96,7 +106,8 @@
     "close": 4860.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 11
+    "rank": 11,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2409",
@@ -105,7 +116,8 @@
     "close": 28.15,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 12
+    "rank": 12,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6239",
@@ -114,7 +126,8 @@
     "close": 363.5,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 13
+    "rank": 13,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3711",
@@ -123,7 +136,8 @@
     "close": 613.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 14
+    "rank": 14,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2337",
@@ -132,7 +146,8 @@
     "close": 169.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 15
+    "rank": 15,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3105",
@@ -141,7 +156,8 @@
     "close": 528.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 16
+    "rank": 16,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3037",
@@ -150,7 +166,8 @@
     "close": 968.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 17
+    "rank": 17,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3189",
@@ -159,7 +176,8 @@
     "close": 724.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 18
+    "rank": 18,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1303",
@@ -168,7 +186,8 @@
     "close": 139.0,
     "market": "TWSE",
     "industry": "塑膠工業",
-    "rank": 19
+    "rank": 19,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2317",
@@ -177,7 +196,8 @@
     "close": 268.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 20
+    "rank": 20,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8299",
@@ -186,7 +206,8 @@
     "close": 2530.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 21
+    "rank": 21,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6770",
@@ -195,7 +216,8 @@
     "close": 74.2,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 22
+    "rank": 22,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2449",
@@ -204,7 +226,8 @@
     "close": 308.5,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 23
+    "rank": 23,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8046",
@@ -213,7 +236,8 @@
     "close": 874.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 24
+    "rank": 24,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3008",
@@ -222,7 +246,8 @@
     "close": 5195.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 25
+    "rank": 25,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3665",
@@ -231,7 +256,8 @@
     "close": 2100.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 26
+    "rank": 26,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6182",
@@ -240,7 +266,8 @@
     "close": 120.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 27
+    "rank": 27,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6488",
@@ -249,7 +276,8 @@
     "close": 1110.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 28
+    "rank": 28,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2455",
@@ -258,7 +286,8 @@
     "close": 416.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 29
+    "rank": 29,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2313",
@@ -267,7 +296,8 @@
     "close": 259.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 30
+    "rank": 30,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2383",
@@ -276,7 +306,8 @@
     "close": 5600.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 31
+    "rank": 31,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2345",
@@ -285,7 +316,8 @@
     "close": 2435.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 32
+    "rank": 32,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3661",
@@ -294,7 +326,8 @@
     "close": 4380.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 33
+    "rank": 33,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7769",
@@ -303,7 +336,8 @@
     "close": 6975.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 34
+    "rank": 34,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1301",
@@ -312,7 +346,8 @@
     "close": 51.7,
     "market": "TWSE",
     "industry": "塑膠工業",
-    "rank": 35
+    "rank": 35,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8996",
@@ -321,7 +356,8 @@
     "close": 1590.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 36
+    "rank": 36,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6669",
@@ -330,7 +366,8 @@
     "close": 5130.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 37
+    "rank": 37,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1802",
@@ -339,7 +376,8 @@
     "close": 71.3,
     "market": "TWSE",
     "industry": "玻璃陶瓷",
-    "rank": 38
+    "rank": 38,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3450",
@@ -348,7 +386,8 @@
     "close": 565.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 39
+    "rank": 39,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2382",
@@ -357,7 +396,8 @@
     "close": 376.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 40
+    "rank": 40,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2478",
@@ -366,7 +406,8 @@
     "close": 234.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 41
+    "rank": 41,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3653",
@@ -375,7 +416,8 @@
     "close": 3965.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 42
+    "rank": 42,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3017",
@@ -384,7 +426,8 @@
     "close": 2400.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 43
+    "rank": 43,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8043",
@@ -393,7 +436,8 @@
     "close": 226.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 44
+    "rank": 44,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3090",
@@ -402,7 +446,8 @@
     "close": 332.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 45
+    "rank": 45,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8150",
@@ -411,7 +456,8 @@
     "close": 104.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 46
+    "rank": 46,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2002",
@@ -420,7 +466,8 @@
     "close": 19.1,
     "market": "TWSE",
     "industry": "鋼鐵工業",
-    "rank": 47
+    "rank": 47,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3231",
@@ -429,7 +476,8 @@
     "close": 161.5,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 48
+    "rank": 48,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2472",
@@ -438,7 +486,8 @@
     "close": 402.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 49
+    "rank": 49,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3042",
@@ -447,7 +496,8 @@
     "close": 216.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 50
+    "rank": 50,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6116",
@@ -456,7 +506,8 @@
     "close": 18.8,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 51
+    "rank": 51,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5289",
@@ -465,7 +516,8 @@
     "close": 1930.0,
     "market": "TPEX",
     "industry": "電腦及週邊設備業",
-    "rank": 52
+    "rank": 52,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6147",
@@ -474,7 +526,8 @@
     "close": 252.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 53
+    "rank": 53,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2357",
@@ -483,7 +536,8 @@
     "close": 789.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 54
+    "rank": 54,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6213",
@@ -492,7 +546,8 @@
     "close": 280.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 55
+    "rank": 55,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6274",
@@ -501,7 +556,8 @@
     "close": 1835.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 56
+    "rank": 56,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6919",
@@ -510,7 +566,8 @@
     "close": 109.0,
     "market": "TWSE",
     "industry": "生技醫療業",
-    "rank": 57
+    "rank": 57,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3081",
@@ -519,7 +576,8 @@
     "close": 2440.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 58
+    "rank": 58,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6531",
@@ -528,7 +586,8 @@
     "close": 1025.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 59
+    "rank": 59,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2379",
@@ -537,7 +596,8 @@
     "close": 819.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 60
+    "rank": 60,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3034",
@@ -546,7 +606,8 @@
     "close": 516.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 61
+    "rank": 61,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3260",
@@ -555,7 +616,8 @@
     "close": 423.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 62
+    "rank": 62,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6223",
@@ -564,7 +626,8 @@
     "close": 6415.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 63
+    "rank": 63,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2368",
@@ -573,7 +636,8 @@
     "close": 1355.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 64
+    "rank": 64,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6207",
@@ -582,7 +646,8 @@
     "close": 165.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 65
+    "rank": 65,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4904",
@@ -591,7 +656,8 @@
     "close": 108.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 66
+    "rank": 66,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2360",
@@ -600,7 +666,8 @@
     "close": 2310.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 67
+    "rank": 67,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7610",
@@ -609,7 +676,8 @@
     "close": 2315.0,
     "market": "TWSE",
     "industry": "綠能環保",
-    "rank": 68
+    "rank": 68,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2301",
@@ -618,7 +686,8 @@
     "close": 210.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 69
+    "rank": 69,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6285",
@@ -627,7 +696,8 @@
     "close": 274.0,
     "market": "TWSE",
     "industry": "通信網路業",
-    "rank": 70
+    "rank": 70,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2207",
@@ -636,7 +706,8 @@
     "close": 482.0,
     "market": "TWSE",
     "industry": "汽車工業",
-    "rank": 71
+    "rank": 71,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4979",
@@ -645,7 +716,8 @@
     "close": 567.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 72
+    "rank": 72,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2375",
@@ -654,7 +726,8 @@
     "close": 219.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 73
+    "rank": 73,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2404",
@@ -663,7 +736,8 @@
     "close": 1265.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 74
+    "rank": 74,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3163",
@@ -672,7 +746,8 @@
     "close": 893.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 75
+    "rank": 75,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5483",
@@ -681,7 +756,8 @@
     "close": 181.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 76
+    "rank": 76,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6257",
@@ -690,7 +766,8 @@
     "close": 235.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 77
+    "rank": 77,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3044",
@@ -699,7 +776,8 @@
     "close": 573.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 78
+    "rank": 78,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6415",
@@ -708,7 +786,8 @@
     "close": 629.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 79
+    "rank": 79,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4919",
@@ -717,7 +796,8 @@
     "close": 196.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 80
+    "rank": 80,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3036",
@@ -726,7 +806,8 @@
     "close": 222.5,
     "market": "TWSE",
     "industry": "電子通路業",
-    "rank": 81
+    "rank": 81,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3406",
@@ -735,7 +816,8 @@
     "close": 753.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 82
+    "rank": 82,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2464",
@@ -744,7 +826,8 @@
     "close": 172.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 83
+    "rank": 83,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8358",
@@ -753,7 +836,8 @@
     "close": 700.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 84
+    "rank": 84,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3357",
@@ -762,7 +846,8 @@
     "close": 348.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 85
+    "rank": 85,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3006",
@@ -771,7 +856,8 @@
     "close": 237.5,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 86
+    "rank": 86,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1519",
@@ -780,7 +866,8 @@
     "close": 833.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 87
+    "rank": 87,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3264",
@@ -789,7 +876,8 @@
     "close": 232.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 88
+    "rank": 88,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2426",
@@ -798,7 +886,8 @@
     "close": 81.8,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 89
+    "rank": 89,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6175",
@@ -807,7 +896,8 @@
     "close": 114.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 90
+    "rank": 90,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2603",
@@ -816,7 +906,8 @@
     "close": 193.0,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 91
+    "rank": 91,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1513",
@@ -825,7 +916,8 @@
     "close": 176.5,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 92
+    "rank": 92,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2059",
@@ -834,7 +926,8 @@
     "close": 6865.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 93
+    "rank": 93,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2376",
@@ -843,7 +936,8 @@
     "close": 344.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 94
+    "rank": 94,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6446",
@@ -852,7 +946,8 @@
     "close": 1060.0,
     "market": "TWSE",
     "industry": "生技醫療業",
-    "rank": 95
+    "rank": 95,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6209",
@@ -861,7 +956,8 @@
     "close": 97.1,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 96
+    "rank": 96,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3362",
@@ -870,7 +966,8 @@
     "close": 211.0,
     "market": "TPEX",
     "industry": "光電業",
-    "rank": 97
+    "rank": 97,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3131",
@@ -879,7 +976,8 @@
     "close": 3520.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 98
+    "rank": 98,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2486",
@@ -888,7 +986,8 @@
     "close": 276.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 99
+    "rank": 99,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5347",
@@ -897,7 +996,8 @@
     "close": 174.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 100
+    "rank": 100,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2618",
@@ -906,7 +1006,8 @@
     "close": 42.55,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 101
+    "rank": 101,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3673",
@@ -915,7 +1016,8 @@
     "close": 86.2,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 102
+    "rank": 102,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5274",
@@ -924,7 +1026,8 @@
     "close": 18960.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 103
+    "rank": 103,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2324",
@@ -933,7 +1036,8 @@
     "close": 37.75,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 104
+    "rank": 104,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3532",
@@ -942,7 +1046,8 @@
     "close": 390.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 105
+    "rank": 105,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5351",
@@ -951,7 +1056,8 @@
     "close": 94.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 106
+    "rank": 106,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2351",
@@ -960,7 +1066,8 @@
     "close": 195.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 107
+    "rank": 107,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2356",
@@ -969,7 +1076,8 @@
     "close": 67.7,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 108
+    "rank": 108,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3533",
@@ -978,7 +1086,8 @@
     "close": 2290.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 109
+    "rank": 109,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2458",
@@ -987,7 +1096,8 @@
     "close": 172.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 110
+    "rank": 110,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3583",
@@ -996,7 +1106,8 @@
     "close": 889.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 111
+    "rank": 111,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1605",
@@ -1005,7 +1116,8 @@
     "close": 39.0,
     "market": "TWSE",
     "industry": "電器電纜",
-    "rank": 112
+    "rank": 112,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5328",
@@ -1014,7 +1126,8 @@
     "close": 56.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 113
+    "rank": 113,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3211",
@@ -1023,7 +1136,8 @@
     "close": 436.0,
     "market": "TPEX",
     "industry": "電腦及週邊設備業",
-    "rank": 114
+    "rank": 114,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6139",
@@ -1032,7 +1146,8 @@
     "close": 823.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 115
+    "rank": 115,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3491",
@@ -1041,7 +1156,8 @@
     "close": 1560.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 116
+    "rank": 116,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6290",
@@ -1050,7 +1166,8 @@
     "close": 319.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 117
+    "rank": 117,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8064",
@@ -1059,7 +1176,8 @@
     "close": 156.0,
     "market": "TPEX",
     "industry": "光電業",
-    "rank": 118
+    "rank": 118,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4938",
@@ -1068,7 +1186,8 @@
     "close": 82.9,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 119
+    "rank": 119,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6451",
@@ -1077,7 +1196,8 @@
     "close": 561.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 120
+    "rank": 120,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8069",
@@ -1086,7 +1206,8 @@
     "close": 204.0,
     "market": "TPEX",
     "industry": "光電業",
-    "rank": 121
+    "rank": 121,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6449",
@@ -1095,7 +1216,8 @@
     "close": 433.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 122
+    "rank": 122,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3702",
@@ -1104,7 +1226,8 @@
     "close": 112.0,
     "market": "TWSE",
     "industry": "電子通路業",
-    "rank": 123
+    "rank": 123,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1785",
@@ -1113,7 +1236,8 @@
     "close": 149.0,
     "market": "TPEX",
     "industry": "其他電子類",
-    "rank": 124
+    "rank": 124,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3293",
@@ -1122,7 +1246,8 @@
     "close": 793.0,
     "market": "TPEX",
     "industry": "文化創意業",
-    "rank": 125
+    "rank": 125,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2610",
@@ -1131,7 +1256,8 @@
     "close": 22.0,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 126
+    "rank": 126,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8028",
@@ -1140,7 +1266,8 @@
     "close": 311.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 127
+    "rank": 127,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6271",
@@ -1149,7 +1276,8 @@
     "close": 242.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 128
+    "rank": 128,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6789",
@@ -1158,7 +1286,8 @@
     "close": 543.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 129
+    "rank": 129,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6155",
@@ -1167,7 +1296,8 @@
     "close": 98.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 130
+    "rank": 130,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2395",
@@ -1176,7 +1306,8 @@
     "close": 494.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 131
+    "rank": 131,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1216",
@@ -1185,7 +1316,8 @@
     "close": 74.5,
     "market": "TWSE",
     "industry": "食品工業",
-    "rank": 132
+    "rank": 132,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2388",
@@ -1194,7 +1326,8 @@
     "close": 81.4,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 133
+    "rank": 133,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1815",
@@ -1203,7 +1336,8 @@
     "close": 98.1,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 134
+    "rank": 134,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6187",
@@ -1212,7 +1346,8 @@
     "close": 1235.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 135
+    "rank": 135,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3715",
@@ -1221,7 +1356,8 @@
     "close": 179.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 136
+    "rank": 136,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1503",
@@ -1230,7 +1366,8 @@
     "close": 241.5,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 137
+    "rank": 137,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4931",
@@ -1239,7 +1376,8 @@
     "close": 261.5,
     "market": "TPEX",
     "industry": "電腦及週邊設備業",
-    "rank": 138
+    "rank": 138,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3363",
@@ -1248,7 +1386,8 @@
     "close": 712.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 139
+    "rank": 139,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2481",
@@ -1257,7 +1396,8 @@
     "close": 160.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 140
+    "rank": 140,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3035",
@@ -1266,7 +1406,8 @@
     "close": 209.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 141
+    "rank": 141,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3680",
@@ -1275,7 +1416,8 @@
     "close": 542.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 142
+    "rank": 142,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2441",
@@ -1284,7 +1426,8 @@
     "close": 135.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 143
+    "rank": 143,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6515",
@@ -1293,7 +1436,8 @@
     "close": 9450.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 144
+    "rank": 144,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5871",
@@ -1302,7 +1446,8 @@
     "close": 114.0,
     "market": "TWSE",
     "industry": "其他",
-    "rank": 145
+    "rank": 145,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2451",
@@ -1311,7 +1456,8 @@
     "close": 311.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 146
+    "rank": 146,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3236",
@@ -1320,7 +1466,8 @@
     "close": 71.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 147
+    "rank": 147,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2609",
@@ -1329,7 +1476,8 @@
     "close": 51.3,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 148
+    "rank": 148,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6672",
@@ -1338,7 +1486,8 @@
     "close": 245.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 149
+    "rank": 149,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5425",
@@ -1347,7 +1496,8 @@
     "close": 118.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 150
+    "rank": 150,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1326",
@@ -1356,7 +1506,8 @@
     "close": 54.2,
     "market": "TWSE",
     "industry": "塑膠工業",
-    "rank": 151
+    "rank": 151,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1590",
@@ -1365,7 +1516,8 @@
     "close": 1380.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 152
+    "rank": 152,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2484",
@@ -1374,7 +1526,8 @@
     "close": 71.2,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 153
+    "rank": 153,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2353",
@@ -1383,7 +1536,8 @@
     "close": 34.4,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 154
+    "rank": 154,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5269",
@@ -1392,7 +1546,8 @@
     "close": 1455.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 155
+    "rank": 155,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8112",
@@ -1401,7 +1556,8 @@
     "close": 98.2,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 156
+    "rank": 156,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4966",
@@ -1410,7 +1566,8 @@
     "close": 693.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 157
+    "rank": 157,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4764",
@@ -1419,7 +1576,8 @@
     "close": 338.5,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 158
+    "rank": 158,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2377",
@@ -1428,7 +1586,8 @@
     "close": 138.5,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 159
+    "rank": 159,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3374",
@@ -1437,7 +1596,8 @@
     "close": 251.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 160
+    "rank": 160,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2342",
@@ -1446,7 +1606,8 @@
     "close": 55.2,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 161
+    "rank": 161,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8210",
@@ -1455,7 +1616,8 @@
     "close": 1365.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 162
+    "rank": 162,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3707",
@@ -1464,7 +1626,8 @@
     "close": 83.2,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 163
+    "rank": 163,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2049",
@@ -1473,7 +1636,8 @@
     "close": 335.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 164
+    "rank": 164,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6805",
@@ -1482,7 +1646,8 @@
     "close": 1755.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 165
+    "rank": 165,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2912",
@@ -1491,7 +1656,8 @@
     "close": 223.5,
     "market": "TWSE",
     "industry": "貿易百貨",
-    "rank": 166
+    "rank": 166,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6197",
@@ -1500,7 +1666,8 @@
     "close": 347.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 167
+    "rank": 167,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2474",
@@ -1509,7 +1676,8 @@
     "close": 202.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 168
+    "rank": 168,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3016",
@@ -1518,7 +1686,8 @@
     "close": 126.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 169
+    "rank": 169,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6683",
@@ -1527,7 +1696,8 @@
     "close": 1650.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 170
+    "rank": 170,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4722",
@@ -1536,7 +1706,8 @@
     "close": 277.5,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 171
+    "rank": 171,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8096",
@@ -1545,7 +1716,8 @@
     "close": 155.5,
     "market": "TPEX",
     "industry": "電子通路業",
-    "rank": 172
+    "rank": 172,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3312",
@@ -1554,7 +1726,8 @@
     "close": 62.8,
     "market": "TWSE",
     "industry": "電子通路業",
-    "rank": 173
+    "rank": 173,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6269",
@@ -1563,7 +1736,8 @@
     "close": 79.6,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 174
+    "rank": 174,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3026",
@@ -1572,7 +1746,8 @@
     "close": 902.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 175
+    "rank": 175,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2412",
@@ -1581,7 +1756,8 @@
     "close": 144.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 176
+    "rank": 176,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2302",
@@ -1590,7 +1766,8 @@
     "close": 47.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 177
+    "rank": 177,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4749",
@@ -1599,7 +1776,8 @@
     "close": 991.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 178
+    "rank": 178,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3324",
@@ -1608,7 +1786,8 @@
     "close": 1070.0,
     "market": "TPEX",
     "industry": "其他電子類",
-    "rank": 179
+    "rank": 179,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1504",
@@ -1617,7 +1796,8 @@
     "close": 70.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 180
+    "rank": 180,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2915",
@@ -1626,7 +1806,8 @@
     "close": 53.3,
     "market": "TWSE",
     "industry": "貿易百貨",
-    "rank": 181
+    "rank": 181,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5536",
@@ -1635,7 +1816,8 @@
     "close": 1265.0,
     "market": "TPEX",
     "industry": "其他電子類",
-    "rank": 182
+    "rank": 182,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6781",
@@ -1644,7 +1826,8 @@
     "close": 1180.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 183
+    "rank": 183,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2489",
@@ -1653,7 +1836,8 @@
     "close": 48.15,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 184
+    "rank": 184,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6510",
@@ -1662,7 +1846,8 @@
     "close": 3610.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 185
+    "rank": 185,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3019",
@@ -1671,7 +1856,8 @@
     "close": 160.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 186
+    "rank": 186,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3441",
@@ -1680,7 +1866,8 @@
     "close": 92.3,
     "market": "TPEX",
     "industry": "光電業",
-    "rank": 187
+    "rank": 187,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6217",
@@ -1689,7 +1876,8 @@
     "close": 247.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 188
+    "rank": 188,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3529",
@@ -1698,7 +1886,8 @@
     "close": 3270.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 189
+    "rank": 189,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8086",
@@ -1707,7 +1896,8 @@
     "close": 166.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 190
+    "rank": 190,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6278",
@@ -1716,7 +1906,8 @@
     "close": 204.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 191
+    "rank": 191,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6442",
@@ -1725,7 +1916,8 @@
     "close": 1945.0,
     "market": "TWSE",
     "industry": "通信網路業",
-    "rank": 192
+    "rank": 192,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6742",
@@ -1734,7 +1926,8 @@
     "close": 69.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 193
+    "rank": 193,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8081",
@@ -1743,7 +1936,8 @@
     "close": 319.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 194
+    "rank": 194,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6548",
@@ -1752,7 +1946,8 @@
     "close": 86.1,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 195
+    "rank": 195,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8088",
@@ -1761,7 +1956,8 @@
     "close": 69.2,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 196
+    "rank": 196,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3234",
@@ -1770,7 +1966,8 @@
     "close": 145.0,
     "market": "TPEX",
     "industry": "通信網路業",
-    "rank": 197
+    "rank": 197,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2428",
@@ -1779,7 +1976,8 @@
     "close": 316.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 198
+    "rank": 198,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6196",
@@ -1788,7 +1986,8 @@
     "close": 567.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 199
+    "rank": 199,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2105",
@@ -1797,7 +1996,8 @@
     "close": 29.65,
     "market": "TWSE",
     "industry": "橡膠工業",
-    "rank": 200
+    "rank": 200,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2316",
@@ -1806,7 +2006,8 @@
     "close": 205.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 201
+    "rank": 201,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "9904",
@@ -1815,7 +2016,8 @@
     "close": 26.15,
     "market": "TWSE",
     "industry": "運動休閒",
-    "rank": 202
+    "rank": 202,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1402",
@@ -1824,7 +2026,8 @@
     "close": 28.85,
     "market": "TWSE",
     "industry": "紡織纖維",
-    "rank": 203
+    "rank": 203,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4967",
@@ -1833,7 +2036,8 @@
     "close": 278.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 204
+    "rank": 204,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2367",
@@ -1842,7 +2046,8 @@
     "close": 61.3,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 205
+    "rank": 205,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2347",
@@ -1851,7 +2056,8 @@
     "close": 93.4,
     "market": "TWSE",
     "industry": "電子通路業",
-    "rank": 206
+    "rank": 206,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1708",
@@ -1860,7 +2066,8 @@
     "close": 50.3,
     "market": "TWSE",
     "industry": "化學工業",
-    "rank": 207
+    "rank": 207,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3537",
@@ -1869,7 +2076,8 @@
     "close": 89.6,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 208
+    "rank": 208,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6719",
@@ -1878,7 +2086,8 @@
     "close": 260.5,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 209
+    "rank": 209,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1727",
@@ -1887,7 +2096,8 @@
     "close": 94.1,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 210
+    "rank": 210,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7788",
@@ -1896,7 +2106,8 @@
     "close": 292.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 211
+    "rank": 211,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6176",
@@ -1905,7 +2116,8 @@
     "close": 87.9,
     "market": "TWSE",
     "industry": "光電業",
-    "rank": 212
+    "rank": 212,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1409",
@@ -1914,7 +2126,8 @@
     "close": 25.6,
     "market": "TWSE",
     "industry": "紡織纖維",
-    "rank": 213
+    "rank": 213,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2329",
@@ -1923,7 +2136,8 @@
     "close": 55.6,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 214
+    "rank": 214,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8926",
@@ -1932,7 +2146,8 @@
     "close": 79.0,
     "market": "TWSE",
     "industry": "油電燃氣業",
-    "rank": 215
+    "rank": 215,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6284",
@@ -1941,7 +2156,8 @@
     "close": 106.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 216
+    "rank": 216,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1319",
@@ -1950,7 +2166,8 @@
     "close": 99.2,
     "market": "TWSE",
     "industry": "汽車工業",
-    "rank": 217
+    "rank": 217,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6282",
@@ -1959,7 +2176,8 @@
     "close": 58.1,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 218
+    "rank": 218,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3317",
@@ -1968,7 +2186,8 @@
     "close": 88.3,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 219
+    "rank": 219,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2467",
@@ -1977,7 +2196,8 @@
     "close": 599.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 220
+    "rank": 220,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2401",
@@ -1986,7 +2206,8 @@
     "close": 32.25,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 221
+    "rank": 221,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1477",
@@ -1995,7 +2216,8 @@
     "close": 221.5,
     "market": "TWSE",
     "industry": "紡織纖維",
-    "rank": 222
+    "rank": 222,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3045",
@@ -2004,7 +2226,8 @@
     "close": 119.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 223
+    "rank": 223,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1476",
@@ -2013,7 +2236,8 @@
     "close": 327.0,
     "market": "TWSE",
     "industry": "紡織纖維",
-    "rank": 224
+    "rank": 224,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2369",
@@ -2022,7 +2246,8 @@
     "close": 36.85,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 225
+    "rank": 225,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2027",
@@ -2031,7 +2256,8 @@
     "close": 41.0,
     "market": "TWSE",
     "industry": "鋼鐵工業",
-    "rank": 226
+    "rank": 226,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2399",
@@ -2040,7 +2266,8 @@
     "close": 48.05,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 227
+    "rank": 227,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3663",
@@ -2049,7 +2276,8 @@
     "close": 85.7,
     "market": "TPEX",
     "industry": "其他電子類",
-    "rank": 228
+    "rank": 228,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4551",
@@ -2058,7 +2286,8 @@
     "close": 221.5,
     "market": "TWSE",
     "industry": "汽車工業",
-    "rank": 229
+    "rank": 229,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2542",
@@ -2067,7 +2296,8 @@
     "close": 44.75,
     "market": "TWSE",
     "industry": "建材營造",
-    "rank": 230
+    "rank": 230,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7734",
@@ -2076,7 +2306,8 @@
     "close": 3615.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 231
+    "rank": 231,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3714",
@@ -2085,7 +2316,8 @@
     "close": 67.2,
     "market": "TWSE",
     "industry": "光電業",
-    "rank": 232
+    "rank": 232,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8110",
@@ -2094,7 +2326,8 @@
     "close": 59.2,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 233
+    "rank": 233,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2606",
@@ -2103,7 +2336,8 @@
     "close": 61.5,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 234
+    "rank": 234,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2312",
@@ -2112,7 +2346,8 @@
     "close": 35.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 235
+    "rank": 235,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6166",
@@ -2121,7 +2356,8 @@
     "close": 155.5,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 236
+    "rank": 236,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3706",
@@ -2130,7 +2366,8 @@
     "close": 86.9,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 237
+    "rank": 237,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3060",
@@ -2139,7 +2376,8 @@
     "close": 37.9,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 238
+    "rank": 238,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6138",
@@ -2148,7 +2386,8 @@
     "close": 358.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 239
+    "rank": 239,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4916",
@@ -2157,7 +2396,8 @@
     "close": 103.5,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 240
+    "rank": 240,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6202",
@@ -2166,7 +2406,8 @@
     "close": 67.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 241
+    "rank": 241,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1101",
@@ -2175,7 +2416,8 @@
     "close": 24.5,
     "market": "TWSE",
     "industry": "水泥工業",
-    "rank": 242
+    "rank": 242,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3048",
@@ -2184,7 +2426,8 @@
     "close": 73.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 243
+    "rank": 243,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2340",
@@ -2193,7 +2436,8 @@
     "close": 39.95,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 244
+    "rank": 244,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3376",
@@ -2202,7 +2446,8 @@
     "close": 205.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 245
+    "rank": 245,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6173",
@@ -2211,7 +2456,8 @@
     "close": 316.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 246
+    "rank": 246,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2493",
@@ -2220,7 +2466,8 @@
     "close": 273.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 247
+    "rank": 247,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2385",
@@ -2229,7 +2476,8 @@
     "close": 114.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 248
+    "rank": 248,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4976",
@@ -2238,7 +2486,8 @@
     "close": 43.9,
     "market": "TWSE",
     "industry": "光電業",
-    "rank": 249
+    "rank": 249,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1717",
@@ -2247,7 +2496,8 @@
     "close": 72.4,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 250
+    "rank": 250,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8016",
@@ -2256,7 +2506,8 @@
     "close": 300.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 251
+    "rank": 251,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4971",
@@ -2265,7 +2516,8 @@
     "close": 578.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 252
+    "rank": 252,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8039",
@@ -2274,7 +2526,8 @@
     "close": 145.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 253
+    "rank": 253,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6414",
@@ -2283,7 +2536,8 @@
     "close": 383.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 254
+    "rank": 254,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4991",
@@ -2292,7 +2546,8 @@
     "close": 566.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 255
+    "rank": 255,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6505",
@@ -2301,7 +2556,8 @@
     "close": 53.5,
     "market": "TWSE",
     "industry": "油電燃氣業",
-    "rank": 256
+    "rank": 256,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8091",
@@ -2310,7 +2566,8 @@
     "close": 281.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 257
+    "rank": 257,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5439",
@@ -2319,7 +2576,8 @@
     "close": 332.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 258
+    "rank": 258,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2615",
@@ -2328,7 +2586,8 @@
     "close": 80.4,
     "market": "TWSE",
     "industry": "航運業",
-    "rank": 259
+    "rank": 259,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "4973",
@@ -2337,7 +2596,8 @@
     "close": 193.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 260
+    "rank": 260,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1905",
@@ -2346,7 +2606,8 @@
     "close": 17.1,
     "market": "TWSE",
     "industry": "造紙工業",
-    "rank": 261
+    "rank": 261,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3596",
@@ -2355,7 +2616,8 @@
     "close": 191.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 262
+    "rank": 262,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3576",
@@ -2364,7 +2626,8 @@
     "close": 18.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 263
+    "rank": 263,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7750",
@@ -2373,7 +2636,8 @@
     "close": 2370.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 264
+    "rank": 264,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1102",
@@ -2382,7 +2646,8 @@
     "close": 35.8,
     "market": "TWSE",
     "industry": "水泥工業",
-    "rank": 265
+    "rank": 265,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6944",
@@ -2391,7 +2656,8 @@
     "close": 1045.0,
     "market": "TWSE",
     "industry": "綠能環保",
-    "rank": 266
+    "rank": 266,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6949",
@@ -2400,7 +2666,8 @@
     "close": 911.0,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 267
+    "rank": 267,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6831",
@@ -2409,7 +2676,8 @@
     "close": 773.0,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 268
+    "rank": 268,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6526",
@@ -2418,7 +2686,8 @@
     "close": 696.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 269
+    "rank": 269,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2495",
@@ -2427,7 +2696,8 @@
     "close": 52.1,
     "market": "TWSE",
     "industry": "電腦及週邊設備業",
-    "rank": 270
+    "rank": 270,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1560",
@@ -2436,7 +2706,8 @@
     "close": 700.0,
     "market": "TWSE",
     "industry": "電機機械",
-    "rank": 271
+    "rank": 271,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "1714",
@@ -2445,7 +2716,8 @@
     "close": 20.35,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 272
+    "rank": 272,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "7712",
@@ -2454,7 +2726,8 @@
     "close": 184.5,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 273
+    "rank": 273,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8021",
@@ -2463,7 +2736,8 @@
     "close": 543.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 274
+    "rank": 274,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3059",
@@ -2472,7 +2746,8 @@
     "close": 48.85,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 275
+    "rank": 275,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5471",
@@ -2481,7 +2756,8 @@
     "close": 60.9,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 276
+    "rank": 276,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3413",
@@ -2490,7 +2766,8 @@
     "close": 324.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 277
+    "rank": 277,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8261",
@@ -2499,7 +2776,8 @@
     "close": 215.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 278
+    "rank": 278,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2406",
@@ -2508,7 +2786,8 @@
     "close": 34.85,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 279
+    "rank": 279,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "5386",
@@ -2517,7 +2796,8 @@
     "close": 521.0,
     "market": "TPEX",
     "industry": "電腦及週邊設備業",
-    "rank": 280
+    "rank": 280,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6706",
@@ -2526,7 +2806,8 @@
     "close": 172.0,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 281
+    "rank": 281,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2006",
@@ -2535,7 +2816,8 @@
     "close": 69.5,
     "market": "TWSE",
     "industry": "鋼鐵工業",
-    "rank": 282
+    "rank": 282,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3014",
@@ -2544,7 +2826,8 @@
     "close": 157.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 283
+    "rank": 283,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6525",
@@ -2553,7 +2836,8 @@
     "close": 143.0,
     "market": "TWSE",
     "industry": "半導體業",
-    "rank": 284
+    "rank": 284,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6127",
@@ -2562,7 +2846,8 @@
     "close": 84.4,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 285
+    "rank": 285,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6191",
@@ -2571,7 +2856,8 @@
     "close": 100.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 286
+    "rank": 286,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6432",
@@ -2580,7 +2866,8 @@
     "close": 86.9,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 287
+    "rank": 287,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6727",
@@ -2589,7 +2876,8 @@
     "close": 449.0,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 288
+    "rank": 288,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3605",
@@ -2598,7 +2886,8 @@
     "close": 80.5,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 289
+    "rank": 289,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3624",
@@ -2607,7 +2896,8 @@
     "close": 160.5,
     "market": "TPEX",
     "industry": "電子零組件業",
-    "rank": 290
+    "rank": 290,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3030",
@@ -2616,7 +2906,8 @@
     "close": 340.5,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 291
+    "rank": 291,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6208",
@@ -2625,7 +2916,8 @@
     "close": 99.0,
     "market": "TPEX",
     "industry": "半導體業",
-    "rank": 292
+    "rank": 292,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2363",
@@ -2634,7 +2926,8 @@
     "close": 62.9,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 293
+    "rank": 293,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2355",
@@ -2643,7 +2936,8 @@
     "close": 57.9,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 294
+    "rank": 294,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "2402",
@@ -2652,7 +2946,8 @@
     "close": 70.0,
     "market": "TWSE",
     "industry": "電子零組件業",
-    "rank": 295
+    "rank": 295,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "3504",
@@ -2661,7 +2956,8 @@
     "close": 91.2,
     "market": "TWSE",
     "industry": "電子工業",
-    "rank": 296
+    "rank": 296,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6472",
@@ -2670,7 +2966,8 @@
     "close": 422.5,
     "market": "TWSE",
     "industry": "化學生技醫療",
-    "rank": 297
+    "rank": 297,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6725",
@@ -2679,7 +2976,8 @@
     "close": 367.0,
     "market": "TPEX",
     "industry": "其他電子類",
-    "rank": 298
+    "rank": 298,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "6861",
@@ -2688,7 +2986,8 @@
     "close": 371.0,
     "market": "TWSE",
     "industry": "生技醫療業",
-    "rank": 299
+    "rank": 299,
+    "as_of": "2026-06-20"
   },
   {
     "stock_id": "8255",
@@ -2697,6 +2996,7 @@
     "close": 195.0,
     "market": "TPEX",
     "industry": "電機機械",
-    "rank": 300
+    "rank": 300,
+    "as_of": "2026-06-20"
   }
 ]

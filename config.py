@@ -112,6 +112,11 @@ DYNAMIC_UNIVERSE_MIN_OBS = 20         # 暖身不足不納入
 DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS = MIN_AVG_VOLUME_LOTS
 DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER = 0.0  # 新台幣；0 表示只靠 top-N + 成交量
 
+# 候選池 PIT 閘門(2026-07-24 加):候選池建構日(as_of)晚於資料快照 = 未來池
+# look-ahead(用未來成交值排名/存活性回套過去)。universe.get_universe 會 fail-closed
+# 擋下。SWING_ALLOW_FUTURE_POOL=1 顯式放行(研究/debug,結果不可當已驗證)。
+ALLOW_FUTURE_POOL = os.getenv("SWING_ALLOW_FUTURE_POOL", "").strip() == "1"
+
 # 價格來源。FinMind 的 TaiwanStockPrice 是未還原價；論文級研究建議改用
 # TaiwanStockPriceAdj（backer/sponsor）並用 SWING_PRICE_DATASET 覆寫。
 PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
