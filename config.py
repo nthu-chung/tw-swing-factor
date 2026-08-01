@@ -265,6 +265,13 @@ BT_TAX = 0.003           # 證交稅（賣出）
 BT_MODEL_LIMIT_LOCK = os.getenv("SWING_MODEL_LIMIT_LOCK", "1").strip() != "0"
 BT_LIMIT_PCT = 0.095     # 判定鎖漲跌停的跳空門檻(略低於 10% 容 tick 圓整)
 
+# ── 處置期間禁新倉(需先跑 twse_disposition.py 建處置快取)──────────────────
+# 處置期間改分盤集合競價(每5/20分)+預收款券+停信用,實務難以在開盤正常建倉。
+# 開此模型:處置期間內的股票不得新建倉(禁新倉)。預設關(需處置快取,clean clone
+# 沒有);SWING_MODEL_DISPOSITION=1 開啟,快取缺則自動 no-op。處置期間為 twse_disposition
+# 由真實注意推導(proxy,偏寬),故此為保守(略微過度禁倉)的執行真實性防護。
+BT_MODEL_DISPOSITION = os.getenv("SWING_MODEL_DISPOSITION", "").strip() == "1"
+
 # ── 市場濾網 / 擇時 overlay（下檔保護；方向A：不做空、不做 regime 切換模型）──
 # 2026-07-21 加。在 momentum_only 多頭策略上疊加「大盤走弱→降曝險」的總開關。
 # 設計原則（守鐵則、避免 n=1 過擬合）：用教科書級、少參數、不需 grid-search 的

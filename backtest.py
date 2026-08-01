@@ -76,6 +76,29 @@ def _assert_price_integrity(symbols: List[str]) -> None:
         )
 
 
+# ── 處置期間禁新倉:載入處置日集 {sid -> set(交易日)}────────────────────────
+def _load_disposition_days(all_dates) -> Dict[str, set]:
+    """讀 twse_disposition 建的處置期間快取,展開成 {sid -> set(處置交易日)}。
+
+    需先跑 twse_disposition.py 建 disposition__ALL__<snapshot>.pkl;缺檔則回 {}(no-op)。
+    """
+    if not getattr(config, "BT_MODEL_DISPOSITION", False):
+        return {}
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    path = config.CACHE_DIR / f"disposition__ALL__{snap}.pkl"
+    if not path.exists():
+        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無處置快取({path.name}),"
+              f"先跑 twse_disposition.py;本次不套處置禁倉。")
+        return {}
+    try:
+        import twse_disposition
+        disp = pd.read_pickle(path)
+        return twse_disposition.disposition_day_set(disp, all_dates)
+    except Exception as e:
+        print(f"[backtest] 處置快取載入失敗:{type(e).__name__};不套處置禁倉。")
+        return {}
+
+
 # ── 一字鎖漲/跌停判定(可成交性)──────────────────────────────────────────
 def _limit_lock(bar: pd.Series, prev_close: Optional[float]) -> Optional[str]:
     """回傳 'up'/'down'/None:當日是否一字鎖漲/跌停。
@@ -412,6 +435,8 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     n_filter_exits = 0
     n_regime_switches = 0
     n_limit_skip = 0            # 因一字漲停買不到而跳過的進場數
+    n_disp_skip = 0            # 因處置期間禁新倉而跳過的進場數
+    disp_days = _load_disposition_days(all_dates)   # {sid -> set(處置交易日)}
     _prev_riskoff = False
 
     # 投組狀態
@@ -548,6 +573,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     break
                 if sid in positions:
                     continue  # 已持有不重複買
+                if disp_days and d in disp_days.get(sid, ()):
+                    n_disp_skip += 1
+                    continue  # 處置期間(分盤+預收款券)→ 禁新倉
                 bar, idx = _price_row(sid, d)
                 if bar is None or idx == 0:
                     continue
@@ -648,6 +676,10 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         "limit_lock": {
             "modeled": config.BT_MODEL_LIMIT_LOCK,
             "n_entries_skipped_limit_up": n_limit_skip,
+        },
+        "disposition": {
+            "modeled": bool(disp_days),
+            "n_entries_skipped_disposition": n_disp_skip,
         },
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
         "market_filter": {
