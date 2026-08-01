@@ -125,16 +125,24 @@ def _quintile_spread(panel: pd.DataFrame, fac: pd.Series) -> float:
 def run(pool=300):
     symbols = uni.get_research_candidates(candidate_pool_n=pool)
     print(f"[scan] 候選池 {len(symbols)} 檔｜snapshot {config.SNAPSHOT_END_DATE}｜建 panel …")
-    panel = backtest._prepare_panel(symbols, 0.0, None, None, dynamic_enabled=True)
+    # keep_non_members=True:保留全 panel(連續個股序列)→ ts_ 算子不在稀疏成員日 rolling
+    # (避免『20日窗其實跨非連續成員日』的失真);IC 再過濾到 in_dynamic_universe 成員。
+    panel = backtest._prepare_panel(symbols, 0.0, None, None,
+                                    dynamic_enabled=True, keep_non_members=True)
     if panel.empty:
         print("[scan] panel 為空。"); return
     panel = panel.dropna(subset=["fwd_ret"]).reset_index(drop=True)
     ind = panel["stock_id"].map(uni.get_industry_map()).fillna("(未知)")
-    ops = op.PanelOps(panel["date"], panel["stock_id"])
+    ops = op.PanelOps(panel["date"], panel["stock_id"])    # 綁全 panel(連續)
     h = max(1, config.BT_IC_HORIZON)
 
-    # IS/OS 切分(時間)
-    dates = np.sort(panel["date"].unique())
+    # IC/分層只在動態池成員上算(算子已在連續序列上算好,這裡只挑成員列評估)
+    member_idx = (panel.index[panel["in_dynamic_universe"].fillna(False)]
+                  if "in_dynamic_universe" in panel else panel.index)
+    pmem = panel.loc[member_idx]
+
+    # IS/OS 切分(時間;用成員列的日期)
+    dates = np.sort(pmem["date"].unique())
     cut = dates[int(len(dates) * config.IS_OS_SPLIT)]
     os_start = dates[min(len(dates) - 1, int(len(dates) * config.IS_OS_SPLIT) + config.EMBARGO_DAYS)]
     is_dates = set(dates[dates <= cut]); os_dates = set(dates[dates >= os_start])
@@ -144,19 +152,20 @@ def run(pool=300):
     fac_series = {}
     for name, fn in lib.items():
         try:
-            fac = fn(panel, ops, ind).astype(float)
+            fac = fn(panel, ops, ind).astype(float)   # 在連續全 panel 上算(含 ts_)
         except Exception as e:
             print(f"[scan] {name} 失敗:{type(e).__name__}: {e}"); continue
-        fac_series[name] = fac
-        full = _ic_stats(_daily_ic(panel, fac), h)
-        isc = _ic_stats(_daily_ic(panel, fac, is_dates), h)
-        osc = _ic_stats(_daily_ic(panel, fac, os_dates), h)
+        facm = fac.loc[member_idx]                     # 評估只取動態池成員列
+        fac_series[name] = facm
+        full = _ic_stats(_daily_ic(pmem, facm), h)
+        isc = _ic_stats(_daily_ic(pmem, facm, is_dates), h)
+        osc = _ic_stats(_daily_ic(pmem, facm, os_dates), h)
         rows[name] = {
             "factor": name,
             "ic": full["mean_ic"], "t": full["t_stat"], "n": full["n_days"],
             "ic_is": isc["mean_ic"], "t_is": isc["t_stat"],
             "ic_os": osc["mean_ic"], "t_os": osc["t_stat"],
-            "q5q1": round(_quintile_spread(panel, fac), 4),
+            "q5q1": round(_quintile_spread(pmem, facm), 4),
         }
 
     df = pd.DataFrame(rows.values())

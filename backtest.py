@@ -119,7 +119,8 @@ def _check_exit(bar: pd.Series, pos: dict, days_held: int) -> Optional[tuple]:
 def _prepare_panel(symbols: List[str], min_score_for_trade: float,
                    start_date: Optional[str], end_date: Optional[str],
                    dynamic_enabled: Optional[bool] = None,
-                   universe_top_n: Optional[int] = None) -> pd.DataFrame:
+                   universe_top_n: Optional[int] = None,
+                   keep_non_members: bool = False) -> pd.DataFrame:
     """
     把所有股票每一天的因子 + 綜合分數 + 未來N日報酬，攤平成一個大 panel。
     這個 panel 同時用於 (1) 整體回測選股 (2) 因子 IC 分析。
@@ -198,6 +199,14 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
 
     panel = pd.concat(records, ignore_index=True)
     _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
+    # 候選池真實建構日(provenance),非硬編快照日;取不到(舊池無 as_of)才退回快照。
+    _pool_asof = _asof
+    if dynamic_enabled:
+        try:
+            import build_universe as _bu
+            _pool_asof = _bu.load_asof(universe_top_n) or _asof
+        except Exception:
+            pass
     universe_meta = {
         "enabled": dynamic_enabled,
         "direction": "long_only",
@@ -209,8 +218,8 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         # 產業分類非 PIT:用「當前」TaiwanStockInfo 套整段歷史(族群/濾金融用),
         # 缺歷史當時的產業標籤。族群輪動研究(S07/S08/S15)須把此標記納入解讀。
         "industry_pit": False,
-        "industry_asof": _asof,
-        "candidate_pool_asof": _asof,
+        "industry_asof": _asof,          # = 資料快照日(TaiwanStockInfo 以此戳快取)
+        "candidate_pool_asof": _pool_asof,  # 候選池 json 的真實 as_of provenance
     }
     if dynamic_enabled:
         ranked = dynamic_universe.add_membership(
@@ -227,7 +236,10 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
             "min_avg_volume_lots": config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
             **dynamic_universe.membership_summary(ranked),
         })
-        panel = ranked[ranked["in_dynamic_universe"]].copy()
+        # keep_non_members:保留非成員列(+in_dynamic_universe 旗標),讓 operator
+        # 型因子能在「連續」個股序列上算 ts_(避免只在稀疏成員日 rolling 的失真);
+        # IC/選股仍應自行過濾 in_dynamic_universe。預設維持舊行為(只留成員)。
+        panel = ranked if keep_non_members else ranked[ranked["in_dynamic_universe"]].copy()
     else:
         panel["in_dynamic_universe"] = True
 
@@ -409,7 +421,31 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             pos = positions[sid]
             bar, idx = _price_row(sid, d)
             if bar is None:
-                continue  # 當天該股沒資料，續抱
+                # 缺 bar：短期停牌續抱;但長期缺 bar(下市/長停牌)= 殭屍部位,不能
+                # 永遠凍結在 last_close、佔住部位槽、逃過所有出場判定(_check_exit 只在
+                # 有 bar 時才呼叫)。超過 BT_STALE_EXIT_DAYS 個交易日沒 bar → 視為下市,
+                # 以最後已知收盤強制平倉(survivorship-free 重跑時才不會忽略下市虧損)。
+                stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
+                if stale >= config.BT_STALE_EXIT_DAYS:
+                    exit_price = pos["last_close"]
+                    proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                    cash += proceeds
+                    gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
+                    net = proceeds / pos["cost"] - 1.0
+                    trades.append({
+                        "stock_id": sid, "name": pos["name"],
+                        "signal_date": pos["signal_date"],
+                        "entry_date": pos["entry_date"], "exit_date": d,
+                        "entry_price": round(pos["entry_price"], 2),
+                        "exit_price": round(exit_price, 2),
+                        "hold_bars": di - pos.get("entry_di", di),
+                        "gross_ret": round(gross, 4),
+                        "ret": round(net, 4),
+                        "exit_reason": "stale_delisted",
+                        "composite": round(pos["composite"], 2),
+                    })
+                    del positions[sid]
+                continue  # 當天該股沒資料(未達門檻)→ 續抱
             if idx <= pos["entry_idx"]:
                 continue  # 進場當天不在這裡出（出場判定從進場日的 _check_exit 已含）
             pos["ma_exit_today"] = float(bar["ma_exit"]) if "ma_exit" in bar else np.nan
@@ -501,6 +537,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     "ma_exit_today": np.nan,
                     "pending_ma_exit": False,
                     "last_close": entry_price,      # MTM 缺 bar 時延用最後收盤(見下)
+                    "entry_di": di, "last_bar_di": di,  # 全域日索引,供缺bar殭屍出場
                 }
 
         # ── 3) 收盤 mark-to-market：投組淨值 = 現金 + 各部位市值 ──────
@@ -512,6 +549,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             bar, _ = _price_row(sid, d)
             if bar is not None:
                 pos["last_close"] = float(bar["close"])
+                pos["last_bar_di"] = di        # 記最後有 bar 的日,供缺bar殭屍出場計齡
             mtm += pos["shares"] * pos["last_close"]
         equity = mtm
         equity_curve.append((d, equity))

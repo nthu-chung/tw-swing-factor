@@ -240,6 +240,10 @@ BT_EXIT_MODE = "trend"
 BT_MA_EXIT = 20          # 收盤跌破此均線（MA20）即出場（搭配 MA60 為更慢的版本）
 BT_TREND_STOP_LOSS = 0.08  # 硬停損 -8%（趨勢沒走出來時的保命線）
 BT_MAX_HOLD_DAYS = 120   # 最長持有（約半年上限，避免殭屍部位）
+# 缺 bar(下市/長停牌)超過此交易日數 → 視為下市,以最後已知收盤強制平倉。
+# 沒有這道,缺 bar 部位會逃過所有出場判定、永遠凍結佔槽,survivorship-free 重跑時
+# 會忽略下市虧損(偏樂觀)。10 日 ≈ 兩週無交易。
+BT_STALE_EXIT_DAYS = 10
 
 # fixed 模式參數（僅 BT_EXIT_MODE="fixed" 時生效）
 BT_HOLD_DAYS = 20        # 固定持有天數
