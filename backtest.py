@@ -352,6 +352,22 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             all_dates = [d for d in all_dates if d <= pd.to_datetime(end_date)]
     date_pos = {d: i for i, d in enumerate(all_dates)}
 
+    # universe 資訊:external picks 路徑沒有 panel,給一個安全的 metadata（避免
+    # summary 讀 panel.attrs 時 UnboundLocalError）。誠實標籤沿用同一組。
+    _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
+    if external_picks:
+        universe_info = {
+            "enabled": dynamic_enabled, "direction": "long_only",
+            "candidate_source": "external_picks_by_date",
+            "survivorship_free": False, "industry_pit": False,
+            "industry_asof": _asof, "candidate_pool_asof": _asof,
+        }
+    else:
+        universe_info = panel.attrs.get("universe", {
+            "enabled": dynamic_enabled, "direction": "long_only",
+            "top_n": universe_top_n if dynamic_enabled else None,
+        })
+
     # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
     filter_on = bool(getattr(config, "MARKET_FILTER_ENABLED", False))
     riskoff_map = market_riskoff_map() if filter_on else {}
@@ -558,11 +574,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "n_filter_exits": n_filter_exits,
             "n_regime_switches": n_regime_switches,
         },
-        "universe": panel.attrs.get("universe", {
-            "enabled": dynamic_enabled,
-            "direction": "long_only",
-            "top_n": universe_top_n if dynamic_enabled else None,
-        }),
+        "universe": universe_info,
         "data": {
             "price_dataset": getattr(config, "PRICE_DATASET", "TaiwanStockPrice"),
             "adjusted_price": price_integrity.is_adjusted_price_dataset(
