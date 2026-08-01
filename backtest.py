@@ -76,6 +76,31 @@ def _assert_price_integrity(symbols: List[str]) -> None:
         )
 
 
+# ── 一字鎖漲/跌停判定(可成交性)──────────────────────────────────────────
+def _limit_lock(bar: pd.Series, prev_close: Optional[float]) -> Optional[str]:
+    """回傳 'up'/'down'/None:當日是否一字鎖漲/跌停。
+
+    鎖死特徵:全日只有一個價位(high==low,無盤中區間),且相對前收跳空 ≈ ±10%。
+    一字漲停 → 委買遠大於委賣,實務買不到;一字跌停 → 賣不掉。用已有 OHLC 即可判,
+    不需額外漲跌停資料表。
+    """
+    if prev_close is None or prev_close <= 0:
+        return None
+    try:
+        hi = float(bar["high"]); lo = float(bar["low"]); o = float(bar["open"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if hi != lo:                      # 有盤中高低差 = 沒鎖死,可成交
+        return None
+    gap = o / prev_close - 1.0
+    thr = getattr(config, "BT_LIMIT_PCT", 0.095)
+    if gap >= thr:
+        return "up"
+    if gap <= -thr:
+        return "down"
+    return None
+
+
 # ── 單筆部位的「當日出場判定」────────────────────────────────────────────
 def _check_exit(bar: pd.Series, pos: dict, days_held: int) -> Optional[tuple]:
     """
@@ -386,6 +411,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     riskoff_weight = float(getattr(config, "MARKET_FILTER_RISKOFF_WEIGHT", 0.0))
     n_filter_exits = 0
     n_regime_switches = 0
+    n_limit_skip = 0            # 因一字漲停買不到而跳過的進場數
     _prev_riskoff = False
 
     # 投組狀態
@@ -448,6 +474,11 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 continue  # 當天該股沒資料(未達門檻)→ 續抱
             if idx <= pos["entry_idx"]:
                 continue  # 進場當天不在這裡出（出場判定從進場日的 _check_exit 已含）
+            # 一字跌停：賣不掉,今日不成交,順延到下一個能成交日(被迫續抱,虧損擴大)。
+            if config.BT_MODEL_LIMIT_LOCK and idx > 0:
+                pc = price_cache[sid]["close"].iloc[idx - 1]
+                if _limit_lock(bar, float(pc)) == "down":
+                    continue
             pos["ma_exit_today"] = float(bar["ma_exit"]) if "ma_exit" in bar else np.nan
             days_held = idx - pos["entry_idx"]
             ex = _check_exit(bar, pos, days_held)
@@ -520,6 +551,11 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 bar, idx = _price_row(sid, d)
                 if bar is None or idx == 0:
                     continue
+                # 一字漲停:委買遠大於委賣,實務買不到 → 跳過此候選(不佔幻想成交)。
+                if config.BT_MODEL_LIMIT_LOCK:
+                    if _limit_lock(bar, float(price_cache[sid]["close"].iloc[idx - 1])) == "up":
+                        n_limit_skip += 1
+                        continue
                 entry_price = float(bar["open"])
                 if not np.isfinite(entry_price) or entry_price <= 0:
                     continue
@@ -609,6 +645,10 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         "calmar": round(calmar, 3) if calmar == calmar else float("nan"),
         "max_drawdown": round(max_dd, 4),
         "exit_breakdown": exit_breakdown,
+        "limit_lock": {
+            "modeled": config.BT_MODEL_LIMIT_LOCK,
+            "n_entries_skipped_limit_up": n_limit_skip,
+        },
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
         "market_filter": {
             "enabled": filter_on,
