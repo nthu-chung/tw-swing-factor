@@ -500,14 +500,19 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     "cost": alloc, "shares": shares,
                     "ma_exit_today": np.nan,
                     "pending_ma_exit": False,
+                    "last_close": entry_price,      # MTM 缺 bar 時延用最後收盤(見下)
                 }
 
         # ── 3) 收盤 mark-to-market：投組淨值 = 現金 + 各部位市值 ──────
+        # 缺 bar(停牌/被清理列)時延用「最後一次已知收盤」,不回退成本價——回退成本
+        # 會讓權益曲線在缺 bar 日假跳到成本、隔日跳回,灌大波動/回撤;且下市股不會
+        # 被凍結在成本價(那在 survivorship-free 重跑時會變成忽略下市虧損的樂觀偏誤)。
         mtm = cash
         for sid, pos in positions.items():
             bar, _ = _price_row(sid, d)
-            px = float(bar["close"]) if bar is not None else pos["entry_price"]
-            mtm += pos["shares"] * px
+            if bar is not None:
+                pos["last_close"] = float(bar["close"])
+            mtm += pos["shares"] * pos["last_close"]
         equity = mtm
         equity_curve.append((d, equity))
 

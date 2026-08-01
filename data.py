@@ -447,18 +447,25 @@ def fetch_market_index(history_days: int = None) -> pd.DataFrame:
 
 
 # ── 整合：一次取得單檔所有資料 ──────────────────────────────────────────
-def fetch_bundle(stock_id: str, history_days: int = None) -> dict:
+def fetch_bundle(stock_id: str, history_days: int = None,
+                 include_extras: bool = False) -> dict:
     """
-    回傳 {'price':df, 'inst':df, 'margin':df, 'lending':df, 'fholding':df}。
+    回傳 {'price':df, 'inst':df, 'margin':df[, 'lending', 'fholding']}。
     任何一項抓不到就是空 DataFrame。
+
+    2026-07-24:預設**不抓** lending / fholding。compute_factors 從不使用這兩類
+    (全庫 grep 確認無消費者),照抓等於每檔多打 2/5 支 FinMind 免費配額、無因子價值,
+    還提高中途 402 用盡風險(曾在整池刷新時觸發)。需要時傳 include_extras=True。
     """
-    return {
+    bundle = {
         "price": fetch_price(stock_id, history_days),
         "inst": fetch_institutional(stock_id, history_days),
         "margin": fetch_margin(stock_id, history_days),
-        "lending": fetch_lending(stock_id, history_days),
-        "fholding": fetch_foreign_holding(stock_id, history_days),
     }
+    if include_extras:
+        bundle["lending"] = fetch_lending(stock_id, history_days)
+        bundle["fholding"] = fetch_foreign_holding(stock_id, history_days)
+    return bundle
 
 
 if __name__ == "__main__":
