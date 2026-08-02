@@ -187,6 +187,28 @@ def _clean_price_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
 
 
+def _maybe_self_adjust(stock_id: str, df: pd.DataFrame, dataset: str) -> pd.DataFrame:
+    """未還原資料集 + SELF_ADJUST_PRICES 開啟時,用除權息結果自建還原價。
+
+    快取存的是原始價,還原在讀取後套用 —— 這樣快照戳語意不變,且關掉旗標即可
+    退回原始價做對照,不必清快取。
+    """
+    if not getattr(config, "SELF_ADJUST_PRICES", False):
+        return df
+    if dataset == "TaiwanStockPriceAdj":      # 官方已還原,不重複套
+        return df
+    if df is None or df.empty:
+        return df
+    try:
+        import price_adjust
+        out = price_adjust.adjust_price_frame(stock_id, df)
+        out.attrs["price_dataset"] = f"{dataset}+selfadj"
+        return out
+    except Exception as e:
+        print(f"[data] {stock_id} 自建還原價失敗:{type(e).__name__};退回原始價。")
+        return df
+
+
 def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     """
     日線資料，欄位：date, open, high, low, close, volume(股), turnover
@@ -198,7 +220,7 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     if cached is not None:
         out = _clean_price_frame(cached)
         out.attrs["price_dataset"] = dataset
-        return out
+        return _maybe_self_adjust(stock_id, out, dataset)
     start, end = _date_range(history_days)
     df = _finmind_get(dataset, stock_id, start, end)
     if df.empty:
@@ -221,8 +243,8 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = _clean_price_frame(df)
     df.attrs["price_dataset"] = dataset
-    _save_cache(cache_key, stock_id, df)
-    return df
+    _save_cache(cache_key, stock_id, df)   # 快取存**原始**價,還原在讀取後套用
+    return _maybe_self_adjust(stock_id, df, dataset)
 
 
 # ── 3. 三大法人買賣超 ───────────────────────────────────────────────────

@@ -49,6 +49,39 @@ def _assert_price_integrity(symbols: List[str]) -> None:
     dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
     if price_integrity.is_adjusted_price_dataset(dataset):
         return
+    # 自建還原價:除權息已用官方 before/after 參考價回溯還原(price_adjust.py)。
+    # 這裡**不直接放行** —— 仍對「還原後」的序列跑斷點掃描,因為自建還原只涵蓋
+    # 除權息,分割/減資/面額變更不在 DividendResult 裡。殘留的大跳空正是那一類,
+    # 而它們夠大、掃描看得到,所以對這個殘留類別而言掃描是有效的。
+    if getattr(config, "SELF_ADJUST_PRICES", False):
+        threshold = getattr(config, "PRICE_INTEGRITY_RETURN_THRESHOLD",
+                            price_integrity.DEFAULT_DISCONTINUITY_THRESHOLD)
+        frames = {}
+        for sid in symbols:
+            p = data.fetch_price(sid)          # 已還原
+            if p is not None and not p.empty:
+                frames[sid] = p
+        audit = price_integrity.audit_price_frames(frames, threshold=threshold)
+        if audit.empty:
+            return
+        out = config.OUTPUT_DIR / "price_integrity_audit.csv"
+        try:
+            audit.to_csv(out, index=False, encoding="utf-8-sig")
+        except Exception:
+            pass
+        bad = sorted(audit["stock_id"].unique())
+        if getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False):
+            print(f"[backtest] ⚠ 自建還原後仍有 {len(audit)} 筆殘留斷點(涉及 {len(bad)} 檔:"
+                  f"{bad[:8]}{'…' if len(bad) > 8 else ''}),逃生門開啟故放行。"
+                  f"這些多為分割/減資,不在除權息還原範圍內。")
+            return
+        raise RuntimeError(
+            f"[fail-closed] 自建還原價後仍有 {len(audit)} 筆殘留斷點(門檻 {threshold:.0%},"
+            f"涉及 {len(bad)} 檔),多為分割/減資/面額變更 —— 不在除權息還原範圍。\n"
+            f"  審計明細:{out}\n"
+            f"  解法:(a) 從候選池排除這些股票;(b) SWING_ALLOW_UNADJUSTED=1 放行"
+            f"(結果標 integrity_bypassed);(c) 改用付費還原價資料集。"
+        )
     if getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False):
         print("[backtest] ⚠ 未還原價逃生門開啟(SWING_ALLOW_UNADJUSTED=1):結果含公司"
               "行動污染(除權息/分割/減資跳空)、非真實績效,請勿當已驗證數字引用。")
