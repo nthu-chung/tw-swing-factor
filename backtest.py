@@ -85,24 +85,48 @@ def _assert_price_integrity(symbols: List[str]) -> None:
 
 # ── 處置期間禁新倉:載入處置日集 {sid -> set(交易日)}────────────────────────
 def _load_disposition_days(all_dates) -> Dict[str, set]:
-    """讀 twse_disposition 建的處置期間快取,展開成 {sid -> set(處置交易日)}。
+    """合併上市(TWSE)+上櫃(TPEx)處置期間,展開成 {sid -> set(處置交易日)}。
 
-    需先跑 twse_disposition.py 建 disposition__ALL__<snapshot>.pkl;缺檔則回 {}(no-op)。
+    需先跑 twse_disposition.py / tpex_disposition.py 建快取;兩邊都缺則回 {}(no-op)。
+
+    2026-08-02 加上櫃:原本只讀 TWSE 快取,但候選池裡上櫃約佔四分之一(top100 22 檔
+    /top300 76 檔),且上櫃多為中小型冷門股、更容易被列注意處置 —— 只保護上市等於
+    保護在最需要的地方缺席。只載到單邊時會明講缺哪邊,不靜默半套。
+
+    來源品質不同,`source` 欄位據實標示:上市是由注意「推導」(derived,偏寬),
+    上櫃是官方真實起訖(tpex_disposal_actual)。
     """
     if not getattr(config, "BT_MODEL_DISPOSITION", False):
         return {}
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
-    path = config.CACHE_DIR / f"disposition__ALL__{snap}.pkl"
-    if not path.exists():
-        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無處置快取({path.name}),"
-              f"先跑 twse_disposition.py;本次不套處置禁倉。")
+    sources = {
+        "上市(TWSE,推導)": config.CACHE_DIR / f"disposition__ALL__{snap}.pkl",
+        "上櫃(TPEx,真實)": config.CACHE_DIR / f"disposition_tpex__ALL__{snap}.pkl",
+    }
+    frames, loaded, missing = [], [], []
+    for label, path in sources.items():
+        if not path.exists():
+            missing.append(f"{label}→{path.name}")
+            continue
+        try:
+            frames.append(pd.read_pickle(path))
+            loaded.append(label)
+        except Exception as e:
+            missing.append(f"{label}(載入失敗 {type(e).__name__})")
+    if not frames:
+        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無任何處置快取"
+              f"({'、'.join(missing)}),先跑 twse_disposition.py / tpex_disposition.py;"
+              f"本次不套處置禁倉。")
         return {}
+    if missing:
+        print(f"[backtest] ⚠ 處置禁倉只涵蓋 {'、'.join(loaded)};缺 {'、'.join(missing)} "
+              f"→ 該市場的處置期間不受保護,結果偏樂觀。")
     try:
         import twse_disposition
-        disp = pd.read_pickle(path)
+        disp = pd.concat(frames, ignore_index=True)
         return twse_disposition.disposition_day_set(disp, all_dates)
     except Exception as e:
-        print(f"[backtest] 處置快取載入失敗:{type(e).__name__};不套處置禁倉。")
+        print(f"[backtest] 處置快取合併失敗:{type(e).__name__};不套處置禁倉。")
         return {}
 
 
