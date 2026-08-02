@@ -121,15 +121,18 @@ ALLOW_FUTURE_POOL = os.getenv("SWING_ALLOW_FUTURE_POOL", "").strip() == "1"
 # TaiwanStockPriceAdj（backer/sponsor）並用 SWING_PRICE_DATASET 覆寫。
 PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
 
-# ── 未還原價 fail-closed 閘門（2026-07-24 加）──────────────────────────────
+# ── 未還原價 fail-closed 閘門（2026-07-24 加；2026-08-02 收緊）──────────────
 # 未還原價會被公司行動（除權息/分割/減資）污染 → 假停損/假 MA 出場、選股排名被
-# 機械性壓低。backtest._prepare_panel 會在未還原價且偵測到斷點時直接 raise，拒絕
-# 產出假績效。要跑污染 smoke test 才顯式打開逃生門（結果 summary 會戳
-# integrity_bypassed=True，不可當已驗證數字）。
+# 機械性壓低。backtest._prepare_panel 在未還原價時**一律** raise，拒絕產出假績效。
+# 要跑污染 smoke test 才顯式打開逃生門（結果 summary 會戳 integrity_bypassed=True，
+# 不可當已驗證數字）。
 ALLOW_UNADJUSTED_BACKTEST = os.getenv("SWING_ALLOW_UNADJUSTED", "").strip() == "1"
-# 斷點偵測門檻：台股單日漲跌幅 ±10%，任何隔夜/收盤跳空 > 11% 幾乎必為公司行動或
-# 壞列，故用 0.11（比 price_integrity 預設 0.20 嚴），才攔得到 3~10% 的除權息缺口
-# 以外、10~20% 的分割/減資（0.20 會漏接約 76/82 筆真斷點）。
+# 斷點偵測門檻。**這是審計報表的可見度門檻，不是保護機制本身。**
+# 原本寫「0.11 才攔得到除權息缺口」是錯的：台股現金股息除息缺口約 3~5%，在 ±10%
+# 漲跌停帶內，和真實走勢在 OHLC 上無法區分；門檻壓到漲跌停以下不會救回這些缺口，
+# 只會把真實漲跌停全部誤判（實測 top100 快取：11% 命中 34 筆，9% 命中 2458 筆）。
+# 所以放行與否只看資料集是否還原（見 price_integrity.should_block_unadjusted_backtest），
+# 這個門檻只決定審計 CSV 裡列出哪些「大到看得見」的斷點供人工診斷。
 PRICE_INTEGRITY_RETURN_THRESHOLD = float(
     os.getenv("SWING_PRICE_INTEGRITY_THRESHOLD", "0.11").strip() or "0.11"
 )
