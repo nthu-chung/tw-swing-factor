@@ -1,5 +1,9 @@
 # 市場濾網 / 擇時 overlay 研究報告
 
+> ⚠️ **歷史 static-universe 報告。** 基線績效存在 universe selection bias，
+> 濾網相對結論需在動態 PIT universe 上重跑後才能引用。
+> 最新結果見 [DYNAMIC_UNIVERSE_REPORT.md](./DYNAMIC_UNIVERSE_REPORT.md)。
+
 > 2026-07-21 接力研究（human 拍板方向 A：不做空、不做 regime 切換模型，只加下檔保護總開關）。
 > 資料快照 `SNAPSHOT_END_DATE=2026-06-22`、universe top100、rebalance 5 日 / 持有 5 檔、
 > trend 退場、基線 = 上線 `momentum_only`。

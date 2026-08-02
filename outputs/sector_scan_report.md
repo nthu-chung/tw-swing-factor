@@ -1,5 +1,8 @@
 # 族群輪動掃描報告
 
+> ⚠️ **歷史 static candidate-pool 報告。** 尚未使用每日動態 universe，原 OS IC
+> 不再視為已驗證結論；更新後程式會先套 daily membership 再聚合族群。
+
 > 研究池 top300｜族群=FinMind官方產業別（≥5檔）｜未來報酬窗 20 日
 > IS/OS 切分 2025-10-02 / OS起 2025-11-01
 

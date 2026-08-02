@@ -33,6 +33,7 @@ import pandas as pd
 
 import config
 import data
+import dynamic_universe
 import factors
 import universe as uni
 
@@ -45,7 +46,9 @@ IS_FRAC = 0.60
 
 def _load_stock_panels(pool: int):
     """逐檔抓資料算因子，回傳 {sid: df}（含 close/ma/mom/inst 等）與 industry map。"""
-    symbols = uni.get_universe(top_n=pool)
+    target = min(pool, config.DYNAMIC_UNIVERSE_TOP_N)
+    symbols = uni.get_research_candidates(universe_top_n=target,
+                                          candidate_pool_n=pool)
     imap = uni.get_industry_map()
     nmap = uni.get_name_map()
     print(f"[sector] 研究池 top{pool}：{len(symbols)} 檔，載入中 …")
@@ -54,8 +57,9 @@ def _load_stock_panels(pool: int):
         f = factors.compute_factors(data.fetch_bundle(sid))
         if f.empty:
             continue
-        panels[sid] = f[["date", "close", "ma_short", "ma_long",
-                         "mom_ret", "inst_6d", "trend_ok"]].copy()
+        panels[sid] = f[["date", "close", "volume", "turnover",
+                         "ma_short", "ma_long", "mom_ret", "inst_6d",
+                         "trend_ok"]].copy()
         if i % 50 == 0:
             print(f"  … {i}/{len(symbols)}")
     return panels, imap, nmap
@@ -83,10 +87,23 @@ def _build_sector_daily(panels: dict, imap: dict):
                 fwd[t] = c[t + FWD] / c[t] - 1.0
         d["fwd_ret"] = fwd
         d["above_ma20"] = (d["close"] > d["ma_short"]).astype(float)
+        d["stock_id"] = sid
         d["industry"] = ind
-        rows.append(d[["date", "industry", "mom_ret", "above_ma20",
-                       "inst_6d", "fwd_ret"]])
+        rows.append(d[["stock_id", "date", "industry", "close", "volume",
+                       "turnover", "mom_ret", "above_ma20", "inst_6d",
+                       "fwd_ret"]])
     long = pd.concat(rows, ignore_index=True)
+
+    if config.DYNAMIC_UNIVERSE_ENABLED:
+        ranked = dynamic_universe.add_membership(
+            long,
+            top_n=min(POOL, config.DYNAMIC_UNIVERSE_TOP_N),
+            lookback=config.DYNAMIC_UNIVERSE_LOOKBACK,
+            min_obs=config.DYNAMIC_UNIVERSE_MIN_OBS,
+            min_avg_volume_lots=config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
+            min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
+        )
+        long = ranked[ranked["in_dynamic_universe"]].copy()
 
     # 過濾：族群股數需 >= MIN_SECTOR_N
     sec_counts = long.groupby("industry")["mom_ret"].count()
@@ -240,7 +257,8 @@ def _save(agg, cur, last_date, lag, is_ic, os_ic, cut, os_start, hot):
     lines = [
         "# 族群輪動掃描報告",
         "",
-        f"> 研究池 top{POOL}｜族群=FinMind官方產業別（≥{MIN_SECTOR_N}檔）｜未來報酬窗 {FWD} 日",
+        f"> 候選池 current top{POOL}；每日動態 top{min(POOL, config.DYNAMIC_UNIVERSE_TOP_N)}"
+        f"｜族群=FinMind官方產業別（≥{MIN_SECTOR_N}檔）｜未來報酬窗 {FWD} 日",
         f"> IS/OS 切分 {pd.Timestamp(cut).date()} / OS起 {pd.Timestamp(os_start).date()}",
         "",
         "## Q2 族群動能延續性（關鍵：能不能『提早抓族群』的前提）",

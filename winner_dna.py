@@ -62,6 +62,8 @@ FEATURES = [
 
 def _load_panel(pool: int) -> pd.DataFrame:
     """逐檔抓資料、算因子，疊成一張大表（含未來最大漲幅標籤）。"""
+    # DNA 是舊的事件標籤研究，尚未接入 daily membership；維持明確的
+    # static candidate pool，避免把 current top300 誤標成 dynamic top200。
     symbols = uni.get_universe(top_n=pool)
     rank_map = {sid: r for r, sid in enumerate(symbols, 1)}  # 成交值排名（市值代理，H4）
     print(f"[dna] 研究池 top{pool}：{len(symbols)} 檔，開始抓資料/算因子 …")

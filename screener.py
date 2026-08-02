@@ -62,9 +62,16 @@ def screen(
     - pool：用「成交值前 N 大」池（需先跑 build_universe.py N），優先於 sample。
     - sample：pool 未指定時，universe 用小集合（True）或全市場（False）。
     """
+    dynamic_enabled = config.DYNAMIC_UNIVERSE_ENABLED and (pool is not None or not sample)
     if symbols is None:
         if pool:
-            symbols = uni.get_universe(top_n=pool)
+            if dynamic_enabled:
+                symbols = uni.get_research_candidates(
+                    universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
+                    candidate_pool_n=pool,
+                )
+            else:
+                symbols = uni.get_universe(top_n=pool)
         else:
             symbols = uni.get_universe(sample=sample)
     name_map = uni.get_name_map()
@@ -94,7 +101,7 @@ def screen(
             continue
 
         # pre-filter：流動性
-        if not uni.passes_liquidity(price):
+        if not dynamic_enabled and not uni.passes_liquidity(price):
             skipped["liquidity"] += 1
             continue
 
@@ -114,10 +121,10 @@ def screen(
         else:
             row = f.iloc[-1]
 
-        # pre-filter：趨勢保護硬門檻
-        if config.TREND_GUARD_ENABLED and not bool(row.get("trend_ok", False)):
-            skipped["trend"] += 1
-            continue
+        hist = f[f["date"] <= row["date"]].tail(config.DYNAMIC_UNIVERSE_LOOKBACK)
+        valid_hist = hist[
+            (hist["close"] > 0) & (hist["volume"] > 0) & (hist["turnover"] > 0)
+        ]
 
         score = factors.composite_score(row)
         rows.append({
@@ -127,6 +134,15 @@ def screen(
             "date": row["date"].strftime("%Y-%m-%d"),
             "close": round(float(row["close"]), 2),
             "composite": score,
+            "trend_ok": bool(row.get("trend_ok", False)),
+            "universe_obs": len(valid_hist),
+            "universe_avg_turnover": (
+                float(valid_hist["turnover"].mean()) if len(valid_hist) else float("nan")
+            ),
+            "universe_avg_volume_lots": (
+                float(valid_hist["volume"].mean() / 1000.0)
+                if len(valid_hist) else float("nan")
+            ),
             "inst_6d": round(float(row.get("inst_6d", 0) or 0), 3),
             "inst_12d": round(float(row.get("inst_12d", 0) or 0), 3),
             "bb_pos": round(float(row.get("bb_pos", 0) or 0), 3),
@@ -149,7 +165,31 @@ def screen(
             print(f"[screen] 無符合條件標的。skipped={skipped}")
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows).sort_values("composite", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows)
+    if dynamic_enabled:
+        eligible = (
+            (df["universe_obs"] >= config.DYNAMIC_UNIVERSE_MIN_OBS)
+            & (df["universe_avg_volume_lots"]
+               >= config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS)
+            & (df["universe_avg_turnover"]
+               >= config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER)
+        )
+        skipped["liquidity"] += int((~eligible).sum())
+        df = (
+            df[eligible]
+            .sort_values(["universe_avg_turnover", "stock_id"],
+                         ascending=[False, True])
+            .head(config.DYNAMIC_UNIVERSE_TOP_N)
+            .copy()
+        )
+        df["universe_rank"] = range(1, len(df) + 1)
+
+    if config.TREND_GUARD_ENABLED:
+        failed_trend = ~df["trend_ok"]
+        skipped["trend"] += int(failed_trend.sum())
+        df = df[~failed_trend].copy()
+
+    df = df.sort_values("composite", ascending=False).reset_index(drop=True)
     df["reason"] = df.apply(_build_reasons, axis=1)
 
     # 門檻過濾 + 取前 N

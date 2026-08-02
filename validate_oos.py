@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-階段三：樣本外（OOS）嚴格驗證
-==============================
-已上線的 mom_quality 權重（momentum/ma_alignment/margin_health）是用「全期 IC」
-挑出來的。本腳本回答唯一關鍵問題：
+階段三：樣本外（OOS）「時間穩健性」檢查（非乾淨 OOS）
+====================================================
+⚠ 重要：本專案沒有真正乾淨的 OOS。權重/exit/門檻都已反覆看過同一段 2024-2026 資料
+（全期 IC 選權重、config 演化史、WEIGHT_SETS 十幾組同資料比較）。因此本腳本測的是
+「固定權重在後段沒被特別擬合的時間還行不行」＝時間穩健性，**不是**選股流程的純樣本外。
+真正的乾淨 OOS 只能靠 freeze_manifest.py 凍結規則、forward_test.py 對凍結日之後的
+新資料 forward-only 驗證（見那兩支）。
 
-    這組權重的 edge 是樣本外站得住的真 edge，還是 in-sample 過擬合？
+現行 baseline = config.FACTOR_WEIGHTS（momentum_only）；bootstrap 顯著性檢定對象
+已對齊為 momentum_only，並強制與同期「等權買進持有」基準對照——OS 普漲時 CI 下界>0
+只是 beta，不當作 edge。本腳本回答：
+
+    這組權重的表現是時間穩健的，還是 in-sample 過擬合 / 只是普漲 beta？
 
 做兩件事：
   (1) IS/OS 時間切分：前 70% 找/看績效（IS）、後 30% 純樣本外（OS），中間留
@@ -99,17 +106,22 @@ def _metrics_from_equity(eq: pd.DataFrame) -> dict:
             "max_dd": mdd, "n_days": len(daily)}
 
 
-def _run(symbols, weights, start, end, rebalance, pick):
+def _run(symbols, weights, start, end, rebalance, pick, universe_top_n):
     config.FACTOR_WEIGHTS = copy.deepcopy(weights)
     res = backtest.backtest_portfolio(symbols=symbols, sample=False,
                                       start_date=start, end_date=end,
-                                      rebalance_every=rebalance, top_n=pick)
+                                      rebalance_every=rebalance, top_n=pick,
+                                      dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
+                                      universe_top_n=universe_top_n)
     return res
 
 
-def _split_dates(symbols, rebalance, pick):
+def _split_dates(symbols, rebalance, pick, universe_top_n):
     """先跑一次全期，取得所有交易日，算 IS/OS 切點與 embargo。"""
-    res = _run(symbols, WEIGHT_SETS["mom_quality(上線)"], None, None, rebalance, pick)
+    res = _run(
+        symbols, WEIGHT_SETS["mom_quality(上線)"], None, None,
+        rebalance, pick, universe_top_n,
+    )
     if "equity_curve" not in res:
         return None
     dates = pd.to_datetime(res["equity_curve"]["date"]).sort_values().reset_index(drop=True)
@@ -182,11 +194,11 @@ def _buyhold_baseline(symbols, start, end):
 
 
 def run(pool, rebalance, pick):
-    symbols = uni.get_universe(top_n=pool)
+    symbols = uni.get_research_candidates(universe_top_n=pool)
     print(f"[oos] universe top{pool} = {len(symbols)} 檔；rebalance={rebalance}日 / 持有{pick}檔")
     orig = copy.deepcopy(config.FACTOR_WEIGHTS)
 
-    sp = _split_dates(symbols, rebalance, pick)
+    sp = _split_dates(symbols, rebalance, pick, pool)
     if sp is None:
         print("[oos] 無法取得交易日，結束。")
         return
@@ -203,7 +215,7 @@ def run(pool, rebalance, pick):
             "IS": (sp["is_start"], sp["is_end"]),
             "OS": (sp["os_start"], sp["os_end"]),
         }.items():
-            res = _run(symbols, w, st, en, rebalance, pick)
+            res = _run(symbols, w, st, en, rebalance, pick, pool)
             if "equity_curve" not in res:
                 rows.append({"weights": label, "seg": seg, "error": res.get("error", "?")})
                 continue
@@ -214,7 +226,9 @@ def run(pool, rebalance, pick):
                 "n_trades": s.get("n_trades"), "win_rate": s.get("win_rate"),
                 **m,
             })
-            if label == "mom_quality(上線)" and seg == "OS":
+            # bootstrap 綁「現行 baseline momentum_only」（= config.FACTOR_WEIGHTS），
+            # 不再綁已被否決的 mom_quality。顯著性檢定對象要與實際在用的權重一致。
+            if label == "momentum_only" and seg == "OS":
                 os_equity_for_boot = res["equity_curve"]
 
     config.FACTOR_WEIGHTS = orig  # 還原
@@ -286,7 +300,10 @@ def _print_and_save(df, boot, bh, sp, pool, rebalance, pick):
         "> [WEIGHT_FIX_REPORT.md](./WEIGHT_FIX_REPORT.md)。",
         ">",
         f"> 資料快照 {getattr(config, 'SNAPSHOT_END_DATE', 'now') or 'now'}｜"
-        f"universe top{pool}｜rebalance {rebalance}日 / 持有{pick}檔｜trend 退場",
+        f"每日動態 universe top{pool}（候選 current top{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}）"
+        f"｜rebalance {rebalance}日 / 持有{pick}檔｜trend 退場",
+        "> ⚠ 候選池仍是 current-pool bootstrap，`survivorship_free=False`；"
+        "這不是最終論文級 PIT OOS。",
         f"> 全期 {sp['is_start']} ~ {sp['os_end']}（{sp['n_total']} 交易日）",
         f"> **IS** {sp['is_start']} ~ {sp['is_end']}　|　embargo {config.EMBARGO_DAYS}日　|　"
         f"**OS** {sp['os_start']} ~ {sp['os_end']}",
@@ -309,10 +326,30 @@ def _print_and_save(df, boot, bh, sp, pool, rebalance, pick):
         "",
     ]
     if boot:
+        # beta 判定：OS 若是普漲行情（等權買進持有也大賺、上漲家數極高），bootstrap
+        # CI 下界 > 0 只反映 beta，不代表選股 alpha。這裡把作者原本只印到 console 的
+        # buy&hold 基準寫進報告，並讓結論在 beta 情境下自動降級，不再無條件背書。
+        beta_like = bh is not None and (
+            bh.get("up_ratio", 0.0) >= 0.80
+            or (np.isfinite(bh.get("mean", np.nan)) and boot["ann_med"] <= bh["mean"])
+        )
+        if beta_like:
+            verdict = (
+                f"> ⚠ **這不是 alpha 的證據**：同期 top{pool} 等權買進持有平均 "
+                f"{bh['mean']:+.0%}、上漲家數 {bh['up_ratio']:.0%}，OS 為普漲行情（beta）。"
+                "bootstrap CI 下界 > 0 幾乎必然，只反映普漲、不代表選股有超額 edge。"
+                "真正的鑑別看 IS 段與『報酬明顯超越買進持有』的幅度。"
+            )
+        elif boot["ann_lo"] > 0:
+            verdict = ("> ✓ **年化 CI 下界 > 0 且非明顯普漲**：樣本外有初步正 edge"
+                       "（仍受單一多頭窗 + 候選池倖存者偏誤限制，非乾淨 OOS）。")
+        else:
+            verdict = ("> ⚠ **年化 CI 下界 ≤ 0**：樣本外未達顯著，不能排除是運氣。")
         lines += [
-            f"## (2) OS Block Bootstrap（n={N_BOOT}, block={BLOCK}日, {int(CI*100)}% CI）",
+            f"## (2) OS Block Bootstrap（momentum_only baseline；n={N_BOOT}, "
+            f"block={BLOCK}日, {int(CI*100)}% CI）",
             "",
-            "對 OS 每日報酬做區塊重抽樣（保留自相關），估 mom_quality 樣本外績效的不確定性。",
+            "對 OS 每日報酬做區塊重抽樣（保留自相關），估現行 baseline 樣本外績效的不確定性。",
             "",
             "| 指標 | 中位數 | " + f"{int(CI*100)}% 信賴區間 |",
             "|---|---|---|",
@@ -320,12 +357,15 @@ def _print_and_save(df, boot, bh, sp, pool, rebalance, pick):
             f"| Sharpe | {boot['sharpe_med']:.2f} | [{boot['sharpe_lo']:.2f}, {boot['sharpe_hi']:.2f}] |",
             f"| P(年化>0) | {boot['p_ann_pos']:.1%} | — |",
             "",
-            ("> ✓ **年化 CI 下界 > 0**：樣本外有統計上站得住的正 edge，mom_quality 維持上線合理。"
-             if boot['ann_lo'] > 0 else
-             "> ⚠ **年化 CI 下界 ≤ 0**：樣本外 edge 未達顯著，不能排除是運氣。建議降低部位／"
-             "再等更長資料，或回到 legacy 做更保守配置。"),
-            "",
         ]
+        if bh is not None:
+            lines += [
+                f"> **OS 段 top{pool} 等權買進持有基準**：平均 {bh['mean']:+.1%} / 中位 "
+                f"{bh['median']:+.1%} / 上漲家數 {bh['up_ratio']:.0%}（n={bh['n']}）。"
+                "策略 OS 報酬須**明顯超越此基準**才算 alpha，否則只是 beta。",
+                "",
+            ]
+        lines += [verdict, ""]
     lines += [
         "## 重要保留（誠實聲明）",
         "",

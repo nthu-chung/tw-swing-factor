@@ -1,5 +1,9 @@
 # 階段三：樣本外（OOS）驗證報告
 
+> ⚠️ **歷史報告，不能視為乾淨 OOS。** 除權重曾用全期資料外，候選池也是期末
+> static top100；後續證明單一動態路徑也有嚴重相位敏感度，不能取代本報告。
+> 最新結果見 [ROTATION_STRATEGY_REVIEW.html](./ROTATION_STRATEGY_REVIEW.html)。
+
 > ⚠️ **本檔由 `validate_oos.py` 每次跑都會自動覆寫**。下方候選裡的
 > 「mom_quality(上線)」是 WEIGHT_SETS dict key 的歷史殘留標籤,實際
 > 上線權重以 `config.FACTOR_WEIGHTS` 為準。最新決策見

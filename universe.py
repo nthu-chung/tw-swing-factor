@@ -17,6 +17,35 @@ import config
 import data
 
 
+def _assert_universe_pit(pool_asof: str, top_n: int) -> None:
+    """候選池 PIT 檢查:池的建構日不得晚於資料快照,否則 = 未來池 look-ahead。
+
+    build_universe 打 openapi 只能取『當日』全市場,故池永遠是建構日當下的存活+熱門股。
+    若池建於晚於 SNAPSHOT_END_DATE(例如推進快照做研究、卻沒重建池,或反之用了較新的池),
+    等於用未來的成交值排名/存活性回套過去 → 選股 look-ahead。這裡 fail-closed 擋下。
+    SWING_ALLOW_FUTURE_POOL=1 可顯式放行(研究/debug 用,結果不可當已驗證)。
+    無 provenance(舊池無 as_of)時只警告,無法驗證 PIT。
+    """
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
+    if not snap:
+        return                                   # live 模式不檢查
+    if not pool_asof:
+        print(f"[universe] ⚠ top{top_n} 候選池無建構日(as_of)provenance,無法驗證 PIT;"
+              f"請以新版 build_universe.py 重建以取得 as_of 戳。")
+        return
+    if pool_asof > snap:
+        if getattr(config, "ALLOW_FUTURE_POOL", False):
+            print(f"[universe] ⚠ 候選池建於 {pool_asof} 晚於快照 {snap}(未來池 look-ahead),"
+                  f"SWING_ALLOW_FUTURE_POOL=1 已放行——結果含選股前視,不可當已驗證。")
+            return
+        raise RuntimeError(
+            f"[fail-closed] top{top_n} 候選池建於 {pool_asof},晚於資料快照 {snap} → "
+            f"用未來的成交值排名/存活性回套過去 = 選股 look-ahead。\n"
+            f"  解法:(a) 用 SWING_SNAPSHOT_END >= {pool_asof} 的快照;或 (b) 以 <= {snap} 的日期"
+            f"重建候選池;或 (c) 顯式 SWING_ALLOW_FUTURE_POOL=1(結果不可當已驗證)。"
+        )
+
+
 def _is_normal_stock(stock_id: str, market_type: str) -> bool:
     """4 碼數字、上市或上櫃普通股。"""
     if not (len(stock_id) == 4 and stock_id.isdigit()):
@@ -34,18 +63,21 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
     - 否則：全市場上市櫃普通股。
     """
     if top_n:
+        import build_universe
         try:
-            import build_universe
             ids = build_universe.load(top_n)
-            if ids:
-                seen, out = set(), []
-                for s in ids:
-                    if s not in seen:
-                        seen.add(s); out.append(s)
-                return out
-            print(f"[universe] 找不到 top{top_n} 池，請先跑 build_universe.py")
+            asof = build_universe.load_asof(top_n)
         except Exception as e:
             print(f"[universe] 載入 top{top_n} 失敗：{e}")
+            ids, asof = [], None
+        if ids:
+            _assert_universe_pit(asof, top_n)   # PIT 違規(未來池)直接 raise,不吞
+            seen, out = set(), []
+            for s in ids:
+                if s not in seen:
+                    seen.add(s); out.append(s)
+            return out
+        print(f"[universe] 找不到 top{top_n} 池，請先跑 build_universe.py")
 
     if sample:
         seen, out = set(), []
@@ -71,6 +103,36 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
             continue
         out.append(sid)
     return sorted(set(out))
+
+
+def get_research_candidates(universe_top_n: int = None,
+                            candidate_pool_n: int = None) -> List[str]:
+    """Return the candidate set used to build a daily dynamic universe.
+
+    ``universe_top_n`` is the desired number of eligible names per date.  When
+    dynamic-universe mode is enabled, candidates must be broader than that
+    daily target; the current bootstrap uses the saved current top300 file.
+
+    This removes direct *daily ranking* look-ahead, but it does not make a
+    current top300 candidate file survivorship-free.  The backtest metadata
+    reports this limitation explicitly.
+    """
+    target = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    if not config.DYNAMIC_UNIVERSE_ENABLED:
+        return get_universe(top_n=target)
+
+    pool = candidate_pool_n or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL
+    if pool < target:
+        raise ValueError(
+            f"動態 universe 候選池({pool})不可小於每日目標({target})"
+        )
+    ids = get_universe(top_n=pool)
+    if len(ids) < target:
+        raise ValueError(
+            f"候選池只有 {len(ids)} 檔，少於動態 universe 目標 {target}；"
+            f"請先跑 `.venv/bin/python build_universe.py {pool}`"
+        )
+    return ids
 
 
 def get_industry_map() -> Dict[str, str]:

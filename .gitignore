@@ -4,6 +4,9 @@ _cache/
 # 輸出：報告(.md)進版控當研究成果，其餘(csv/log/json/pickle)排除
 outputs/*
 !outputs/*.md
+# 例外：重現回測必需的候選池 fixture + 不可覆寫的凍結 manifest 要進版控
+!outputs/universe_top*.json
+!outputs/FROZEN_MANIFEST_*.json
 
 # 環境與密鑰（不要把 FinMind token 進版控）
 .env
