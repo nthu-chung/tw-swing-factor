@@ -11,7 +11,7 @@
 - 每次實驗固定資料截止日、universe 定義、參數與 benchmark。
 - 不因每日新資料自動改寫歷史結果。
 - 新聞、營收與事件只能在實際可得時間之後進入特徵。
-- 未還原價出現異常斷點時整個績效實驗 fail-closed；不得刪一筆交易後繼續宣稱。
+- 未還原價一律 fail-closed，不論斷點掃描有無命中；不得刪一筆交易後繼續宣稱。
 
 ### Live monitoring snapshot
 
@@ -148,7 +148,7 @@
 
 | 規範承諾 | 強制點（程式） | 行為 |
 |---|---|---|
-| 未還原價異常斷點 fail-closed（§1/§6） | `backtest._assert_price_integrity`（`_prepare_panel` 與外部注入 picks 兩條路都擋） | 未還原價 + 偵測到 >11% 斷點 → **raise 拒跑**，寫 `outputs/price_integrity_audit.csv` |
+| 未還原價 fail-closed（§1/§6） | `backtest._assert_price_integrity`（`_prepare_panel` 與外部注入 picks 兩條路都擋） | 未還原價 → **一律 raise 拒跑**，並寫 `outputs/price_integrity_audit.csv` 當診斷。斷點掃描**不是**放行條件：除息缺口 3~5% 在 ±10% 漲跌停帶內，掃描看不到，命中 0 筆不代表乾淨 |
 | 逃生門（僅 smoke） | `SWING_ALLOW_UNADJUSTED=1` | 放行但 `summary.data.integrity_bypassed=True`，結果不得當已驗證 |
 | Frozen snapshot 不漂移（§1） | `data._cache_path` 把 `SNAPSHOT_END_DATE` 編進檔名 + `_load_cache` 裁超過快照的列 | 改 cutoff → cache miss → **真重抓**；不再靜默回舊/未來資料 |
 | 訊號時間 vs 可成交時間（§6） | `_check_exit` 的 `pending_ma_exit` | 收盤跌破 MA → **下一交易日開盤**成交，非當根收盤 |
@@ -185,7 +185,7 @@ export SWING_PRICE_DATASET=TaiwanStockPriceAdj   # 需 FinMind 付費/sponsor to
 # 路線2(僅 smoke、結果標 bypassed):未還原價逃生門
 SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
 
-# 不設任何一個 → 未還原價偵測到斷點會直接 fail-closed raise(這是預期行為)
+# 不設任何一個 → 未還原價一律 fail-closed raise(這是預期行為,不看斷點掃描結果)
 ```
 
 ### D. 要「宣稱」一個策略前（唯一能升級到 Clean OOS/Forward-only 的路）

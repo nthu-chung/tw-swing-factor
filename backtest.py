@@ -35,16 +35,22 @@ import universe as uni
 
 # ── 未還原價 fail-closed 閘門（下沉到所有績效/因子路徑的共同咽喉點）─────────
 def _assert_price_integrity(symbols: List[str]) -> None:
-    """未還原價下,偵測到公司行動斷點就拒跑,避免產出被污染的假 Sharpe。
+    """未還原價一律拒跑,避免產出被公司行動污染的假 Sharpe。
 
     - 還原價資料集（TaiwanStockPriceAdj）→ 直接放行。
     - 顯式 SWING_ALLOW_UNADJUSTED=1 → 印警告後放行（結果會在 summary 戳
       integrity_bypassed=True，不可當已驗證數字）。
-    - 否則:對候選股票的價格序列跑斷點審計,只要命中就寫審計檔並 raise。
+    - 否則:未還原價一律 raise,並附上斷點審計檔當診斷資料。
 
     以前只有 rotation_research.main 有這道閘門;backtest/validate_oos/factor_audit
     /screener 等主路徑都沒接,等於文件宣稱的 fail-closed 對主回測失效。這裡下沉
     到 _prepare_panel,讓所有共用引擎的路徑一律受保護。
+
+    2026-08-02 修:原本是「未還原價 *且* 審計命中」才擋,等於把「掃描沒掃到」
+    當成「價格乾淨」的證據。但掃描門檻不可能壓到 ±10% 漲跌停以下(否則真實漲跌停
+    全被誤判),而台股現金股息除息缺口約 3~5%,結構上就在掃描的盲區裡。實測:
+    top100 命中 11 檔,把那 11 檔拿掉,剩 89 檔審計為空 → 舊邏輯直接放行,但那
+    89 檔仍有 1716 筆 3~10% 隔夜跳空無法與真實走勢區分。審計改為純診斷用途。
     """
     dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
     if price_integrity.is_adjusted_price_dataset(dataset):
@@ -68,9 +74,10 @@ def _assert_price_integrity(symbols: List[str]) -> None:
         except Exception:
             pass
         raise RuntimeError(
-            f"[fail-closed] 未還原價資料集({dataset})偵測到 {len(audit)} 筆異常價格斷點"
-            f"(分割/減資/除權息/壞列,門檻 {threshold:.0%})，主回測拒跑以免產出假 Sharpe。\n"
-            f"  審計明細已存:{out}\n"
+            f"[fail-closed] 資料集 {dataset} 是未還原價,主回測拒跑以免產出假 Sharpe。\n"
+            f"  斷點審計(門檻 {threshold:.0%})命中 {len(audit)} 筆,已存:{out}\n"
+            f"  註:審計只是診斷,不是放行條件。除息缺口約 3~5%,在 ±10% 漲跌停以下,"
+            f"掃描結構上看不到 —— 命中 0 筆不代表價格乾淨。\n"
             f"  解法:(a) 改用還原價 SWING_PRICE_DATASET=TaiwanStockPriceAdj + survivorship-free PIT；"
             f"或 (b) 顯式 SWING_ALLOW_UNADJUSTED=1 跑污染 smoke test(結果不可當已驗證)。"
         )
