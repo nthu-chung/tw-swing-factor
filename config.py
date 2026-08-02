@@ -121,6 +121,17 @@ ALLOW_FUTURE_POOL = os.getenv("SWING_ALLOW_FUTURE_POOL", "").strip() == "1"
 # TaiwanStockPriceAdj（backer/sponsor）並用 SWING_PRICE_DATASET 覆寫。
 PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
 
+# ── 自建還原價（2026-08-03 加）──────────────────────────────────────────
+# TaiwanStockPriceAdj 需付費層（register 層打回 400），但 TaiwanStockDividendResult
+# 免費可用且直接給 before_price/after_price → 比值即還原因子，可自己回溯還原。
+# 預設開：未還原價的除息缺口會被回測當成真實下跌（實測國巨 2024-08-15 原始 -16.51%
+# → 還原後 -0.24%），台股常見 3~5% 殖利率對上 -8% 硬停損，會系統性製造假停損。
+# SWING_SELF_ADJUST=0 可關掉做對照。詳見 price_adjust.py 的界線聲明。
+#
+# 與下方 fail-closed 閘門的關係：自建還原**只涵蓋除權息**，分割/減資不在
+# DividendResult 裡，所以閘門仍對「還原後」序列跑殘留斷點掃描才放行。
+SELF_ADJUST_PRICES = os.getenv("SWING_SELF_ADJUST", "1").strip() != "0"
+
 # ── 未還原價 fail-closed 閘門（2026-07-24 加；2026-08-02 收緊）──────────────
 # 未還原價會被公司行動（除權息/分割/減資）污染 → 假停損/假 MA 出場、選股排名被
 # 機械性壓低。backtest._prepare_panel 在未還原價時**一律** raise，拒絕產出假績效。
