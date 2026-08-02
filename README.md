@@ -39,6 +39,8 @@ tw-swing-factor/
 ├── rank_flow_strategy.py # 四種 causal rank-flow 訊號與 T+1 事件研究
 ├── quiet_sponsor_strategy.py # 法人吸收＋低波壓縮突破的 forward-only 原型
 ├── price_integrity.py # 公司行動／異常價格斷點 fail-closed 稽核
+├── twse_disposition.py # 上市注意/處置資料層（由注意推導處置期間，derived）
+├── tpex_disposition.py # 上櫃注意/處置資料層（官方直接給真實起訖，actual）
 ├── STRATEGY_REGISTRY.md # 所有既有策略、狀態、偏誤與下一個證偽測試
 ├── main.py          # 統一入口（命令列）
 ├── _cache/          # 原始資料快取（自動產生，已 gitignore）

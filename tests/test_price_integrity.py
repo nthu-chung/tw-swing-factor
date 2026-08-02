@@ -88,6 +88,53 @@ class PriceIntegrityTest(unittest.TestCase):
             )
         )
 
+    def test_empty_audit_does_not_certify_unadjusted_prices(self):
+        """回歸鎖:審計為空 != 價格乾淨。
+
+        除息缺口約 3~5%，在 ±10% 漲跌停帶內，掃描結構上看不到。舊邏輯用
+        「掃描沒命中」當放行條件，等於把盲區當成清白證明。
+        """
+        # 連續 4% 的隔夜負跳空（典型現金股息除息幅度）——掃描完全看不到。
+        dividend_like = _prices(
+            closes=[100.0, 96.0, 96.0, 92.16],
+            opens=[100.0, 96.0, 96.0, 92.16],
+        )
+        audit = price_integrity.detect_price_discontinuities(dividend_like)
+        self.assertTrue(audit.empty, "4% 缺口本來就在門檻盲區內")
+
+        # 盲區沒訊號 → 仍必須擋下未還原價。
+        self.assertTrue(
+            price_integrity.should_block_unadjusted_backtest(
+                "TaiwanStockPrice", audit
+            )
+        )
+        # 連 audit 都沒傳（純看資料集）也要擋。
+        self.assertTrue(
+            price_integrity.should_block_unadjusted_backtest("TaiwanStockPrice")
+        )
+        # 還原價才放行。
+        self.assertFalse(
+            price_integrity.should_block_unadjusted_backtest(
+                "TaiwanStockPriceAdj", audit
+            )
+        )
+
+    def test_threshold_cannot_be_lowered_without_flagging_real_moves(self):
+        """把門檻壓到漲跌停以下,真實漲停會被誤判 —— 所以門檻不是解法。"""
+        limit_up = _prices(closes=[100.0, 109.5], opens=[100.0, 108.0])
+        # 9%(低於漲跌停)→ 真實漲停被誤標
+        self.assertFalse(
+            price_integrity.detect_price_discontinuities(
+                limit_up, threshold=0.09
+            ).empty
+        )
+        # 11%(高於漲跌停)→ 真實漲停不被誤標,但除息缺口也照樣看不到
+        self.assertTrue(
+            price_integrity.detect_price_discontinuities(
+                limit_up, threshold=0.11
+            ).empty
+        )
+
     def test_main_writes_audit_and_stops_before_evaluation(self):
         raw_frame = _prices(
             closes=[546.0, 143.0],
