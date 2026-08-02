@@ -610,15 +610,23 @@ def main():
         price_frames,
         threshold=integrity_threshold,
     )
-    if price_integrity.should_block_unadjusted_backtest(
+    if getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False) and not (
+        price_integrity.is_adjusted_price_dataset(config.PRICE_DATASET)
+    ):
+        print("[rotation_research] ⚠ 未還原價逃生門開啟(SWING_ALLOW_UNADJUSTED=1):"
+              "結果含公司行動污染,非真實績效,請勿當已驗證數字引用。")
+    elif price_integrity.should_block_unadjusted_backtest(
         config.PRICE_DATASET,
         integrity_audit,
     ):
         audit_path = config.OUTPUT_DIR / PRICE_INTEGRITY_AUDIT
         integrity_audit.to_csv(audit_path, index=False, encoding="utf-8-sig")
         raise RuntimeError(
-            "Price integrity fail-closed: unadjusted price data contains "
-            f"{len(integrity_audit)} abnormal discontinuities. Audit: {audit_path}. "
+            f"Price integrity fail-closed: {config.PRICE_DATASET} is an unadjusted "
+            f"dataset. The discontinuity scan is diagnostic only and flagged "
+            f"{len(integrity_audit)} rows; an empty scan would not mean clean prices, "
+            "because ex-dividend gaps sit below the daily limit and are invisible to "
+            f"it. Audit: {audit_path}. "
             "Do not estimate adjustment factors; rerun with an audited adjusted price "
             "dataset and survivorship-free PIT data."
         )
