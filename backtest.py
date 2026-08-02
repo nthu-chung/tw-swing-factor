@@ -35,16 +35,22 @@ import universe as uni
 
 # ── 未還原價 fail-closed 閘門（下沉到所有績效/因子路徑的共同咽喉點）─────────
 def _assert_price_integrity(symbols: List[str]) -> None:
-    """未還原價下,偵測到公司行動斷點就拒跑,避免產出被污染的假 Sharpe。
+    """未還原價一律拒跑,避免產出被公司行動污染的假 Sharpe。
 
     - 還原價資料集（TaiwanStockPriceAdj）→ 直接放行。
     - 顯式 SWING_ALLOW_UNADJUSTED=1 → 印警告後放行（結果會在 summary 戳
       integrity_bypassed=True，不可當已驗證數字）。
-    - 否則:對候選股票的價格序列跑斷點審計,只要命中就寫審計檔並 raise。
+    - 否則:未還原價一律 raise,並附上斷點審計檔當診斷資料。
 
     以前只有 rotation_research.main 有這道閘門;backtest/validate_oos/factor_audit
     /screener 等主路徑都沒接,等於文件宣稱的 fail-closed 對主回測失效。這裡下沉
     到 _prepare_panel,讓所有共用引擎的路徑一律受保護。
+
+    2026-08-02 修:原本是「未還原價 *且* 審計命中」才擋,等於把「掃描沒掃到」
+    當成「價格乾淨」的證據。但掃描門檻不可能壓到 ±10% 漲跌停以下(否則真實漲跌停
+    全被誤判),而台股現金股息除息缺口約 3~5%,結構上就在掃描的盲區裡。實測:
+    top100 命中 11 檔,把那 11 檔拿掉,剩 89 檔審計為空 → 舊邏輯直接放行,但那
+    89 檔仍有 1716 筆 3~10% 隔夜跳空無法與真實走勢區分。審計改為純診斷用途。
     """
     dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
     if price_integrity.is_adjusted_price_dataset(dataset):
@@ -101,9 +107,10 @@ def _assert_price_integrity(symbols: List[str]) -> None:
         except Exception:
             pass
         raise RuntimeError(
-            f"[fail-closed] 未還原價資料集({dataset})偵測到 {len(audit)} 筆異常價格斷點"
-            f"(分割/減資/除權息/壞列,門檻 {threshold:.0%})，主回測拒跑以免產出假 Sharpe。\n"
-            f"  審計明細已存:{out}\n"
+            f"[fail-closed] 資料集 {dataset} 是未還原價,主回測拒跑以免產出假 Sharpe。\n"
+            f"  斷點審計(門檻 {threshold:.0%})命中 {len(audit)} 筆,已存:{out}\n"
+            f"  註:審計只是診斷,不是放行條件。除息缺口約 3~5%,在 ±10% 漲跌停以下,"
+            f"掃描結構上看不到 —— 命中 0 筆不代表價格乾淨。\n"
             f"  解法:(a) 改用還原價 SWING_PRICE_DATASET=TaiwanStockPriceAdj + survivorship-free PIT；"
             f"或 (b) 顯式 SWING_ALLOW_UNADJUSTED=1 跑污染 smoke test(結果不可當已驗證)。"
         )
@@ -111,24 +118,48 @@ def _assert_price_integrity(symbols: List[str]) -> None:
 
 # ── 處置期間禁新倉:載入處置日集 {sid -> set(交易日)}────────────────────────
 def _load_disposition_days(all_dates) -> Dict[str, set]:
-    """讀 twse_disposition 建的處置期間快取,展開成 {sid -> set(處置交易日)}。
+    """合併上市(TWSE)+上櫃(TPEx)處置期間,展開成 {sid -> set(處置交易日)}。
 
-    需先跑 twse_disposition.py 建 disposition__ALL__<snapshot>.pkl;缺檔則回 {}(no-op)。
+    需先跑 twse_disposition.py / tpex_disposition.py 建快取;兩邊都缺則回 {}(no-op)。
+
+    2026-08-02 加上櫃:原本只讀 TWSE 快取,但候選池裡上櫃約佔四分之一(top100 22 檔
+    /top300 76 檔),且上櫃多為中小型冷門股、更容易被列注意處置 —— 只保護上市等於
+    保護在最需要的地方缺席。只載到單邊時會明講缺哪邊,不靜默半套。
+
+    來源品質不同,`source` 欄位據實標示:上市是由注意「推導」(derived,偏寬),
+    上櫃是官方真實起訖(tpex_disposal_actual)。
     """
     if not getattr(config, "BT_MODEL_DISPOSITION", False):
         return {}
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
-    path = config.CACHE_DIR / f"disposition__ALL__{snap}.pkl"
-    if not path.exists():
-        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無處置快取({path.name}),"
-              f"先跑 twse_disposition.py;本次不套處置禁倉。")
+    sources = {
+        "上市(TWSE,推導)": config.CACHE_DIR / f"disposition__ALL__{snap}.pkl",
+        "上櫃(TPEx,真實)": config.CACHE_DIR / f"disposition_tpex__ALL__{snap}.pkl",
+    }
+    frames, loaded, missing = [], [], []
+    for label, path in sources.items():
+        if not path.exists():
+            missing.append(f"{label}→{path.name}")
+            continue
+        try:
+            frames.append(pd.read_pickle(path))
+            loaded.append(label)
+        except Exception as e:
+            missing.append(f"{label}(載入失敗 {type(e).__name__})")
+    if not frames:
+        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無任何處置快取"
+              f"({'、'.join(missing)}),先跑 twse_disposition.py / tpex_disposition.py;"
+              f"本次不套處置禁倉。")
         return {}
+    if missing:
+        print(f"[backtest] ⚠ 處置禁倉只涵蓋 {'、'.join(loaded)};缺 {'、'.join(missing)} "
+              f"→ 該市場的處置期間不受保護,結果偏樂觀。")
     try:
         import twse_disposition
-        disp = pd.read_pickle(path)
+        disp = pd.concat(frames, ignore_index=True)
         return twse_disposition.disposition_day_set(disp, all_dates)
     except Exception as e:
-        print(f"[backtest] 處置快取載入失敗:{type(e).__name__};不套處置禁倉。")
+        print(f"[backtest] 處置快取合併失敗:{type(e).__name__};不套處置禁倉。")
         return {}
 
 

@@ -17,6 +17,14 @@ import pandas as pd
 # Taiwan stocks normally have a 10% daily price limit.  Twice that limit leaves
 # room for rounding and ordinary limit moves while still catching the much
 # larger discontinuities produced by splits and other corporate actions.
+#
+# This threshold governs *visibility in the audit report only*.  It is not, and
+# cannot be, the protection itself: an ordinary cash-dividend ex-date gap in
+# Taiwan is roughly 3-5%, which sits inside the +/-10% daily limit band and is
+# therefore indistinguishable from a genuine price move in OHLC-only data.
+# Lowering the threshold under the daily limit does not recover those gaps, it
+# just floods the audit with real limit moves (measured on the top100 cache:
+# 34 hits at 11%, 2458 at 9%).  See should_block_unadjusted_backtest.
 DEFAULT_DISCONTINUITY_THRESHOLD = 0.20
 
 AUDIT_COLUMNS = [
@@ -111,6 +119,37 @@ def is_adjusted_price_dataset(dataset: str) -> bool:
     return normalized.endswith("adj") or "adjusted" in normalized
 
 
-def should_block_unadjusted_backtest(dataset: str, audit: pd.DataFrame) -> bool:
-    """Core fail-closed decision used by the rotation research entry point."""
-    return not is_adjusted_price_dataset(dataset) and audit is not None and not audit.empty
+def should_block_unadjusted_backtest(
+    dataset: str,
+    audit: pd.DataFrame | None = None,
+) -> bool:
+    """Core fail-closed decision: block whenever the dataset is not adjusted.
+
+    The decision depends on the *dataset*, never on the audit result.  ``audit``
+    is accepted for call-site symmetry and reporting, and is deliberately not
+    consulted here.
+
+    Why the audit must not gate this
+    --------------------------------
+    An earlier version returned ``unadjusted and not audit.empty``, i.e. it
+    treated "the threshold scan found nothing" as evidence that unadjusted
+    prices were of adjusted quality.  That inference is invalid.  The scan can
+    only see discontinuities larger than the threshold, and the threshold cannot
+    go below the +/-10% daily limit without flagging genuine moves.  Ordinary
+    ex-dividend and ex-rights gaps are smaller than that, so they are structurally
+    invisible to it -- an empty audit is equally consistent with clean data and
+    with a history full of sub-threshold corporate actions.
+
+    Measured on the cached top100 universe: the audit flags 34 rows across 11
+    stocks at the 11% threshold, so the gate happens to fire.  Drop those 11
+    stocks and the audit is empty for the remaining 89 -- under the old rule the
+    backtest proceeded as if their prices were clean, while those 89 carry 1716
+    overnight gaps in the 3-10% band where corporate actions are unrecoverable
+    from OHLC alone.
+
+    Distinguishing a dividend gap from a real move needs corporate-action data
+    this repo does not have.  Until it does, the honest position is to refuse
+    unadjusted histories outright and let the caller opt in explicitly
+    (``SWING_ALLOW_UNADJUSTED=1``) for contaminated smoke tests.
+    """
+    return not is_adjusted_price_dataset(dataset)

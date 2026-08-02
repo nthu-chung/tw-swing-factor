@@ -127,17 +127,23 @@ PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
 # 預設開：未還原價的除息缺口會被回測當成真實下跌（實測國巨 2024-08-15 原始 -16.51%
 # → 還原後 -0.24%），台股常見 3~5% 殖利率對上 -8% 硬停損，會系統性製造假停損。
 # SWING_SELF_ADJUST=0 可關掉做對照。詳見 price_adjust.py 的界線聲明。
+#
+# 與下方 fail-closed 閘門的關係：自建還原**只涵蓋除權息**，分割/減資不在
+# DividendResult 裡，所以閘門仍對「還原後」序列跑殘留斷點掃描才放行。
 SELF_ADJUST_PRICES = os.getenv("SWING_SELF_ADJUST", "1").strip() != "0"
 
-# ── 未還原價 fail-closed 閘門（2026-07-24 加）──────────────────────────────
+# ── 未還原價 fail-closed 閘門（2026-07-24 加；2026-08-02 收緊）──────────────
 # 未還原價會被公司行動（除權息/分割/減資）污染 → 假停損/假 MA 出場、選股排名被
-# 機械性壓低。backtest._prepare_panel 會在未還原價且偵測到斷點時直接 raise，拒絕
-# 產出假績效。要跑污染 smoke test 才顯式打開逃生門（結果 summary 會戳
-# integrity_bypassed=True，不可當已驗證數字）。
+# 機械性壓低。backtest._prepare_panel 在未還原價時**一律** raise，拒絕產出假績效。
+# 要跑污染 smoke test 才顯式打開逃生門（結果 summary 會戳 integrity_bypassed=True，
+# 不可當已驗證數字）。
 ALLOW_UNADJUSTED_BACKTEST = os.getenv("SWING_ALLOW_UNADJUSTED", "").strip() == "1"
-# 斷點偵測門檻：台股單日漲跌幅 ±10%，任何隔夜/收盤跳空 > 11% 幾乎必為公司行動或
-# 壞列，故用 0.11（比 price_integrity 預設 0.20 嚴），才攔得到 3~10% 的除權息缺口
-# 以外、10~20% 的分割/減資（0.20 會漏接約 76/82 筆真斷點）。
+# 斷點偵測門檻。**這是審計報表的可見度門檻，不是保護機制本身。**
+# 原本寫「0.11 才攔得到除權息缺口」是錯的：台股現金股息除息缺口約 3~5%，在 ±10%
+# 漲跌停帶內，和真實走勢在 OHLC 上無法區分；門檻壓到漲跌停以下不會救回這些缺口，
+# 只會把真實漲跌停全部誤判（實測 top100 快取：11% 命中 34 筆，9% 命中 2458 筆）。
+# 所以放行與否只看資料集是否還原（見 price_integrity.should_block_unadjusted_backtest），
+# 這個門檻只決定審計 CSV 裡列出哪些「大到看得見」的斷點供人工診斷。
 PRICE_INTEGRITY_RETURN_THRESHOLD = float(
     os.getenv("SWING_PRICE_INTEGRITY_THRESHOLD", "0.11").strip() or "0.11"
 )
@@ -273,11 +279,17 @@ BT_TAX = 0.003           # 證交稅（賣出）
 BT_MODEL_LIMIT_LOCK = os.getenv("SWING_MODEL_LIMIT_LOCK", "1").strip() != "0"
 BT_LIMIT_PCT = 0.095     # 判定鎖漲跌停的跳空門檻(略低於 10% 容 tick 圓整)
 
-# ── 處置期間禁新倉(需先跑 twse_disposition.py 建處置快取)──────────────────
+# ── 處置期間禁新倉(需先跑 twse_disposition.py + tpex_disposition.py 建快取)────
 # 處置期間改分盤集合競價(每5/20分)+預收款券+停信用,實務難以在開盤正常建倉。
 # 開此模型:處置期間內的股票不得新建倉(禁新倉)。預設關(需處置快取,clean clone
-# 沒有);SWING_MODEL_DISPOSITION=1 開啟,快取缺則自動 no-op。處置期間為 twse_disposition
-# 由真實注意推導(proxy,偏寬),故此為保守(略微過度禁倉)的執行真實性防護。
+# 沒有);SWING_MODEL_DISPOSITION=1 開啟,兩邊快取都缺則自動 no-op、只有單邊會警告。
+#
+# 兩市場資料品質不同(source 欄位據實標示):
+#   上市 TWSE → 免費端點只給當前處置,歷史由真實「注意」用連續3日規則**推導**
+#               (derived,proxy 偏寬,略微過度禁倉)。
+#   上櫃 TPEx → bulletin/disposal 直接給歷史**真實處置起訖**(actual,不需推導)。
+# 2026-08-02 前只有上市,但候選池上櫃約佔 1/4(top100 22 檔中 16 檔曾被處置),
+# 等於保護在最需要的地方缺席;現已補齊(見 tpex_disposition.py)。
 BT_MODEL_DISPOSITION = os.getenv("SWING_MODEL_DISPOSITION", "").strip() == "1"
 
 # ── 市場濾網 / 擇時 overlay（下檔保護；方向A：不做空、不做 regime 切換模型）──
