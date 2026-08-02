@@ -1,0 +1,1002 @@
+[
+  {
+    "stock_id": "2330",
+    "name": "台積電",
+    "trade_value": 120198889493.0,
+    "close": 2410.0,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 1,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2327",
+    "name": "國巨*",
+    "trade_value": 97896306241.0,
+    "close": 1080.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 2,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2408",
+    "name": "南亞科",
+    "trade_value": 80554395206.0,
+    "close": 459.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 3,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2344",
+    "name": "華邦電",
+    "trade_value": 71264800231.0,
+    "close": 218.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 4,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2454",
+    "name": "聯發科",
+    "trade_value": 57436715170.0,
+    "close": 4390.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 5,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3481",
+    "name": "群創",
+    "trade_value": 53613975840.0,
+    "close": 64.4,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 6,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2303",
+    "name": "聯電",
+    "trade_value": 43965121072.0,
+    "close": 145.5,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 7,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2492",
+    "name": "華新科",
+    "trade_value": 37758460036.0,
+    "close": 561.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 8,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "4958",
+    "name": "臻鼎-KY",
+    "trade_value": 34577366585.0,
+    "close": 642.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 9,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2308",
+    "name": "台達電",
+    "trade_value": 27891157760.0,
+    "close": 2150.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 10,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3443",
+    "name": "創意",
+    "trade_value": 23249958325.0,
+    "close": 4860.0,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 11,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2409",
+    "name": "友達",
+    "trade_value": 22785902829.0,
+    "close": 28.15,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 12,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6239",
+    "name": "力成",
+    "trade_value": 22146406097.0,
+    "close": 363.5,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 13,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3711",
+    "name": "日月光投控",
+    "trade_value": 22115749226.0,
+    "close": 613.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 14,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2337",
+    "name": "旺宏",
+    "trade_value": 21124021399.0,
+    "close": 169.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 15,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3105",
+    "name": "穩懋",
+    "trade_value": 20852667000.0,
+    "close": 528.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 16,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3037",
+    "name": "欣興",
+    "trade_value": 20530868464.0,
+    "close": 968.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 17,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3189",
+    "name": "景碩",
+    "trade_value": 19845128175.0,
+    "close": 724.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 18,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "1303",
+    "name": "南亞",
+    "trade_value": 18641717663.0,
+    "close": 139.0,
+    "market": "TWSE",
+    "industry": "塑膠工業",
+    "rank": 19,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2317",
+    "name": "鴻海",
+    "trade_value": 18605623168.0,
+    "close": 268.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 20,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8299",
+    "name": "群聯",
+    "trade_value": 18339470000.0,
+    "close": 2530.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 21,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6770",
+    "name": "力積電",
+    "trade_value": 17947697838.0,
+    "close": 74.2,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 22,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2449",
+    "name": "京元電子",
+    "trade_value": 16053690850.0,
+    "close": 308.5,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 23,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8046",
+    "name": "南電",
+    "trade_value": 15684034501.0,
+    "close": 874.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 24,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3008",
+    "name": "大立光",
+    "trade_value": 15502262170.0,
+    "close": 5195.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 25,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3665",
+    "name": "貿聯-KY",
+    "trade_value": 14737787790.0,
+    "close": 2100.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 26,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6182",
+    "name": "合晶",
+    "trade_value": 13235730000.0,
+    "close": 120.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 27,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6488",
+    "name": "環球晶",
+    "trade_value": 12587885000.0,
+    "close": 1110.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 28,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2455",
+    "name": "全新",
+    "trade_value": 10794482187.0,
+    "close": 416.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 29,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2313",
+    "name": "華通",
+    "trade_value": 10624337565.0,
+    "close": 259.5,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 30,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2383",
+    "name": "台光電",
+    "trade_value": 10522532290.0,
+    "close": 5600.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 31,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2345",
+    "name": "智邦",
+    "trade_value": 10337317670.0,
+    "close": 2435.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 32,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3661",
+    "name": "世芯-KY",
+    "trade_value": 10285676640.0,
+    "close": 4380.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 33,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "7769",
+    "name": "鴻勁",
+    "trade_value": 10195362665.0,
+    "close": 6975.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 34,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "1301",
+    "name": "台塑",
+    "trade_value": 9689626723.0,
+    "close": 51.7,
+    "market": "TWSE",
+    "industry": "塑膠工業",
+    "rank": 35,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8996",
+    "name": "高力",
+    "trade_value": 9552369255.0,
+    "close": 1590.0,
+    "market": "TWSE",
+    "industry": "電機機械",
+    "rank": 36,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6669",
+    "name": "緯穎",
+    "trade_value": 9032292205.0,
+    "close": 5130.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 37,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "1802",
+    "name": "台玻",
+    "trade_value": 8756605361.0,
+    "close": 71.3,
+    "market": "TWSE",
+    "industry": "玻璃陶瓷",
+    "rank": 38,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3450",
+    "name": "聯鈞",
+    "trade_value": 8625074355.0,
+    "close": 565.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 39,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2382",
+    "name": "廣達",
+    "trade_value": 8486637672.0,
+    "close": 376.0,
+    "market": "TWSE",
+    "industry": "電腦及週邊設備業",
+    "rank": 40,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2478",
+    "name": "大毅",
+    "trade_value": 8470411442.0,
+    "close": 234.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 41,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3653",
+    "name": "健策",
+    "trade_value": 8079035725.0,
+    "close": 3965.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 42,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3017",
+    "name": "奇鋐",
+    "trade_value": 7964551140.0,
+    "close": 2400.0,
+    "market": "TWSE",
+    "industry": "電腦及週邊設備業",
+    "rank": 43,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8043",
+    "name": "蜜望實",
+    "trade_value": 7821806000.0,
+    "close": 226.5,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 44,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3090",
+    "name": "日電貿",
+    "trade_value": 7732687827.0,
+    "close": 332.5,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 45,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8150",
+    "name": "南茂",
+    "trade_value": 7412243362.0,
+    "close": 104.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 46,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2002",
+    "name": "中鋼",
+    "trade_value": 7393736086.0,
+    "close": 19.1,
+    "market": "TWSE",
+    "industry": "鋼鐵工業",
+    "rank": 47,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3231",
+    "name": "緯創",
+    "trade_value": 7375418700.0,
+    "close": 161.5,
+    "market": "TWSE",
+    "industry": "電腦及週邊設備業",
+    "rank": 48,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2472",
+    "name": "立隆電",
+    "trade_value": 7277513604.0,
+    "close": 402.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 49,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3042",
+    "name": "晶技",
+    "trade_value": 7010477355.0,
+    "close": 216.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 50,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6116",
+    "name": "彩晶",
+    "trade_value": 6821321284.0,
+    "close": 18.8,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 51,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "5289",
+    "name": "宜鼎",
+    "trade_value": 6538360000.0,
+    "close": 1930.0,
+    "market": "TPEX",
+    "industry": "電腦及週邊設備業",
+    "rank": 52,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6147",
+    "name": "頎邦",
+    "trade_value": 6453785000.0,
+    "close": 252.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 53,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2357",
+    "name": "華碩",
+    "trade_value": 6315668020.0,
+    "close": 789.0,
+    "market": "TWSE",
+    "industry": "電腦及週邊設備業",
+    "rank": 54,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6213",
+    "name": "聯茂",
+    "trade_value": 6307460704.0,
+    "close": 280.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 55,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6274",
+    "name": "台燿",
+    "trade_value": 6300575000.0,
+    "close": 1835.0,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 56,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6919",
+    "name": "康霈*",
+    "trade_value": 5809502422.0,
+    "close": 109.0,
+    "market": "TWSE",
+    "industry": "生技醫療業",
+    "rank": 57,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3081",
+    "name": "聯亞",
+    "trade_value": 5728715000.0,
+    "close": 2440.0,
+    "market": "TPEX",
+    "industry": "通信網路業",
+    "rank": 58,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6531",
+    "name": "愛普*",
+    "trade_value": 5513122857.0,
+    "close": 1025.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 59,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2379",
+    "name": "瑞昱",
+    "trade_value": 5412872173.0,
+    "close": 819.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 60,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3034",
+    "name": "聯詠",
+    "trade_value": 5297574356.0,
+    "close": 516.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 61,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3260",
+    "name": "威剛",
+    "trade_value": 5083332000.0,
+    "close": 423.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 62,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6223",
+    "name": "旺矽",
+    "trade_value": 4884370000.0,
+    "close": 6415.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 63,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2368",
+    "name": "金像電",
+    "trade_value": 4883241335.0,
+    "close": 1355.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 64,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6207",
+    "name": "雷科",
+    "trade_value": 4827783500.0,
+    "close": 165.5,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 65,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "4904",
+    "name": "遠傳",
+    "trade_value": 4608506949.0,
+    "close": 108.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 66,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2360",
+    "name": "致茂",
+    "trade_value": 4586800850.0,
+    "close": 2310.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 67,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "7610",
+    "name": "聯友金屬-創",
+    "trade_value": 4485610045.0,
+    "close": 2315.0,
+    "market": "TWSE",
+    "industry": "綠能環保",
+    "rank": 68,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2301",
+    "name": "光寶科",
+    "trade_value": 4481365110.0,
+    "close": 210.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 69,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6285",
+    "name": "啟碁",
+    "trade_value": 4259565688.0,
+    "close": 274.0,
+    "market": "TWSE",
+    "industry": "通信網路業",
+    "rank": 70,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2207",
+    "name": "和泰車",
+    "trade_value": 4223660721.0,
+    "close": 482.0,
+    "market": "TWSE",
+    "industry": "汽車工業",
+    "rank": 71,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "4979",
+    "name": "華星光",
+    "trade_value": 4155943000.0,
+    "close": 567.0,
+    "market": "TPEX",
+    "industry": "通信網路業",
+    "rank": 72,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2375",
+    "name": "凱美",
+    "trade_value": 4096493124.0,
+    "close": 219.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 73,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2404",
+    "name": "漢唐",
+    "trade_value": 4093864520.0,
+    "close": 1265.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 74,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3163",
+    "name": "波若威",
+    "trade_value": 4054373000.0,
+    "close": 893.0,
+    "market": "TPEX",
+    "industry": "通信網路業",
+    "rank": 75,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "5483",
+    "name": "中美晶",
+    "trade_value": 3959652500.0,
+    "close": 181.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 76,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6257",
+    "name": "矽格",
+    "trade_value": 3956426094.0,
+    "close": 235.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 77,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3044",
+    "name": "健鼎",
+    "trade_value": 3944350547.0,
+    "close": 573.0,
+    "market": "TWSE",
+    "industry": "電子零組件業",
+    "rank": 78,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6415",
+    "name": "矽力*-KY",
+    "trade_value": 3942579038.0,
+    "close": 629.0,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 79,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "4919",
+    "name": "新唐",
+    "trade_value": 3917569472.0,
+    "close": 196.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 80,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3036",
+    "name": "文曄",
+    "trade_value": 3855233740.0,
+    "close": 222.5,
+    "market": "TWSE",
+    "industry": "電子通路業",
+    "rank": 81,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3406",
+    "name": "玉晶光",
+    "trade_value": 3506376090.0,
+    "close": 753.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 82,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2464",
+    "name": "盟立",
+    "trade_value": 3494541927.0,
+    "close": 172.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 83,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "8358",
+    "name": "金居",
+    "trade_value": 3458032000.0,
+    "close": 700.0,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 84,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3357",
+    "name": "臺慶科",
+    "trade_value": 3442931500.0,
+    "close": 348.0,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 85,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3006",
+    "name": "晶豪科",
+    "trade_value": 3350345653.0,
+    "close": 237.5,
+    "market": "TWSE",
+    "industry": "半導體業",
+    "rank": 86,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "1519",
+    "name": "華城",
+    "trade_value": 3262260289.0,
+    "close": 833.0,
+    "market": "TWSE",
+    "industry": "電機機械",
+    "rank": 87,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3264",
+    "name": "欣銓",
+    "trade_value": 3179380000.0,
+    "close": 232.5,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 88,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2426",
+    "name": "鼎元",
+    "trade_value": 3167910606.0,
+    "close": 81.8,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 89,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6175",
+    "name": "立敦",
+    "trade_value": 3164537000.0,
+    "close": 114.0,
+    "market": "TPEX",
+    "industry": "電子零組件業",
+    "rank": 90,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2603",
+    "name": "長榮",
+    "trade_value": 3139126835.0,
+    "close": 193.0,
+    "market": "TWSE",
+    "industry": "航運業",
+    "rank": 91,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "1513",
+    "name": "中興電",
+    "trade_value": 3128902125.0,
+    "close": 176.5,
+    "market": "TWSE",
+    "industry": "電機機械",
+    "rank": 92,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2059",
+    "name": "川湖",
+    "trade_value": 3067596055.0,
+    "close": 6865.0,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 93,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2376",
+    "name": "技嘉",
+    "trade_value": 2998714255.0,
+    "close": 344.0,
+    "market": "TWSE",
+    "industry": "電腦及週邊設備業",
+    "rank": 94,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6446",
+    "name": "藥華藥",
+    "trade_value": 2989221930.0,
+    "close": 1060.0,
+    "market": "TWSE",
+    "industry": "生技醫療業",
+    "rank": 95,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "6209",
+    "name": "今國光",
+    "trade_value": 2956742479.0,
+    "close": 97.1,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 96,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3362",
+    "name": "先進光",
+    "trade_value": 2932373000.0,
+    "close": 211.0,
+    "market": "TPEX",
+    "industry": "光電業",
+    "rank": 97,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "3131",
+    "name": "弘塑",
+    "trade_value": 2903445000.0,
+    "close": 3520.0,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 98,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "2486",
+    "name": "一詮",
+    "trade_value": 2889062934.0,
+    "close": 276.5,
+    "market": "TWSE",
+    "industry": "電子工業",
+    "rank": 99,
+    "as_of": "2026-06-20"
+  },
+  {
+    "stock_id": "5347",
+    "name": "世界",
+    "trade_value": 2884885000.0,
+    "close": 174.5,
+    "market": "TPEX",
+    "industry": "半導體業",
+    "rank": 100,
+    "as_of": "2026-06-20"
+  }
+]

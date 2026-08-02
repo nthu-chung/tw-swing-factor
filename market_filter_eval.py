@@ -75,15 +75,17 @@ def _metrics(eq: pd.DataFrame) -> dict:
             "mdd": mdd, "calmar": calmar, "crash": crash, "worst20": worst20}
 
 
-def _run(symbols, start, end, rebalance, pick):
+def _run(symbols, start, end, rebalance, pick, universe_top_n):
     return backtest.backtest_portfolio(symbols=symbols, sample=False,
                                        start_date=start, end_date=end,
-                                       rebalance_every=rebalance, top_n=pick)
+                                       rebalance_every=rebalance, top_n=pick,
+                                       dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
+                                       universe_top_n=universe_top_n)
 
 
-def _split(symbols, rebalance, pick):
+def _split(symbols, rebalance, pick, universe_top_n):
     _set_filter(False, None, None)
-    res = _run(symbols, None, None, rebalance, pick)
+    res = _run(symbols, None, None, rebalance, pick, universe_top_n)
     dates = pd.to_datetime(res["equity_curve"]["date"]).sort_values().reset_index(drop=True)
     n = len(dates)
     cut = int(n * config.IS_OS_SPLIT)
@@ -109,11 +111,11 @@ def run(pool, rebalance, pick):
                    config.MARKET_FILTER_RISKOFF_WEIGHT)
     config.FACTOR_WEIGHTS = {"momentum": 1.0}  # 基線=上線純動能
 
-    symbols = uni.get_universe(top_n=pool)
+    symbols = uni.get_research_candidates(universe_top_n=pool)
     print(f"[mf] universe top{pool}={len(symbols)} 檔｜rebalance {rebalance}日/持有{pick}檔｜"
           f"snapshot {config.SNAPSHOT_END_DATE}")
 
-    sp = _split(symbols, rebalance, pick)
+    sp = _split(symbols, rebalance, pick, pool)
     pk, tr, mdd = _dd_episode(sp["eq_full"])
     print(f"[mf] 全期 {sp['is'][0]} ~ {sp['os'][1]}（{sp['n']} 日）")
     print(f"[mf] IS {sp['is'][0]}~{sp['is'][1]} | embargo {config.EMBARGO_DAYS}日 | OS {sp['os'][0]}~{sp['os'][1]}")
@@ -124,7 +126,7 @@ def run(pool, rebalance, pick):
         _set_filter(en, rule, w)
         rec = {"variant": label}
         for seg, (st, ed) in {"full": (None, None), "IS": sp["is"], "OS": sp["os"]}.items():
-            res = _run(symbols, st, ed, rebalance, pick)
+            res = _run(symbols, st, ed, rebalance, pick, pool)
             if "equity_curve" not in res:
                 continue
             m = _metrics(res["equity_curve"])

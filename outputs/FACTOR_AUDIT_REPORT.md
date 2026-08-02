@@ -1,5 +1,9 @@
 # 台股因子體檢報告（tw-swing-factor）
 
+> ⚠️ **歷史 static-top100 報告。** 存在 universe selection bias；不得單獨引用
+> 其中的 alpha 結論。最新動態族群研究見
+> [ROTATION_STRATEGY_REVIEW.html](./ROTATION_STRATEGY_REVIEW.html)。
+
 > 期間 2024-06 ~ 2026-06｜universe = 成交值前 100 大（排除金融/ETF）｜FinMind 免費版
 > 未來報酬視窗 = 20 交易日｜所有 t 值已對 fwd_ret 重疊做保守校正（有效樣本 = 天數 / 視窗）
 

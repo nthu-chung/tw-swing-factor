@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import urllib3
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -102,8 +103,12 @@ def build(top_n: int = 100, exclude_finance: bool = True) -> list[dict]:
         print(f"[universe] 排除金融保險：{n_fin} 檔")
 
     ranked = sorted(filtered, key=lambda x: x["trade_value"], reverse=True)[:top_n]
+    # 建構日 provenance：openapi 只給「當日」全市場,故池的 as_of = 實際建構日。
+    # 之後回測會檢查 as_of 是否晚於資料快照(晚=未來池 look-ahead)。
+    as_of = datetime.now().strftime("%Y-%m-%d")
     for i, r in enumerate(ranked, 1):
         r["rank"] = i
+        r["as_of"] = as_of
     return ranked
 
 
@@ -120,6 +125,17 @@ def load(top_n: int = 100) -> list[str]:
         return []
     rows = json.loads(path.read_text(encoding="utf-8"))
     return [r["stock_id"] for r in rows]
+
+
+def load_asof(top_n: int = 100) -> str | None:
+    """回傳候選池的建構日 as_of(無 provenance 時回 None)。"""
+    path = config.OUTPUT_DIR / f"universe_top{top_n}.json"
+    if not path.exists():
+        return None
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    if rows and isinstance(rows[0], dict) and rows[0].get("as_of"):
+        return str(rows[0]["as_of"])
+    return None
 
 
 if __name__ == "__main__":

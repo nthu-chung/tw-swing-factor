@@ -1,5 +1,9 @@
 # 弱市防禦：相對強勢(RS) + 抗跌因子研究報告
 
+> ⚠️ **歷史 static-universe 報告。** 絕對績效與「momentum-only 基線」已因
+> universe selection bias 失效；僅保留研究過程參考。
+> 最新結果見 [DYNAMIC_UNIVERSE_REPORT.md](./DYNAMIC_UNIVERSE_REPORT.md)。
+
 > 2026-07-21 接力研究。資料快照 `SNAPSHOT_END_DATE=2026-06-22`、universe top100、
 > rebalance 5 日 / 持有 5 檔、trend 退場。基準大盤 = **TAIEX 加權指數**（FinMind，
 > 非 yfinance 個股）。

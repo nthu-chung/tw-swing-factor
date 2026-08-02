@@ -47,7 +47,10 @@ import universe as uni
 import backtest
 
 
-PANEL_PATH = config.CACHE_DIR / "audit_panel_top100.pkl"
+PANEL_PATH = config.CACHE_DIR / (
+    f"audit_panel_dynamic_top100_candidate{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}.pkl"
+    if config.DYNAMIC_UNIVERSE_ENABLED else "audit_panel_static_top100.pkl"
+)
 H = config.BT_IC_HORIZON
 MIN_CROSS = 5
 
@@ -66,9 +69,13 @@ def get_panel(rebuild: bool, top_n: int = 100) -> pd.DataFrame:
         print(f"[def-rs] 重用 panel：{PANEL_PATH}")
         panel = pickle.load(open(PANEL_PATH, "rb"))
     else:
-        symbols = uni.get_universe(top_n=top_n)
+        symbols = uni.get_research_candidates(universe_top_n=top_n)
         print(f"[def-rs] 建 panel：{len(symbols)} 檔 …")
-        panel = backtest._prepare_panel(symbols, 0.0, None, None)
+        panel = backtest._prepare_panel(
+            symbols, 0.0, None, None,
+            dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
+            universe_top_n=top_n,
+        )
         panel["industry"] = panel["stock_id"].map(uni.get_industry_map()).fillna("")
         pickle.dump(panel, open(PANEL_PATH, "wb"))
     return panel.dropna(subset=["fwd_ret"]).reset_index(drop=True)
@@ -223,7 +230,7 @@ def main():
 
     panel = get_panel(rebuild, pool)
     reg = market_regime()
-    symbols = uni.get_universe(top_n=pool)
+    symbols = uni.get_research_candidates(universe_top_n=pool)
 
     # 大盤股災窗口（TAIEX 2025 關稅股災：谷底 2025-04-09、-28.7%）
     crash_start, crash_end = "2025-02-01", "2025-06-30"

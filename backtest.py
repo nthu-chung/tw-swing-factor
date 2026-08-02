@@ -27,8 +27,101 @@ import pandas as pd
 
 import config
 import data
+import dynamic_universe
 import factors
+import price_integrity
 import universe as uni
+
+
+# ── 未還原價 fail-closed 閘門（下沉到所有績效/因子路徑的共同咽喉點）─────────
+def _assert_price_integrity(symbols: List[str]) -> None:
+    """未還原價下,偵測到公司行動斷點就拒跑,避免產出被污染的假 Sharpe。
+
+    - 還原價資料集（TaiwanStockPriceAdj）→ 直接放行。
+    - 顯式 SWING_ALLOW_UNADJUSTED=1 → 印警告後放行（結果會在 summary 戳
+      integrity_bypassed=True，不可當已驗證數字）。
+    - 否則:對候選股票的價格序列跑斷點審計,只要命中就寫審計檔並 raise。
+
+    以前只有 rotation_research.main 有這道閘門;backtest/validate_oos/factor_audit
+    /screener 等主路徑都沒接,等於文件宣稱的 fail-closed 對主回測失效。這裡下沉
+    到 _prepare_panel,讓所有共用引擎的路徑一律受保護。
+    """
+    dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
+    if price_integrity.is_adjusted_price_dataset(dataset):
+        return
+    if getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False):
+        print("[backtest] ⚠ 未還原價逃生門開啟(SWING_ALLOW_UNADJUSTED=1):結果含公司"
+              "行動污染(除權息/分割/減資跳空)、非真實績效,請勿當已驗證數字引用。")
+        return
+    threshold = getattr(config, "PRICE_INTEGRITY_RETURN_THRESHOLD",
+                        price_integrity.DEFAULT_DISCONTINUITY_THRESHOLD)
+    frames = {}
+    for sid in symbols:
+        p = data.fetch_price(sid)
+        if p is not None and not p.empty:
+            frames[sid] = p
+    audit = price_integrity.audit_price_frames(frames, threshold=threshold)
+    if price_integrity.should_block_unadjusted_backtest(dataset, audit):
+        out = config.OUTPUT_DIR / "price_integrity_audit.csv"
+        try:
+            audit.to_csv(out, index=False, encoding="utf-8-sig")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"[fail-closed] 未還原價資料集({dataset})偵測到 {len(audit)} 筆異常價格斷點"
+            f"(分割/減資/除權息/壞列,門檻 {threshold:.0%})，主回測拒跑以免產出假 Sharpe。\n"
+            f"  審計明細已存:{out}\n"
+            f"  解法:(a) 改用還原價 SWING_PRICE_DATASET=TaiwanStockPriceAdj + survivorship-free PIT；"
+            f"或 (b) 顯式 SWING_ALLOW_UNADJUSTED=1 跑污染 smoke test(結果不可當已驗證)。"
+        )
+
+
+# ── 處置期間禁新倉:載入處置日集 {sid -> set(交易日)}────────────────────────
+def _load_disposition_days(all_dates) -> Dict[str, set]:
+    """讀 twse_disposition 建的處置期間快取,展開成 {sid -> set(處置交易日)}。
+
+    需先跑 twse_disposition.py 建 disposition__ALL__<snapshot>.pkl;缺檔則回 {}(no-op)。
+    """
+    if not getattr(config, "BT_MODEL_DISPOSITION", False):
+        return {}
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    path = config.CACHE_DIR / f"disposition__ALL__{snap}.pkl"
+    if not path.exists():
+        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無處置快取({path.name}),"
+              f"先跑 twse_disposition.py;本次不套處置禁倉。")
+        return {}
+    try:
+        import twse_disposition
+        disp = pd.read_pickle(path)
+        return twse_disposition.disposition_day_set(disp, all_dates)
+    except Exception as e:
+        print(f"[backtest] 處置快取載入失敗:{type(e).__name__};不套處置禁倉。")
+        return {}
+
+
+# ── 一字鎖漲/跌停判定(可成交性)──────────────────────────────────────────
+def _limit_lock(bar: pd.Series, prev_close: Optional[float]) -> Optional[str]:
+    """回傳 'up'/'down'/None:當日是否一字鎖漲/跌停。
+
+    鎖死特徵:全日只有一個價位(high==low,無盤中區間),且相對前收跳空 ≈ ±10%。
+    一字漲停 → 委買遠大於委賣,實務買不到;一字跌停 → 賣不掉。用已有 OHLC 即可判,
+    不需額外漲跌停資料表。
+    """
+    if prev_close is None or prev_close <= 0:
+        return None
+    try:
+        hi = float(bar["high"]); lo = float(bar["low"]); o = float(bar["open"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if hi != lo:                      # 有盤中高低差 = 沒鎖死,可成交
+        return None
+    gap = o / prev_close - 1.0
+    thr = getattr(config, "BT_LIMIT_PCT", 0.095)
+    if gap >= thr:
+        return "up"
+    if gap <= -thr:
+        return "down"
+    return None
 
 
 # ── 單筆部位的「當日出場判定」────────────────────────────────────────────
@@ -54,24 +147,41 @@ def _check_exit(bar: pd.Series, pos: dict, days_held: int) -> Optional[tuple]:
         return None
 
     # ── trend 模式（真波段：讓獲利奔跑）──────────────────────────────
+    # 前一交易日「收盤」已確認跌破 MA → 這一根「開盤」成交（T+1，與進場同慣例）。
+    # 收盤跌破的訊號只有在收盤才知道，當根收盤無法回頭成交，故不可用當根收盤出場
+    # （那是前視 leak）。改成標記 pending、下一交易日開盤實現。
+    if pos.get("pending_ma_exit"):
+        return (o, "ma_exit")
     sl_price = entry * (1 - config.BT_TREND_STOP_LOSS)
     if lo <= sl_price:                          # 硬停損（保命線），跳空取更不利價
         return (min(sl_price, o), "stop_loss")
-    ma_exit = pos.get("ma_exit_today")          # 今日 MA_EXIT 值（收盤跌破則出）
+    ma_exit = pos.get("ma_exit_today")          # 今日 MA_EXIT 值（收盤跌破則掛下一根開盤出）
     if ma_exit is not None and not np.isnan(ma_exit) and c < ma_exit:
-        return (c, "ma_exit")                   # 收盤確認跌破均線 → 收盤價出場
-    if days_held >= config.BT_MAX_HOLD_DAYS:    # 殭屍部位上限
+        pos["pending_ma_exit"] = True           # 收盤確認跌破 → 掛單，下一交易日開盤出場
+    if days_held >= config.BT_MAX_HOLD_DAYS:    # 殭屍部位上限（時間到期＝MOC，非前視）
         return (c, "max_hold")
     return None
 
 
 # ── 預先計算所有股票的因子（含未來報酬）──────────────────────────────
 def _prepare_panel(symbols: List[str], min_score_for_trade: float,
-                   start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
+                   start_date: Optional[str], end_date: Optional[str],
+                   dynamic_enabled: Optional[bool] = None,
+                   universe_top_n: Optional[int] = None,
+                   keep_non_members: bool = False) -> pd.DataFrame:
     """
     把所有股票每一天的因子 + 綜合分數 + 未來N日報酬，攤平成一個大 panel。
     這個 panel 同時用於 (1) 整體回測選股 (2) 因子 IC 分析。
     """
+    # 未還原價 fail-closed:任何走這個引擎的路徑（回測/IC/OOS/factor_audit/rotation）
+    # 在未還原價且偵測到公司行動斷點時,先擋在這裡,不讓假績效產生。
+    _assert_price_integrity(symbols)
+    dynamic_enabled = (
+        config.DYNAMIC_UNIVERSE_ENABLED
+        if dynamic_enabled is None else bool(dynamic_enabled)
+    )
+    universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+
     name_map = uni.get_name_map()
     industry_map = uni.get_industry_map()
 
@@ -91,7 +201,11 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         bundle = data.fetch_bundle(sid)
         bundle["market"] = market
         price = bundle.get("price")
-        if price is None or price.empty or not uni.passes_liquidity(price):
+        # Static mode keeps the legacy end-of-sample liquidity pre-filter for
+        # comparison only. Dynamic mode evaluates liquidity point-in-time below.
+        if price is None or price.empty:
+            continue
+        if not dynamic_enabled and not uni.passes_liquidity(price):
             continue
         f = factors.compute_factors(bundle)
         if f.empty:
@@ -113,8 +227,18 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         f["stock_id"] = sid
         f["name"] = name_map.get(sid, "")
 
+        # Keep the raw, causal factor fields as well as normalized scores.
+        # They are useful for attribution and for research strategies that
+        # separate sector/flow pre-filters from price-volume entry triggers.
+        raw_research_cols = [
+            "ma_short", "ma_long", "ma_long_slope",
+            "roll_high", "near_high", "mom_ret", "vol_ratio",
+            "inst_1d", "inst_6d", "inst_12d",
+            "rs_excess", "downside_beta", "down_day_excess",
+        ]
         keep = ["stock_id", "name", "date", "close", "open", "high", "low",
-                "composite", "trend_ok", "fwd_ret"] + score_cols
+                "volume", "turnover", "avg_vol_lots",
+                "composite", "trend_ok", "fwd_ret"] + raw_research_cols + score_cols
         keep = [c for c in keep if c in f.columns]
         records.append(f[keep])
 
@@ -122,11 +246,58 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         return pd.DataFrame()
 
     panel = pd.concat(records, ignore_index=True)
+    _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
+    # 候選池真實建構日(provenance),非硬編快照日;取不到(舊池無 as_of)才退回快照。
+    _pool_asof = _asof
+    if dynamic_enabled:
+        try:
+            import build_universe as _bu
+            _pool_asof = _bu.load_asof(universe_top_n) or _asof
+        except Exception:
+            pass
+    universe_meta = {
+        "enabled": dynamic_enabled,
+        "direction": "long_only",
+        "candidate_source": (
+            f"saved_current_top{len(symbols)}_bootstrap"
+            if dynamic_enabled else f"static_{len(symbols)}_symbols"
+        ),
+        "survivorship_free": False,
+        # 產業分類非 PIT:用「當前」TaiwanStockInfo 套整段歷史(族群/濾金融用),
+        # 缺歷史當時的產業標籤。族群輪動研究(S07/S08/S15)須把此標記納入解讀。
+        "industry_pit": False,
+        "industry_asof": _asof,          # = 資料快照日(TaiwanStockInfo 以此戳快取)
+        "candidate_pool_asof": _pool_asof,  # 候選池 json 的真實 as_of provenance
+    }
+    if dynamic_enabled:
+        ranked = dynamic_universe.add_membership(
+            panel,
+            top_n=universe_top_n,
+            lookback=config.DYNAMIC_UNIVERSE_LOOKBACK,
+            min_obs=config.DYNAMIC_UNIVERSE_MIN_OBS,
+            min_avg_volume_lots=config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
+            min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
+        )
+        universe_meta.update({
+            "top_n": universe_top_n,
+            "lookback": config.DYNAMIC_UNIVERSE_LOOKBACK,
+            "min_avg_volume_lots": config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
+            **dynamic_universe.membership_summary(ranked),
+        })
+        # keep_non_members:保留非成員列(+in_dynamic_universe 旗標),讓 operator
+        # 型因子能在「連續」個股序列上算 ts_(避免只在稀疏成員日 rolling 的失真);
+        # IC/選股仍應自行過濾 in_dynamic_universe。預設維持舊行為(只留成員)。
+        panel = ranked if keep_non_members else ranked[ranked["in_dynamic_universe"]].copy()
+    else:
+        panel["in_dynamic_universe"] = True
+
     if start_date:
         panel = panel[panel["date"] >= pd.to_datetime(start_date)]
     if end_date:
         panel = panel[panel["date"] <= pd.to_datetime(end_date)]
-    return panel.reset_index(drop=True)
+    panel = panel.reset_index(drop=True)
+    panel.attrs["universe"] = universe_meta
+    return panel
 
 
 # ── 市場濾網 / 擇時 overlay：大盤(TAIEX) risk-off 判定（全因果）──────────
@@ -162,6 +333,8 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        end_date: Optional[str] = None,
                        rebalance_every: int = 5,
                        top_n: int = 3,
+                       dynamic_enabled: Optional[bool] = None,
+                       universe_top_n: Optional[int] = None,
                        picks_by_date: Optional[Dict] = None) -> Dict:
     """
     事件驅動投組回測（修正版）。
@@ -178,8 +351,16 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     流程：走訪全市場交易日，每天先處理出場、再（逢 rebalance 日）用空位進場。
     進場一律 T+1 開盤（訊號在 T 日收盤後產生）。
     """
+    dynamic_enabled = (
+        config.DYNAMIC_UNIVERSE_ENABLED
+        if dynamic_enabled is None else bool(dynamic_enabled)
+    )
+    universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
     if symbols is None:
-        symbols = uni.get_universe(sample=sample)
+        if dynamic_enabled and not sample:
+            symbols = uni.get_research_candidates(universe_top_n)
+        else:
+            symbols = uni.get_universe(sample=sample)
 
     max_positions = config.BT_MAX_POSITIONS
 
@@ -200,7 +381,11 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     # 避免重建整個 panel（省時、且不受 FACTOR_WEIGHTS 影響）。
     external_picks = picks_by_date is not None
     if not external_picks:
-        panel = _prepare_panel(symbols, config.MIN_COMPOSITE, start_date, end_date)
+        panel = _prepare_panel(
+            symbols, config.MIN_COMPOSITE, start_date, end_date,
+            dynamic_enabled=dynamic_enabled,
+            universe_top_n=universe_top_n,
+        )
         if panel.empty:
             return {"error": "panel 為空，無法回測"}
         # 訊號查表：date -> 已過濾且排序的候選（stock_id, composite, name）
@@ -213,6 +398,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             picks_by_date[d] = list(zip(g["stock_id"], g["composite"], g["name"]))
         all_dates = sorted(panel["date"].unique())
     else:
+        # 外部注入 picks 時 _prepare_panel 不會被呼叫 → 這裡補上同一道未還原價
+        # fail-closed 閘門,讓 sector_rotation 等外部路徑也受保護。
+        _assert_price_integrity(symbols)
         if not picks_by_date:
             return {"error": "picks_by_date 為空，無法回測"}
         cal = sorted(set().union(*[set(p["date"]) for p in price_cache.values()])) if price_cache else []
@@ -224,12 +412,31 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             all_dates = [d for d in all_dates if d <= pd.to_datetime(end_date)]
     date_pos = {d: i for i, d in enumerate(all_dates)}
 
+    # universe 資訊:external picks 路徑沒有 panel,給一個安全的 metadata（避免
+    # summary 讀 panel.attrs 時 UnboundLocalError）。誠實標籤沿用同一組。
+    _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
+    if external_picks:
+        universe_info = {
+            "enabled": dynamic_enabled, "direction": "long_only",
+            "candidate_source": "external_picks_by_date",
+            "survivorship_free": False, "industry_pit": False,
+            "industry_asof": _asof, "candidate_pool_asof": _asof,
+        }
+    else:
+        universe_info = panel.attrs.get("universe", {
+            "enabled": dynamic_enabled, "direction": "long_only",
+            "top_n": universe_top_n if dynamic_enabled else None,
+        })
+
     # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
     filter_on = bool(getattr(config, "MARKET_FILTER_ENABLED", False))
     riskoff_map = market_riskoff_map() if filter_on else {}
     riskoff_weight = float(getattr(config, "MARKET_FILTER_RISKOFF_WEIGHT", 0.0))
     n_filter_exits = 0
     n_regime_switches = 0
+    n_limit_skip = 0            # 因一字漲停買不到而跳過的進場數
+    n_disp_skip = 0            # 因處置期間禁新倉而跳過的進場數
+    disp_days = _load_disposition_days(all_dates)   # {sid -> set(處置交易日)}
     _prev_riskoff = False
 
     # 投組狀態
@@ -265,9 +472,38 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             pos = positions[sid]
             bar, idx = _price_row(sid, d)
             if bar is None:
-                continue  # 當天該股沒資料，續抱
+                # 缺 bar：短期停牌續抱;但長期缺 bar(下市/長停牌)= 殭屍部位,不能
+                # 永遠凍結在 last_close、佔住部位槽、逃過所有出場判定(_check_exit 只在
+                # 有 bar 時才呼叫)。超過 BT_STALE_EXIT_DAYS 個交易日沒 bar → 視為下市,
+                # 以最後已知收盤強制平倉(survivorship-free 重跑時才不會忽略下市虧損)。
+                stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
+                if stale >= config.BT_STALE_EXIT_DAYS:
+                    exit_price = pos["last_close"]
+                    proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                    cash += proceeds
+                    gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
+                    net = proceeds / pos["cost"] - 1.0
+                    trades.append({
+                        "stock_id": sid, "name": pos["name"],
+                        "signal_date": pos["signal_date"],
+                        "entry_date": pos["entry_date"], "exit_date": d,
+                        "entry_price": round(pos["entry_price"], 2),
+                        "exit_price": round(exit_price, 2),
+                        "hold_bars": di - pos.get("entry_di", di),
+                        "gross_ret": round(gross, 4),
+                        "ret": round(net, 4),
+                        "exit_reason": "stale_delisted",
+                        "composite": round(pos["composite"], 2),
+                    })
+                    del positions[sid]
+                continue  # 當天該股沒資料(未達門檻)→ 續抱
             if idx <= pos["entry_idx"]:
                 continue  # 進場當天不在這裡出（出場判定從進場日的 _check_exit 已含）
+            # 一字跌停：賣不掉,今日不成交,順延到下一個能成交日(被迫續抱,虧損擴大)。
+            if config.BT_MODEL_LIMIT_LOCK and idx > 0:
+                pc = price_cache[sid]["close"].iloc[idx - 1]
+                if _limit_lock(bar, float(pc)) == "down":
+                    continue
             pos["ma_exit_today"] = float(bar["ma_exit"]) if "ma_exit" in bar else np.nan
             days_held = idx - pos["entry_idx"]
             ex = _check_exit(bar, pos, days_held)
@@ -330,16 +566,24 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         # 訊號日是「昨天」(d-1)，今天開盤進場。
         if di > 0 and (di - 1) % rebalance_every == 0:
             signal_date = all_dates[di - 1]
-            candidates = picks_by_date.get(signal_date, [])
+            candidates = picks_by_date.get(signal_date, [])[:top_n]
             entry_cap = target_positions if filter_on else max_positions
             for sid, comp, name in candidates:
                 if len(positions) >= entry_cap:
                     break
                 if sid in positions:
                     continue  # 已持有不重複買
+                if disp_days and d in disp_days.get(sid, ()):
+                    n_disp_skip += 1
+                    continue  # 處置期間(分盤+預收款券)→ 禁新倉
                 bar, idx = _price_row(sid, d)
                 if bar is None or idx == 0:
                     continue
+                # 一字漲停:委買遠大於委賣,實務買不到 → 跳過此候選(不佔幻想成交)。
+                if config.BT_MODEL_LIMIT_LOCK:
+                    if _limit_lock(bar, float(price_cache[sid]["close"].iloc[idx - 1])) == "up":
+                        n_limit_skip += 1
+                        continue
                 entry_price = float(bar["open"])
                 if not np.isfinite(entry_price) or entry_price <= 0:
                     continue
@@ -355,14 +599,22 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     "entry_idx": idx, "entry_price": entry_price,
                     "cost": alloc, "shares": shares,
                     "ma_exit_today": np.nan,
+                    "pending_ma_exit": False,
+                    "last_close": entry_price,      # MTM 缺 bar 時延用最後收盤(見下)
+                    "entry_di": di, "last_bar_di": di,  # 全域日索引,供缺bar殭屍出場
                 }
 
         # ── 3) 收盤 mark-to-market：投組淨值 = 現金 + 各部位市值 ──────
+        # 缺 bar(停牌/被清理列)時延用「最後一次已知收盤」,不回退成本價——回退成本
+        # 會讓權益曲線在缺 bar 日假跳到成本、隔日跳回,灌大波動/回撤;且下市股不會
+        # 被凍結在成本價(那在 survivorship-free 重跑時會變成忽略下市虧損的樂觀偏誤)。
         mtm = cash
         for sid, pos in positions.items():
             bar, _ = _price_row(sid, d)
-            px = float(bar["close"]) if bar is not None else pos["entry_price"]
-            mtm += pos["shares"] * px
+            if bar is not None:
+                pos["last_close"] = float(bar["close"])
+                pos["last_bar_di"] = di        # 記最後有 bar 的日,供缺bar殭屍出場計齡
+            mtm += pos["shares"] * pos["last_close"]
         equity = mtm
         equity_curve.append((d, equity))
 
@@ -421,6 +673,14 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         "calmar": round(calmar, 3) if calmar == calmar else float("nan"),
         "max_drawdown": round(max_dd, 4),
         "exit_breakdown": exit_breakdown,
+        "limit_lock": {
+            "modeled": config.BT_MODEL_LIMIT_LOCK,
+            "n_entries_skipped_limit_up": n_limit_skip,
+        },
+        "disposition": {
+            "modeled": bool(disp_days),
+            "n_entries_skipped_disposition": n_disp_skip,
+        },
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
         "market_filter": {
             "enabled": filter_on,
@@ -428,6 +688,20 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "riskoff_weight": riskoff_weight if filter_on else None,
             "n_filter_exits": n_filter_exits,
             "n_regime_switches": n_regime_switches,
+        },
+        "universe": universe_info,
+        "data": {
+            "price_dataset": getattr(config, "PRICE_DATASET", "TaiwanStockPrice"),
+            "adjusted_price": price_integrity.is_adjusted_price_dataset(
+                getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
+            ),
+            "snapshot_end": getattr(config, "SNAPSHOT_END_DATE", ""),
+            # 未還原價 + 逃生門開啟時為 True:此結果含公司行動污染,非已驗證績效。
+            "integrity_bypassed": (
+                not price_integrity.is_adjusted_price_dataset(
+                    getattr(config, "PRICE_DATASET", "TaiwanStockPrice"))
+                and bool(getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False))
+            ),
         },
         "params": {
             "exit_mode": config.BT_EXIT_MODE,
@@ -446,7 +720,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
 def factor_ic(symbols: Optional[List[str]] = None,
               sample: bool = True,
               start_date: Optional[str] = None,
-              end_date: Optional[str] = None) -> pd.DataFrame:
+              end_date: Optional[str] = None,
+              dynamic_enabled: Optional[bool] = None,
+              universe_top_n: Optional[int] = None) -> pd.DataFrame:
     """
     每個因子分數對「未來 BT_IC_HORIZON 日報酬」的 Spearman rank IC。
 
@@ -461,9 +737,21 @@ def factor_ic(symbols: Optional[List[str]] = None,
     判讀（保守）：|mean_ic|>0.03 且 |t_stat|>2 才算有方向性證據；
     小 universe（橫斷面 < 5 檔）一律視為 insufficient。
     """
+    dynamic_enabled = (
+        config.DYNAMIC_UNIVERSE_ENABLED
+        if dynamic_enabled is None else bool(dynamic_enabled)
+    )
+    universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
     if symbols is None:
-        symbols = uni.get_universe(sample=sample)
-    panel = _prepare_panel(symbols, 0.0, start_date, end_date)
+        if dynamic_enabled and not sample:
+            symbols = uni.get_research_candidates(universe_top_n)
+        else:
+            symbols = uni.get_universe(sample=sample)
+    panel = _prepare_panel(
+        symbols, 0.0, start_date, end_date,
+        dynamic_enabled=dynamic_enabled,
+        universe_top_n=universe_top_n,
+    )
     if panel.empty:
         return pd.DataFrame()
 
@@ -522,6 +810,7 @@ def _print_bt_summary(res: dict):
         return
     s = res["summary"]
     p = s["params"]
+    u = s.get("universe", {})
     print("=" * 72)
     print("  整體回測結果（多因子選股 + 每日權益曲線）")
     print("=" * 72)
@@ -534,6 +823,14 @@ def _print_bt_summary(res: dict):
               f" / 停損-{config.BT_STOP_LOSS:.0%}）")
     print(f"  參數：每{p['rebalance_every']}日選股 / 最多持有{p['max_positions']}檔"
           f" / 綜合分數門檻 {p['min_composite']}")
+    if u.get("enabled"):
+        print(f"  Universe：long-only 動態 top{u.get('top_n')} / "
+              f"候選 {u.get('n_candidate_symbols', '—')} 檔 / "
+              f"{u.get('lookback')}日平均成交值排名")
+        if not u.get("survivorship_free", False):
+            print("  ⚠ 候選池仍是 current-pool bootstrap；尚非完整 survivorship-free PIT")
+    else:
+        print("  Universe：static（legacy comparison）")
     print("-" * 72)
     print(f"  交易筆數      ：{s['n_trades']}（期末未平倉 {s['open_positions_end']}）")
     print(f"  勝率          ：{s['win_rate']:.1%}")
@@ -589,16 +886,40 @@ def _print_ic(ic_df: pd.DataFrame):
     print("      |t|>2 才算顯著；小集合常 insufficient，需擴大 universe 才算數。")
 
 
-def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5):
+def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
+             pool: Optional[int] = None,
+             dynamic_enabled: Optional[bool] = None,
+             universe_top_n: Optional[int] = None):
     """一次跑完整體回測 + 因子IC，並印報告。"""
-    symbols = uni.get_universe(sample=sample)
+    dynamic_enabled = (
+        config.DYNAMIC_UNIVERSE_ENABLED
+        if dynamic_enabled is None else bool(dynamic_enabled)
+    )
+    # 小型 sample 是 smoke test，不冒充動態全市場研究。
+    effective_dynamic = dynamic_enabled and not sample
+    universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    if effective_dynamic:
+        symbols = uni.get_research_candidates(
+            universe_top_n=universe_top_n,
+            candidate_pool_n=pool,
+        )
+    elif pool:
+        symbols = uni.get_universe(top_n=pool)
+    else:
+        symbols = uni.get_universe(sample=sample)
     print(f"\n[backtest] universe = {len(symbols)} 檔，開始回測...\n")
 
     res = backtest_portfolio(symbols=symbols, sample=sample,
-                             rebalance_every=rebalance_every, top_n=top_n)
+                             rebalance_every=rebalance_every, top_n=top_n,
+                             dynamic_enabled=effective_dynamic,
+                             universe_top_n=universe_top_n)
     _print_bt_summary(res)
 
-    ic_df = factor_ic(symbols=symbols, sample=sample)
+    ic_df = factor_ic(
+        symbols=symbols, sample=sample,
+        dynamic_enabled=effective_dynamic,
+        universe_top_n=universe_top_n,
+    )
     print()
     _print_ic(ic_df)
 
