@@ -176,6 +176,149 @@ class PanelOps:
         denom = np.sqrt(self.ts_var(x, d) * self.ts_var(y, d))
         return self.ts_cov(x, y, d) / denom.replace(0, np.nan)
 
+    # ── 差分族(WQ ts_*_diff;GA 常用,全部可由既有算子組出,這裡給名字)──
+    def ts_av_diff(self, x, d):
+        """x - ts_mean(x,d):偏離自身均值多少(WQ ts_av_diff)。NaN 不參與均值。"""
+        return x - self.ts_mean(x, d)
+
+    def ts_max_diff(self, x, d):
+        return x - self.ts_max(x, d)
+
+    def ts_min_diff(self, x, d):
+        return x - self.ts_min(x, d)
+
+    def ts_min_max_diff(self, x, d, f: float = 0.5):
+        """x - f*(ts_min + ts_max):相對於視窗中軸的位置(WQ ts_min_max_diff)。"""
+        return x - f * (self.ts_min(x, d) + self.ts_max(x, d))
+
+    def ts_min_max_cps(self, x, d, f: float = 2.0):
+        """(ts_min + ts_max) - f*x(WQ ts_min_max_cps)。"""
+        return (self.ts_min(x, d) + self.ts_max(x, d)) - f * x
+
+    # ── 分布形狀 ────────────────────────────────────────────────────────
+    def ts_product(self, x, d):
+        return self._ts(x, d, lambda a: float(np.prod(a)), raw=True, use_apply=True)
+
+    def ts_skewness(self, x, d):
+        return self._ts(x, d, "skew")
+
+    def ts_kurtosis(self, x, d):
+        return self._ts(x, d, "kurt")
+
+    def ts_quantile(self, x, d, q: float = 0.5):
+        """視窗內的第 q 分位(WQ ts_quantile 的 driver='uniform' 近似)。"""
+        if not 0.0 <= q <= 1.0:
+            raise ValueError("q 必須介於 0 與 1")
+        return self._ts(x, d, lambda a: float(np.nanquantile(a, q)),
+                        raw=True, use_apply=True)
+
+    def ts_entropy(self, x, d, buckets: int = 10):
+        """視窗內數值分布的 Shannon 熵(WQ ts_entropy)。分布越均勻值越大。"""
+        def _e(a):
+            a = a[np.isfinite(a)]
+            if len(a) < 2:
+                return np.nan
+            lo, hi = float(np.min(a)), float(np.max(a))
+            if hi == lo:
+                return 0.0
+            cnt, _ = np.histogram(a, bins=buckets, range=(lo, hi))
+            p = cnt[cnt > 0] / cnt.sum()
+            return float(-(p * np.log(p)).sum())
+        return self._ts(x, d, _e, raw=True, use_apply=True)
+
+    def ts_count_nans(self, x, d):
+        return self._ts(x.isna().astype(float), d, "sum")
+
+    # ── 補值 / 衰減 / 抑制周轉 ──────────────────────────────────────────
+    def ts_backfill(self, x, d):
+        """用過去 d 天內最後一個非 NaN 值補當前 NaN(WQ ts_backfill)。
+
+        只往**過去**取,不會用到未來 —— 這點必須守住,否則等於前視補值。
+        """
+        xs = x.loc[self._sorted_index]
+        filled = xs.groupby(self._stock_sorted, sort=False).ffill(limit=max(0, d - 1))
+        return filled.loc[self._orig_index]
+
+    def ts_decay_exp(self, x, d, factor: float = 0.5):
+        """指數衰減加權(越近權重越大;WQ ts_decay_exp_window)。"""
+        if not 0 < factor <= 1:
+            raise ValueError("factor 必須介於 0(不含)與 1")
+        w = factor ** np.arange(d - 1, -1, -1, dtype=float)
+        w /= w.sum()
+
+        def _dw(a):
+            a = np.where(np.isnan(a), 0.0, a)
+            return float(np.dot(a, w))
+        return self._ts(x, d, _dw, raw=True, use_apply=True, min_periods=d)
+
+    def last_diff_value(self, x, d):
+        """過去 d 天內,最後一個「與當前值不同」的值(WQ last_diff_value)。"""
+        def _ldv(a):
+            cur = a[-1]
+            if not np.isfinite(cur):
+                return np.nan
+            for v in a[-2::-1]:
+                if np.isfinite(v) and v != cur:
+                    return float(v)
+            return np.nan
+        return self._ts(x, d, _ldv, raw=True, use_apply=True, min_periods=1)
+
+    def hump(self, x, threshold: float = 0.01):
+        """限制每日變動幅度以抑制周轉(WQ hump)。
+
+        y_t = y_{t-1} + clip(x_t - y_{t-1}, -threshold, +threshold)
+
+        這是**路徑相依**的遞迴,必須逐股循序算。實測顯示周轉率是弱訊號策略的
+        主導因素(見 chip_momentum_strategy 的說明),所以這個算子值得有。
+        """
+        xs = x.loc[self._sorted_index]
+        out = np.full(len(xs), np.nan)
+        vals = xs.to_numpy(dtype=float)
+        codes = self._stock_sorted.to_numpy()
+        prev, prev_sid = np.nan, None
+        for i in range(len(vals)):
+            sid, v = codes[i], vals[i]
+            if sid != prev_sid:
+                prev, prev_sid = np.nan, sid
+            if not np.isfinite(v):
+                out[i] = prev
+                continue
+            if not np.isfinite(prev):
+                prev = v
+            else:
+                prev = prev + np.clip(v - prev, -threshold, threshold)
+            out[i] = prev
+        return pd.Series(out, index=xs.index).loc[self._orig_index]
+
+    # ── 技術指標(有視窗 → 算子;無視窗的部分放 attach_fields)────────────
+    def ts_rsi(self, x, d: int = 14):
+        """RSI/100,回傳 [0,1](WQ 沒有內建,但可由 primitive 組出)。
+
+        RSI = 上漲幅度總和 / 全部變動幅度總和。這裡直接給名字方便閱讀,
+        GA 仍可用 ts_sum/ts_delta/elem_max 自行組出變體(那才是重點)。
+        """
+        delta = self.ts_delta(x, 1)
+        up = self.ts_sum(delta.clip(lower=0.0), d)
+        total = self.ts_sum(delta.abs(), d)
+        return up / total.replace(0, np.nan)
+
+    def ts_atr(self, true_range: pd.Series, d: int = 14):
+        """ATR = true_range 的 d 日均值。true_range 由 attach_fields 提供。
+
+        獨立成一個名字只是為了可讀;數學上就是 ts_mean(true_range, d)。
+        """
+        return self.ts_mean(true_range, d)
+
+    def ts_bollinger_pos(self, x, d: int = 20, k: float = 2.0):
+        """布林位階:(x - 中軌) / (k*std),0=中軌、+1=上軌、-1=下軌。"""
+        mid = self.ts_mean(x, d)
+        sd = self._ts(x, d, lambda a: float(np.nanstd(a)), raw=True, use_apply=True)
+        return (x - mid) / (k * sd).replace(0, np.nan)
+
+    def ts_vwap_dev(self, close: pd.Series, vwap: pd.Series, d: int = 20):
+        """收盤相對於近 d 日均 VWAP 的偏離度。>0 = 買方持續推高於均價成本。"""
+        return close / self.ts_mean(vwap, d).replace(0, np.nan) - 1.0
+
     def ts_regression(self, y: pd.Series, x: pd.Series, d: int,
                       lag: int = 0, rettype="beta") -> pd.Series:
         """個股層時序 OLS:過去 d 天把 y 迴歸到 x(y = a + b·x),全因果(WQ ts_regression)。
@@ -278,6 +421,20 @@ class PanelOps:
         """對每個(當日×族群)去均值(WQ group_neutralize;= factor_audit 的產業中性化)。"""
         return x - self._by_group(x, group).transform("mean")
 
+    def group_std_dev(self, x, group):
+        """當日族群內標準差(WQ group_std_dev);母體 std 對齊 group_zscore。"""
+        return self._by_group(x, group).transform(lambda s: s.std(ddof=0))
+
+    def group_median(self, x, group):
+        return self._by_group(x, group).transform("median")
+
+    def group_sum(self, x, group):
+        return self._by_group(x, group).transform("sum")
+
+    def group_count(self, x, group):
+        """族群成員數;中性化前用來擋掉單一成員組(那種組中性化後恆為 0)。"""
+        return self._by_group(x, group).transform("count")
+
     def group_scale(self, x, group):
         """(x - gmin)/(gmax - gmin),當日族群內縮到 [0,1](WQ group_scale)。"""
         g = self._by_group(x, group)
@@ -335,3 +492,81 @@ def scale_fixed(x: pd.Series, lo: float, hi: float) -> pd.Series:
     if hi == lo:
         return x * 0.0
     return ((x - lo) / (hi - lo)).clip(0.0, 1.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 元素級輔助(給 GA 組表達式用;命名對齊 WQ)
+# ══════════════════════════════════════════════════════════════════════════
+def elem_max(a: pd.Series, b) -> pd.Series:
+    """逐元素取大。b 可為 Series 或純量。"""
+    return a.combine(b, max) if isinstance(b, pd.Series) else a.clip(lower=b)
+
+
+def elem_min(a: pd.Series, b) -> pd.Series:
+    return a.combine(b, min) if isinstance(b, pd.Series) else a.clip(upper=b)
+
+
+def abs_(x: pd.Series) -> pd.Series:
+    return x.abs()
+
+
+def reverse(x: pd.Series) -> pd.Series:
+    return -x
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 無視窗衍生欄位(field)
+# ══════════════════════════════════════════════════════════════════════════
+# 分界:**沒有 window 參數的衍生量算 field,有 window 的算 operator**。
+# 這就是 WorldQuant 把 vwap / returns 當 data、而 RSI/ATR 不是的原因 ——
+# 前者沒有可調視窗,後者有(RSI-14 的 14 應該進 GA 的搜尋空間,不該寫死)。
+#
+# 需要前一日收盤的欄位(returns / true_range / gap)是 panel-aware 的,所以
+# 這支函數要吃 PanelOps,不能純用 DataFrame 算。
+FIELD_COLUMNS = ["vwap", "returns", "true_range", "gap", "intraday_ret",
+                 "close_loc", "dollar_volume", "amihud"]
+
+
+def attach_fields(panel: pd.DataFrame, ops: "PanelOps") -> pd.DataFrame:
+    """回傳加上無視窗衍生欄位的 panel(不改輸入)。
+
+    vwap 用 turnover/volume 算 —— 這是**當日真實的成交量加權均價**,
+    不是 (h+l+c)/3 那種近似。台股日資料兩個欄位都有,沒有理由用近似。
+    """
+    out = panel.copy()
+    need = {"open", "high", "low", "close", "volume"}
+    missing = need - set(out.columns)
+    if missing:
+        raise ValueError(f"attach_fields 缺少欄位: {sorted(missing)}")
+
+    vol = pd.to_numeric(out["volume"], errors="coerce")
+    close = pd.to_numeric(out["close"], errors="coerce")
+    high = pd.to_numeric(out["high"], errors="coerce")
+    low = pd.to_numeric(out["low"], errors="coerce")
+    opn = pd.to_numeric(out["open"], errors="coerce")
+
+    if "turnover" in out.columns:
+        to = pd.to_numeric(out["turnover"], errors="coerce")
+        out["vwap"] = to / vol.replace(0, np.nan)
+        out["dollar_volume"] = to
+    else:                                    # 沒有成交金額才退回估計值
+        out["vwap"] = (high + low + close) / 3.0
+        out["dollar_volume"] = close * vol
+
+    prev_close = ops.ts_delay(close, 1)
+    out["returns"] = close / prev_close.replace(0, np.nan) - 1.0
+    out["gap"] = opn / prev_close.replace(0, np.nan) - 1.0
+    out["intraday_ret"] = close / opn.replace(0, np.nan) - 1.0
+
+    # 真實波幅:含跳空的當日波動。ATR(d) = ts_mean(true_range, d) —— 不需新算子。
+    rng = high - low
+    out["true_range"] = pd.concat([
+        rng, (high - prev_close).abs(), (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+
+    # 收盤在當日區間的位置(0=最低,1=最高);量價分析常用
+    out["close_loc"] = (close - low) / rng.replace(0, np.nan)
+
+    # Amihud 非流動性:|報酬| / 成交金額。值越大越難成交。
+    out["amihud"] = out["returns"].abs() / out["dollar_volume"].replace(0, np.nan)
+    return out

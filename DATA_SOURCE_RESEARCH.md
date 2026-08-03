@@ -3,6 +3,15 @@
 > 更新日：2026-07-23  
 > 目標：long-only 動能／族群研究所需的長期還原價、每日 point-in-time
 > universe、下市股、公司行動與可重現資料快照。
+>
+> ⚠️ **2026-08-03 更新：這份是「該不該買」的規劃比較，已有部分結論過時。**
+> 要查「現在有什麼、怎麼打、有什麼坑」請看 **`DATA_SOURCES.md`**（實測盤點）。
+> 本文當時的兩個主要結論已被免費方案取代：
+> - 還原價不必付費 → `price_adjust.py` 用免費的 `TaiwanStockDividendResult` 自建
+>   （缺口：分割／減資，由 `price_integrity` 殘留掃描擋）。
+> - PIT universe／下市股不必付費 → `pit_universe.py` 用交易所逐日全市場快照重建，
+>   快照天然含當時在交易、後來下市的股票，且自帶 OHLCV。
+> - 另：`TaiwanStockDelisting` 本來就是免費的（2024-01~2026-07 共 32 筆）。
 
 ## 結論
 
