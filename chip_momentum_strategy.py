@@ -210,16 +210,31 @@ def is_os_split(panel: pd.DataFrame) -> Tuple[pd.Timestamp, pd.Timestamp]:
 
 
 # ── panel 建構(base panel + 法人分項籌碼)──────────────────────────────
-def build_panel(symbols: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
+def build_panel(symbols: Optional[List[str]] = None,
+                use_pit_pool: bool = True) -> Tuple[pd.DataFrame, List[str]]:
     """回傳 (稠密 panel, 乾淨 symbols)。
 
-    兩件事非做不可:
+    三件事非做不可:
       1. `keep_non_members=True` —— ts_ 算子需要連續個股序列。
       2. 排除價格完整性名單 —— 否則 _prepare_panel 的 fail-closed 閘門會擋下。
+      3. `use_pit_pool=True`(預設)—— 候選池逐月 PIT 重建。
+
+    為什麼預設走 PIT:靜態池是**單一日期**的成交值 top-N 套用整段歷史,等於用
+    「今天知道誰熱門」決定兩年前能選誰。實測(同快照、同期間、只換池):
+
+        IS 中位 1.922 → 1.607(最小 1.352 → 0.762);IS 基準 1.42 → 1.13
+        OS 中位 1.772 → 1.938;OS 基準 1.59 → 1.52
+
+    偏誤把策略與基準**同時**灌水,所以超額(策略−基準)在 IS 幾乎不變
+    (+0.50 → +0.48)、OS 反而變好(+0.18 → +0.42)。但絕對水準必須用 PIT 的。
     """
     import universe as uni
 
     excluded = load_excluded()
+    if use_pit_pool:
+        panel, syms = _build_pit_panel(excluded)
+        return panel, syms
+
     if symbols is None:
         symbols = uni.get_universe(top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL)
     symbols = [s for s in symbols if s not in excluded]
@@ -231,6 +246,44 @@ def build_panel(symbols: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List
         keep_non_members=True,
     )
     return attach_chip_fields(panel), symbols
+
+
+def _build_pit_panel(excluded: set) -> Tuple[pd.DataFrame, List[str]]:
+    """用 pit_universe 的逐月池建 panel(候選池成員資格逐日套用)。
+
+    走精簡資料路徑(price + inst),因為 PIT 池聯集有 700+ 檔,完整 bundle 會
+    撞爆 FinMind 的 600 次/小時。`live_signal.verify_equivalence` 已證明精簡路徑
+    的 trend_ok / in_dynamic_universe 與 `_prepare_panel` 完全一致(136,841 列零差異)。
+    """
+    import dynamic_universe as du
+    import live_signal
+    import pit_universe as pu
+
+    hist = pu.load_history_cached()
+    pools = pu.build_pit_pools(hist, top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
+                               lookback_days=config.DYNAMIC_UNIVERSE_LOOKBACK,
+                               lag_days=1, freq="M")
+    union = sorted({s for v in pools.values() for s in v} - set(excluded))
+
+    panel = live_signal.build_light_panel(union, apply_membership=False)
+    if panel.empty:
+        return panel, []
+
+    ok = pd.Series(False, index=panel.index)
+    for d, idx in panel.groupby("date").groups.items():
+        cand = set(pu.pool_for_date(pools, d))
+        ok.loc[idx] = panel.loc[idx, "stock_id"].isin(cand).values
+    panel = panel[ok.values]
+
+    panel = du.add_membership(
+        panel, top_n=config.DYNAMIC_UNIVERSE_TOP_N,
+        lookback=config.DYNAMIC_UNIVERSE_LOOKBACK,
+        min_obs=config.DYNAMIC_UNIVERSE_MIN_OBS,
+        min_avg_volume_lots=config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
+        min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
+    )
+    panel = panel.sort_values(["date", "stock_id"]).reset_index(drop=True)
+    return panel, sorted(panel["stock_id"].unique())
 
 
 def attach_chip_fields(panel: pd.DataFrame) -> pd.DataFrame:
@@ -297,9 +350,25 @@ def main():
     lines = [
         "# S19 籌碼確認的風險調整動能(CRM)— 策略報告",
         "",
-        f"> snapshot `{config.SNAPSHOT_END_DATE}`｜候選池 top{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}"
-        f"(排除 {len(load_excluded())} 檔價格完整性名單)｜動態 universe top"
+        f"> snapshot `{config.SNAPSHOT_END_DATE}`｜**PIT 候選池**(逐月重建 top"
+        f"{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL},lag=1,含下市股;排除 "
+        f"{len(load_excluded())} 檔價格完整性名單)｜動態 universe top"
         f"{config.DYNAMIC_UNIVERSE_TOP_N}｜自建還原價。",
+        "",
+        "> ⚠️ **2026-08-03 修正:先前版本用單一日期的靜態候選池,含 look-ahead。**",
+        "> 同快照、同期間、只換池的對照:",
+        ">",
+        "> | | 靜態池(舊,有偏) | PIT 池(新) |",
+        "> |---|---|---|",
+        "> | IS 中位 / 最小 | 1.922 / 1.352 | **1.607 / 0.762** |",
+        "> | IS 基準 | 1.42 | 1.13 |",
+        "> | IS 超額 | +0.50 | **+0.48** |",
+        "> | OS 中位 / 最小 | 1.772 / 1.231 | **1.938 / 1.392** |",
+        "> | OS 基準 | 1.59 | 1.52 |",
+        "> | OS 超額 | +0.18 | **+0.42** |",
+        ">",
+        "> 偏誤把**策略與基準同時**灌水,所以超額(策略−基準)在 IS 幾乎不變、OS 反而變好。",
+        "> 但絕對水準必須引用 PIT 版;舊報告的「IS 五相位全部 >1」已不成立(最小 0.762)。",
         "",
         "## 訊號",
         "",
@@ -339,17 +408,21 @@ def main():
         "",
         "## 誠實保留(讀完再決定要不要用)",
         "",
-        "1. **OS 交易數極少**(每相位約 12~15 筆),該段 Sharpe 沒有統計意義,",
+        "1. **OS 交易數極少**(每相位約 16~21 筆),該段 Sharpe 沒有統計意義,",
         "   只能說「換到未參與選擇的區間沒有崩掉」,不能當作已驗證的 edge。",
-        "2. **報酬高度集中**:勝率僅 29~40%,靠賺賠比 5.7~7.3 撐住。少數幾筆大贏",
+        "2. **報酬高度集中**:勝率僅 30~62%,靠賺賠比 4.6~6.4 撐住。少數幾筆大贏",
         "   決定全局 → 對個別交易與流動性衝擊極敏感。",
-        "3. **單一多頭窗**:樣本 2024-07~2026-06 只涵蓋一次完整多頭與一次股災。",
-        "   OS 段是年化 +163% 的普漲環境,無成本等權買進持有 Sharpe 就有 4.20,",
-        "   **高於本策略**。故目前只能宣稱「IS 段有選股增量」,普漲段沒有。",
-        "4. **候選池倖存者偏誤未消**:池是當前 top300,缺歷史下市股(見",
-        "   `universe_bias_audit.py`)。絕對績效仍是樂觀上界。",
-        "5. **參數在 IS 上選過**:16 格掃描以「五相位 Sharpe 中位數」為準則(非最大值),",
+        "3. **IS 相位最小值已低於 1**(0.762)。舊版「五相位全部 >1」是靜態池的產物,",
+        "   在無偏池上不成立。相位離散度(0.762~1.943)仍大,執行時點會實質影響結果。",
+        "4. **單一多頭窗**:樣本 2024-08~2026-07 只涵蓋一次完整多頭與一次股災。",
+        "5. **仍有殘餘倖存者偏誤**:PIT 池已含下市股(來源是交易所逐日快照),但個股",
+        "   價格序列仍從 FinMind 抓,已下市者可能缺 —— 這會讓下市虧損被低估。",
+        "6. **參數在 IS 上選過**:16 格掃描以「五相位 Sharpe 中位數」為準則(非最大值),",
         "   且方向一致(所有 MA60 配置都在前段),但仍有選擇效應殘留。",
+        "7. **搜尋空間的多重檢定**:實測同閘門下**隨機選股**的 IS Sharpe 分布為",
+        "   平均 0.711 / 標準差 0.290,第 99.9 百分位 1.591。本策略的 1.607 大致落在",
+        "   該分布的極上尾 —— 有訊號,但若曾在數百個變體中挑選,這個水準是可以靠",
+        "   運氣達到的。",
         "",
         "## 已證偽(別重做)",
         "",
