@@ -399,7 +399,8 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        top_n: int = 3,
                        dynamic_enabled: Optional[bool] = None,
                        universe_top_n: Optional[int] = None,
-                       picks_by_date: Optional[Dict] = None) -> Dict:
+                       picks_by_date: Optional[Dict] = None,
+                       let_positions_run: bool = False) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -472,8 +473,25 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         all_dates = [d for d in cal if d >= lo]
         if start_date:
             all_dates = [d for d in all_dates if d >= pd.to_datetime(start_date)]
-        if end_date:
-            all_dates = [d for d in all_dates if d <= pd.to_datetime(end_date)]
+        # ── 評估窗上界:預設截到最後一個訊號日 ─────────────────────────
+        # 2026-08-03 修:過去沒給 end_date 就一路跑到「價格快取的末端」,而快取
+        # 涵蓋全部凍結資料。做 IS 評估時只限制 picks 的日期是**不夠的** ——
+        # 訊號用完後既有部位仍持續持有並 MTM,等於把 IS 之後的行情算進 IS。
+        # 實測 S19:IS 權益曲線超出切點 144 天,把 OS 段的 +87.2% 算進「IS Sharpe」,
+        # 讓 1.607 看起來成立(真實 IS 只有 0.306)。而且用它選出的參數也連帶失效。
+        #
+        # 安全預設 = min(end_date 或最後訊號日)。要看完整交易生命週期(讓部位
+        # 自然出場)請顯式傳 let_positions_run=True。
+        picks_end = max(picks_by_date)
+        hard_end = pd.to_datetime(end_date) if end_date else None
+        if not let_positions_run:
+            bound = picks_end if hard_end is None else min(hard_end, picks_end)
+            if hard_end is None and any(d > picks_end for d in all_dates):
+                print(f"[backtest] 評估窗截到最後訊號日 {str(picks_end)[:10]}"
+                      f"(未指定 end_date)。要讓部位跑到自然出場請設 let_positions_run=True。")
+            all_dates = [d for d in all_dates if d <= bound]
+        elif hard_end is not None:
+            all_dates = [d for d in all_dates if d <= hard_end]
     date_pos = {d: i for i, d in enumerate(all_dates)}
 
     # universe 資訊:external picks 路徑沒有 panel,給一個安全的 metadata（避免
@@ -746,6 +764,19 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "n_entries_skipped_disposition": n_disp_skip,
         },
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
+        # 評估窗稽核:讓「回測實際跑了哪段」可被檢查,而不是只能從 Sharpe 猜。
+        # picks_window 是訊號涵蓋的期間;eval_window 是引擎實際 MTM 的期間。
+        # 兩者的右界不一致 = 訊號用完後仍在計績效(見 external picks 分支的說明)。
+        "eval_audit": {
+            "picks_window": ([str(min(picks_by_date))[:10], str(max(picks_by_date))[:10]]
+                             if picks_by_date else None),
+            "eval_window": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
+            "days_beyond_last_pick": (
+                int(sum(1 for d in all_dates if d > max(picks_by_date)))
+                if picks_by_date else 0
+            ),
+            "let_positions_run": bool(let_positions_run),
+        },
         "market_filter": {
             "enabled": filter_on,
             "rule": config.MARKET_FILTER_RULE if filter_on else None,

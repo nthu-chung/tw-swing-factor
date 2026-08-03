@@ -140,7 +140,14 @@ def _restore_portfolio_config(old):
 
 def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
              start=None, end=None, phase: int = 0) -> Dict:
-    """跑單一相位,回傳 backtest summary(含 equity_curve 需求時可自行取)。"""
+    """跑單一相位,回傳 backtest summary。
+
+    ⚠ `start_date`/`end_date` 必須傳給 `backtest_portfolio`。只限制 `picks_by_date`
+    的日期範圍**不夠** —— 引擎的 `all_dates` 取自價格快取,沒有上界就會一路跑到
+    資料末端。實測(2026-08-03 修):IS 的權益曲線跑超出切點 144 天,把 8 筆未平倉
+    部位在 OS 期間的 **+101.8%** 漲幅算進 IS 的 Sharpe。這是評估層的前視,
+    會讓 IS 數字虛高,而且用它選出來的參數也連帶失效。
+    """
     picks = build_picks(panel, score, start, end, phase)
     if not picks:
         return {}
@@ -148,6 +155,7 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
     try:
         r = backtest.backtest_portfolio(
             symbols=symbols, sample=False,
+            start_date=start, end_date=end,     # ← 必傳:見下
             rebalance_every=PORT_REBALANCE_DAYS,
             top_n=PORT_MAX_POSITIONS, picks_by_date=picks,
         )
