@@ -37,7 +37,7 @@ PYTHONPATH=. .venv/bin/python tests/test_xxx.py    # 測試是 unittest,不是 p
 當成「價格乾淨」的證據。但除息缺口 3~5% 在 ±10% 漲跌停帶內,掃描結構上看不到。
 現在放行只看資料集是否還原,審計降級為診斷。
 
-## 已知會產生假結果的陷阱(都真的發生過)
+## 已知會產生假結果的陷阱(六個,都真的發生過)
 
 ### 1. panel 稀疏 → ts_ 算子失真
 
@@ -83,7 +83,29 @@ ann = r.mean() * 252 ; vol = r.std(ddof=1) * np.sqrt(252)
 
 動態 universe(每日 top100)本身是 PIT 的、沒問題 —— 問題只在它上面那層候選池。
 
-### 5. 網路瞬斷靜默回空表
+### 5. 評估窗溢出 → IS 借用 OS 的績效
+
+```python
+# 錯:只限制訊號的日期範圍
+picks = build_picks(panel, score, start=is_start, end=is_cut)
+backtest_portfolio(picks_by_date=picks)          # 引擎仍跑到資料末端!
+
+# 對:同時限制引擎的執行範圍
+backtest_portfolio(picks_by_date=picks, start_date=is_start, end_date=is_cut)
+```
+
+引擎的 `all_dates` 取自**價格快取**,沒有 `end_date` 就只有下界。訊號用完後
+既有部位仍持續持有並 MTM —— 實測 IS 權益曲線溢出切點 144 天,把 OS 段的
+**+87.2%** 算進「IS Sharpe」(1.607,真實 IS 只有 0.306)。而且用它選出的參數
+也連帶失效(原本的最佳配置修正後墊底)。
+
+引擎現在有安全預設(截到最後訊號日)+ `summary["eval_audit"]` 稽核欄位。
+**看到任何 IS 結果,先檢查 `eval_audit["days_beyond_last_pick"] == 0`。**
+
+註:`SNAPSHOT_END_DATE` 防不了這個 —— 它管的是「跨次執行的資料漂移」,
+IS/OS 是在凍結資料**內部**畫的線,引擎不知道那條線存在。兩者正交。
+
+### 6. 網路瞬斷靜默回空表
 
 交易所端點會偶發 `ChunkedEncodingError`。若回空表會被當成「該期間無資料」,
 **靜默漏掉整年**。一律重試,耗盡後 raise。
