@@ -109,6 +109,33 @@ ann = r.mean() * 252 ; vol = r.std(ddof=1) * np.sqrt(252)
 - 新策略要註冊進 `STRATEGY_REGISTRY.md`(狀態、規則、證據等級、已知偏誤、
   下一個可證偽測試)。
 - 因子一律用 `operators.py` 的算子組(對齊 WorldQuant 語意,全因果)。
+  新增 ts_ 算子後**必須**加進 `tests/test_operators_extended.py` 的因果性清單 ——
+  那支測試會對每個算子驗證「附加未來資料不改變過去的值」。
+
+### field vs operator 的分界
+
+> **無視窗參數的衍生量 → field;有視窗的 → operator**
+
+這就是 WorldQuant 把 `vwap` / `returns` 當 data、而 RSI/ATR 不是的原因:前者沒有
+可調視窗,後者有(RSI-14 的 14 該進搜尋空間,不該寫死)。
+
+`operators.attach_fields(panel, ops)` 提供 8 個無視窗欄位:
+
+| field | 定義 | 備註 |
+|---|---|---|
+| `vwap` | `turnover / volume` | **真實**日 VWAP,不是 (h+l+c)/3 近似 |
+| `returns` | `close/prev_close - 1` | |
+| `true_range` | `max(h-l, \|h-pc\|, \|l-pc\|)` | 含跳空;`ATR(d) = ts_mean(true_range,d)` |
+| `gap` | `open/prev_close - 1` | |
+| `intraday_ret` | `close/open - 1` | |
+| `close_loc` | `(c-l)/(h-l)` | 收盤在當日區間的位置 |
+| `dollar_volume` | `turnover` | |
+| `amihud` | `\|returns\| / dollar_volume` | 非流動性 |
+
+複合指標優先用 primitive 組,不要做成黑箱 —— 例如 RSI 可由
+`ts_sum(elem_max(ts_delta(x,1),0), d) / ts_sum(abs_(ts_delta(x,1)), d)` 組出,
+這樣搜尋空間才涵蓋變體而非只有教科書版本。`ts_rsi` 只是可讀性的包裝,
+且有測試釘住它與 primitive 組合的結果完全一致。
 - 測試用 `unittest`,放 `tests/`,**離線**(mock 掉 HTTP)。
   修完 bug 要留回歸測試,並在 docstring 說明那個 bug 是什麼。
 
