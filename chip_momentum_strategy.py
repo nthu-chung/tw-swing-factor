@@ -21,25 +21,39 @@ long-only、動態 universe、低周轉的波段策略。這支是為了「之�
   2. `trend_ok`:MA20>MA60 且 MA60 上揚 且 收盤>MA60
   3. 價格完整性排除名單(見 outputs/price_integrity_excluded.json)
 
-組合建構(關鍵:低周轉)
-------------------------
+組合建構
+--------
     持股 10 檔等權 / 20 日再平衡 / MA60 出場 / -15% 硬停損 / T+1 開盤
 
-  為什麼是低周轉:訊號弱(IC≈0.04)時,高周轉的成本與洗刷會吃掉全部 edge。
-  實測同一訊號在 `5日再平衡 + MA20 + -8%停損` 下 IS 相位中位 Sharpe 只有 0.93
-  且**有兩個相位是負的**;換成本配置後交易數從 184 降到 57,IS 五相位全部 >1。
-  這不是挑參數,是「弱訊號必須壓低周轉」的機制,方向在 16 格掃描中一致(所有
-  MA60 配置都排在前段)。
+  ⚠ 這組參數是在**被污染的數字**上選出來的(見下),乾淨掃描裡它墊底。
+  保留現值只為與歷史報告可對照,**不代表它被驗證過**。重新選參數前必須先
+  處理 holdout 已用盡的問題。
 
-證據等級與界線 — 讀 outputs/CHIP_MOMENTUM_REPORT.md 再決定要不要用
-------------------------------------------------------------------
-  這是 `active hypothesis`,**不是已證明的 alpha**。三個必須知道的保留:
-  (1) OS 只有 12~15 筆交易,Sharpe 3.8 沒有統計意義,只能說「沒有崩掉」。
-  (2) 勝率僅 29~40%、賺賠比 5.7~7.3 → 報酬集中在少數幾筆,對個別交易極敏感。
-  (3) 樣本是單一多頭窗(2024-07~2026-06),OS 段年化 +163% 的普漲環境下,
-      無成本等權買進持有的 Sharpe 是 4.20,**比本策略高**。本策略在 IS 勝過
-      基準(1.64 vs 1.17)、在 OS 輸給基準 —— 亦即目前只能宣稱「在較正常的
-      IS 段有選股增量」,不能宣稱在普漲段有增量。
+證據等級:`blocked` —— 不足以宣稱 edge
+--------------------------------------
+  跑滿 20 個再平衡相位(不是抽樣 5 個)、PIT 候選池、修正評估窗之後:
+
+      IS  中位 0.520 / 最小 -0.412 / 最大 1.470 / 標準差 0.509 → 只有 3/20 勝基準 1.13
+      OS  中位 1.661 / 最小 0.735                              → 12/20 勝基準 1.52
+
+  **相位標準差 0.509 ≈ 訊號效果本身的量級** —— 「哪天開始執行」比訊號更決定
+  結果(rebalance timing luck)。實際下單只會走一條路徑,所以 -0.412 不是
+  理論數字。
+
+  兩件事要分開講:S19 明顯勝過**同集中度的隨機選股**(1.205 vs 0.312),選股
+  確實有訊號;但只勉強勝過**等權持有全部合格股**(1.126)—— 選股技巧大致只夠
+  補償集中到 10 檔的分散度代價。
+
+  已作廢的數字(留著是為了記住怎麼錯的):
+    ① IS 五相位全 >1(中位 1.644)      —— 靜態候選池 look-ahead
+    ② IS 1.607 / OS 1.938              —— 評估窗洩漏,IS 溢出切點 144 天,
+                                          吃到 OS 段的 +87.2%(真實 IS 0.306)
+    ③ 兩版的 16 格參數掃描都建立在①②上,選出的配置在乾淨掃描中墊底
+
+  **OS 已非乾淨 holdout**:洩漏的 IS 包含 OS 走勢,故參數選擇間接看過 OS。
+  要再升級證據等級,只剩 freeze_manifest + forward_test 這條路。
+
+  完整保留見 outputs/CHIP_MOMENTUM_REPORT.md 與 STRATEGY_REGISTRY.md 的 S19 條目。
 """
 from __future__ import annotations
 
@@ -68,8 +82,40 @@ PORT_STOP_LOSS = 0.15
 EXCLUDED_PATH = "price_integrity_excluded.json"
 
 
+def compute_excluded(symbols: List[str], write: bool = True) -> set:
+    """對**傳入的股票集**算價格完整性排除名單(還原後仍有殘留斷點者)。
+
+    ⚠ 不要改回「讀單一全域檔案」。排除名單是**隨 universe 而變**的:
+    當期池 300 檔算出 18 檔、PIT 聯集 758 檔算出 45 檔。共用一個檔案時,
+    後跑的流程會覆蓋前一個,下次另一條路徑就會被 fail-closed 閘門擋下
+    (2026-08-06 實際發生:出上線名單後,研究報告重生就掛了)。
+    當場算才不會有這種跨流程污染;`fetch_price` 有快取,成本很低。
+
+    仍會寫出檔案,但那是**產出物供人工檢視**,不是真理來源。
+    """
+    import data
+    import price_integrity as pi
+
+    frames = {}
+    for sid in symbols:
+        p = data.fetch_price(sid)
+        if p is not None and not p.empty:
+            frames[sid] = p
+    if not frames:
+        return set()
+    audit = pi.audit_price_frames(
+        frames, threshold=config.PRICE_INTEGRITY_RETURN_THRESHOLD)
+    bad = sorted(audit["stock_id"].unique()) if not audit.empty else []
+    if write:
+        try:
+            json.dump(bad, open(config.OUTPUT_DIR / EXCLUDED_PATH, "w"), indent=1)
+        except Exception:
+            pass
+    return set(bad)
+
+
 def load_excluded() -> set:
-    """價格完整性排除名單(自建還原價後仍有殘留斷點的股票)。"""
+    """讀上一次寫出的排除名單。**僅供檢視**,建構 panel 請用 compute_excluded。"""
     p = config.OUTPUT_DIR / EXCLUDED_PATH
     if not p.exists():
         return set()
@@ -173,7 +219,11 @@ def evaluate(panel: pd.DataFrame, symbols: List[str],
     """
     score = build_signal(panel)
     rows = []
-    for ph in range(PORT_REBALANCE_DAYS if PORT_REBALANCE_DAYS <= 5 else 5):
+    # 相位數 = 再平衡週期。「每 N 日再平衡」沒有指定從哪天起算,N 個起始偏移
+    # 都是同一條規則的合法實作,各自有自己的 Sharpe(rebalance timing luck)。
+    # 早期版本上限寫死 5,等於只抽樣 20 個路徑中的 5 個,中位數/最小值本身就
+    # 帶抽樣誤差。跑滿才是實際會遇到的分布。
+    for ph in range(PORT_REBALANCE_DAYS):
         s = run_once(panel, score, symbols, start, end, ph)
         if not s:
             continue
@@ -238,13 +288,12 @@ def build_panel(symbols: Optional[List[str]] = None,
     """
     import universe as uni
 
-    excluded = load_excluded()
     if use_pit_pool:
-        panel, syms = _build_pit_panel(excluded)
-        return panel, syms
+        return _build_pit_panel()
 
     if symbols is None:
         symbols = uni.get_universe(top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL)
+    excluded = compute_excluded(symbols)      # 對這組 symbols 當場算,不讀全域檔
     symbols = [s for s in symbols if s not in excluded]
 
     panel = backtest._prepare_panel(
@@ -256,7 +305,7 @@ def build_panel(symbols: Optional[List[str]] = None,
     return attach_chip_fields(panel), symbols
 
 
-def _build_pit_panel(excluded: set) -> Tuple[pd.DataFrame, List[str]]:
+def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     """用 pit_universe 的逐月池建 panel(候選池成員資格逐日套用)。
 
     走精簡資料路徑(price + inst),因為 PIT 池聯集有 700+ 檔,完整 bundle 會
@@ -271,7 +320,8 @@ def _build_pit_panel(excluded: set) -> Tuple[pd.DataFrame, List[str]]:
     pools = pu.build_pit_pools(hist, top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
                                lookback_days=config.DYNAMIC_UNIVERSE_LOOKBACK,
                                lag_days=1, freq="M")
-    union = sorted({s for v in pools.values() for s in v} - set(excluded))
+    union = sorted({s for v in pools.values() for s in v})
+    union = sorted(set(union) - compute_excluded(union))   # 對 PIT 聯集當場算
 
     panel = live_signal.build_light_panel(union, apply_membership=False)
     if panel.empty:
