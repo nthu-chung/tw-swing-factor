@@ -156,6 +156,9 @@
 | 上市/上櫃/ETF 覆蓋（§1/§6） | `current_watchlist._regular_equity_mask` | live screen 與 market_flow 排除 00 開頭 ETF |
 | 族群分類隨時間改變（§6） | `universe_meta.industry_pit=False` + `industry_asof` | 回測 metadata 明示產業分類非 PIT |
 | CI 下界>0 ≠ edge（§7） | `validate_oos` beta-aware verdict + 寫入 buy&hold 基準 | OS 普漲時自動降級結論，不再無條件宣稱「維持上線合理」 |
+| 凍結必須凍到全部規則（§8） | `freeze_manifest`：反向 allowlist（config 大寫參數預設全凍，要排除得寫進 `NOT_FROZEN` 並附理由）＋ `strategies/spec.py` 的 `StrategySpec` | 手維護 `FROZEN_KEYS` 只列 34 個、config 有 92 個 → 改 `BT_ORDER_SIZE_MODE`／處置模型／IS-OS 切割，hash 一個字都不會變；S19 的 10 檔／20 日更是在 manifest 之後才寫進 config，完全沒被凍 |
+| 凍結版本不可冒充（§8） | `freeze_manifest.validate_manifest` + `apply_rules` fail-closed；label 進檔名不進 hash | legacy／不完整／被改過的 manifest 不得被 forward 使用；同日不同 label 不再互相覆寫 |
+| forward 不得挑相位／缺基準（§7） | `forward_test.run` 走策略單元的全相位掃描 + 等權基準 + 不可覆寫的輸出 | 舊版只跑單一相位、吃引擎預設 `rebalance_every=5/top_n=3`、沒有基準、每次重跑覆寫同名檔 |
 
 ## 10. 標準操作流程（指令級）
 
@@ -200,11 +203,29 @@ SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
 
 ### D. 要「宣稱」一個策略前（唯一能升級到 Clean OOS/Forward-only 的路）
 ```bash
-.venv/bin/python freeze_manifest.py --label <策略名>   # 凍結規則(immutable,不可覆寫)
+.venv/bin/python freeze_manifest.py --strategy s19_chip_momentum --label <標籤>
+#   → outputs/FROZEN_MANIFEST_<freeze_date>_<label>.json(immutable,不可覆寫)
+#   凍的是「config 的每個 load-bearing 參數」+「策略的 StrategySpec」
+#   (訊號視窗/權重 + 持股數/再平衡天數/MA 出場/停損)。label 只進檔名,不進 hash:
+#   同一組規則換標籤仍是同一套規則(hash 相同),不同標籤不會互相覆寫。
 # …之後推進 SNAPSHOT_END 累積凍結日後的新資料…
 .venv/bin/python forward_test.py                       # 只驗證凍結後的 forward 窗
+#   → outputs/forward_test_<freeze_date>_<label>_<hash>_<run_stamp>.json
+#     + append-only outputs/forward_test_runs.jsonl(每次重跑都留紀錄,不可覆寫)
 ```
 規則凍結後**不得回頭調參**（§8）。forward 交易數太少時持續累積，別急著下結論。
+
+forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（2026-08-15 修）：
+
+- manifest 必須是 `manifest_schema=2` 且通過 `freeze_manifest.validate_manifest`。
+  legacy 格式、缺 load-bearing 參數、缺策略規格、或 `rules` 被事後改過（hash 對不上）
+  一律 **raise 拒用**，不得冒充可靠凍結版本。
+- 套用凍結規則時 config 若已無該參數（改名/移除）→ raise。舊版是 `if hasattr` 靜默
+  略過，等於那個凍結值再也沒被套用，而 forward 仍宣稱自己跑的是凍結規則。
+- 候選池走策略的 `build_panel()` → `universes.historical_pit_universe()`；每個相位的
+  `summary.universe.candidate_pool_pit` 必須為 True、`days_beyond_last_pick` 必須為 0。
+- **跑滿所有等價相位**（相位數 = 凍結的再平衡天數），輸出中位數／最小值／最差 MaxDD，
+  並附等權買進持有基準；算不出基準就 raise（和零比沒有意義）。
 
 ### E. 每次宣稱前的例行稽核
 ```bash

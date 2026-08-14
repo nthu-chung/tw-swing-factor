@@ -68,18 +68,46 @@ import backtest
 import config
 from evaluation import build_evaluation_split
 from factor_engine import operators as op
+from strategies.spec import StrategySpec
 
 # ── 凍結參數(由 IS 五相位 Sharpe 中位數選出;OS 未參與選擇)──────────────
-SIGNAL_MOM_WINDOW = 20      # ts_ir 視窗
-SIGNAL_FLOW_WINDOW = 20     # 法人流量累積視窗
-SIGNAL_VOL_WINDOW = 20      # 流量正規化分母(均量)
-W_MOMENTUM = 0.5
-W_FLOW = 0.5
+# 唯一真理是 `SPEC`。以前這些是散落的模組常數,而投組那半還是在 manifest 產生
+# **之後**才被 `_apply_portfolio_config()` 寫進 config —— 結果 freeze_manifest
+# 一個都沒凍到:改 10 檔→3 檔、20 日→5 日,`rules_sha256_16` 不會變。
+# 收進 StrategySpec 之後,manifest 才凍得到、forward 才套得回去。
+SPEC = StrategySpec(
+    name="s19_chip_momentum",
+    signal={
+        "mom_window": 20,       # ts_ir 視窗
+        "flow_window": 20,      # 法人流量累積視窗
+        "vol_window": 20,       # 流量正規化分母(均量)
+        "w_momentum": 0.5,
+        "w_flow": 0.5,
+    },
+    portfolio={
+        "max_positions": 10,
+        "rebalance_days": 20,
+        "ma_exit": 60,
+        "stop_loss": 0.15,
+    },
+    required_signal=("mom_window", "flow_window", "vol_window",
+                     "w_momentum", "w_flow"),
+    required_portfolio=("max_positions", "rebalance_days", "ma_exit",
+                        "stop_loss"),
+)
 
-PORT_MAX_POSITIONS = 10
-PORT_REBALANCE_DAYS = 20
-PORT_MA_EXIT = 60
-PORT_STOP_LOSS = 0.15
+# 舊模組常數保留為 SPEC 的投影(既有測試與報告仍引用)。**不要**改這些值來調參 ——
+# 函式一律讀傳進來的 spec,改這裡不會生效,只會讓文件與實跑不一致。
+SIGNAL_MOM_WINDOW = SPEC.sig("mom_window")
+SIGNAL_FLOW_WINDOW = SPEC.sig("flow_window")
+SIGNAL_VOL_WINDOW = SPEC.sig("vol_window")
+W_MOMENTUM = SPEC.sig("w_momentum")
+W_FLOW = SPEC.sig("w_flow")
+
+PORT_MAX_POSITIONS = SPEC.port("max_positions")
+PORT_REBALANCE_DAYS = SPEC.port("rebalance_days")
+PORT_MA_EXIT = SPEC.port("ma_exit")
+PORT_STOP_LOSS = SPEC.port("stop_loss")
 
 EXCLUDED_PATH = "price_integrity_excluded.json"
 
@@ -127,22 +155,27 @@ def load_excluded() -> set:
         return set()
 
 
-def build_signal(panel: pd.DataFrame) -> pd.Series:
+def build_signal(panel: pd.DataFrame, *,
+                 spec: StrategySpec = SPEC) -> pd.Series:
     """回傳與 panel 同 index 的訊號分數。
 
     ⚠ panel 必須是 `keep_non_members=True` 的**稠密** panel。ts_ 類算子是對
     「相鄰列」做 rolling,若 panel 只留動態 universe 成員日,20 列會橫跨遠超過
     20 個交易日 → 因子失真。成員過濾要留到選股時才做(見 build_picks)。
+
+    視窗與權重一律讀 `spec`(forward 會傳凍結的那份),不要改回讀模組常數 ——
+    那等於 forward 用「今天的參數」驗證「當時凍結的規則」。
     """
     o = op.PanelOps(panel["date"], panel["stock_id"])
     ret1 = o.ts_returns(panel["close"], 1)
-    mom = o.ts_ir(ret1, SIGNAL_MOM_WINDOW)
+    mom = o.ts_ir(ret1, spec.sig("mom_window"))
 
-    vol = o.ts_mean(panel["volume"], SIGNAL_VOL_WINDOW).replace(0, np.nan)
-    flow = (o.ts_sum(panel["foreign_net"], SIGNAL_FLOW_WINDOW)
-            + o.ts_sum(panel["trust_net"], SIGNAL_FLOW_WINDOW)) / vol
+    vol = o.ts_mean(panel["volume"], spec.sig("vol_window")).replace(0, np.nan)
+    flow = (o.ts_sum(panel["foreign_net"], spec.sig("flow_window"))
+            + o.ts_sum(panel["trust_net"], spec.sig("flow_window"))) / vol
 
-    return W_MOMENTUM * o.cs_rank(mom) + W_FLOW * o.cs_rank(flow)
+    return (spec.sig("w_momentum") * o.cs_rank(mom)
+            + spec.sig("w_flow") * o.cs_rank(flow))
 
 
 def build_picks(panel: pd.DataFrame, score: pd.Series,
@@ -173,12 +206,17 @@ def build_picks(panel: pd.DataFrame, score: pd.Series,
     return out
 
 
-def _apply_portfolio_config():
-    """把凍結的組合參數套進 config,回傳原值供還原。"""
+def _apply_portfolio_config(spec: StrategySpec = SPEC):
+    """把凍結的組合參數套進 config,回傳原值供還原。
+
+    ⚠ 這裡是在 manifest 產生**之後**才動 config,所以 `freeze_manifest` 讀 config
+    是讀不到這些值的。凍結靠的是 manifest 的 `rules["strategy"]`(見 spec.py),
+    不是靠這個函式的副作用。
+    """
     old = (config.BT_MAX_POSITIONS, config.BT_MA_EXIT, config.BT_TREND_STOP_LOSS)
-    config.BT_MAX_POSITIONS = PORT_MAX_POSITIONS
-    config.BT_MA_EXIT = PORT_MA_EXIT
-    config.BT_TREND_STOP_LOSS = PORT_STOP_LOSS
+    config.BT_MAX_POSITIONS = spec.port("max_positions")
+    config.BT_MA_EXIT = spec.port("ma_exit")
+    config.BT_TREND_STOP_LOSS = spec.port("stop_loss")
     return old
 
 
@@ -188,7 +226,8 @@ def _restore_portfolio_config(old):
 
 def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
              start=None, end=None, phase: int = 0,
-             universe_provider=None) -> Dict:
+             universe_provider=None, *,
+             spec: StrategySpec = SPEC) -> Dict:
     """跑單一相位,回傳 backtest summary。
 
     ⚠ `start_date`/`end_date` 必須傳給 `backtest_portfolio`。只限制 `picks_by_date`
@@ -207,13 +246,13 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
         return {}
     if universe_provider is None:
         universe_provider = panel.attrs.get("universe_provider")
-    old = _apply_portfolio_config()
+    old = _apply_portfolio_config(spec)
     try:
         r = backtest.backtest_portfolio(
             symbols=symbols, sample=False,
             start_date=start, end_date=end,     # ← 必傳:見下
-            rebalance_every=PORT_REBALANCE_DAYS,
-            top_n=PORT_MAX_POSITIONS, picks_by_date=picks,
+            rebalance_every=spec.port("rebalance_days"),
+            top_n=spec.port("max_positions"), picks_by_date=picks,
             universe_provider=universe_provider,
         )
     finally:
@@ -222,21 +261,27 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
 
 
 def evaluate(panel: pd.DataFrame, symbols: List[str],
-             start=None, end=None, universe_provider=None) -> pd.DataFrame:
+             start=None, end=None, universe_provider=None, *,
+             spec: StrategySpec = SPEC) -> pd.DataFrame:
     """跑滿所有等價再平衡相位。回傳每相位一列。
 
     只報單一相位的 Sharpe 是這個 repo 反覆踩過的坑(S04):同一訊號不同相位
     可以從 -0.09 擺到 +1.09。要看中位數與最小值,不是最大值。
+
+    註(給 P1-1):這是目前唯一「跑滿所有相位」的掃描實作,forward 也走這裡,
+    刻意不另開第二份迴圈。要抽成 `evaluation/phases.py` 時,搬的就是下面這段。
+    每列附帶 `days_beyond_last_pick` 與 `candidate_pool_pit`,讓呼叫端能在結果
+    層面驗證「沒有評估窗溢出」與「候選池是 PIT」,而不是只能相信自己傳對參數。
     """
-    score = build_signal(panel)
+    score = build_signal(panel, spec=spec)
     rows = []
     # 相位數 = 再平衡週期。「每 N 日再平衡」沒有指定從哪天起算,N 個起始偏移
     # 都是同一條規則的合法實作,各自有自己的 Sharpe(rebalance timing luck)。
     # 早期版本上限寫死 5,等於只抽樣 20 個路徑中的 5 個,中位數/最小值本身就
     # 帶抽樣誤差。跑滿才是實際會遇到的分布。
-    for ph in range(PORT_REBALANCE_DAYS):
+    for ph in range(int(spec.port("rebalance_days"))):
         s = run_once(panel, score, symbols, start, end, ph,
-                     universe_provider=universe_provider)
+                     universe_provider=universe_provider, spec=spec)
         if not s:
             continue
         rows.append({
@@ -244,6 +289,10 @@ def evaluate(panel: pd.DataFrame, symbols: List[str],
             "ann_vol": s.get("ann_vol"), "max_dd": s.get("max_drawdown"),
             "n_trades": s.get("n_trades"), "win_rate": s.get("win_rate"),
             "payoff": s.get("payoff_ratio"),
+            "days_beyond_last_pick": (
+                s.get("eval_audit", {}) or {}).get("days_beyond_last_pick"),
+            "candidate_pool_pit": (
+                s.get("universe", {}) or {}).get("candidate_pool_pit"),
         })
     return pd.DataFrame(rows)
 

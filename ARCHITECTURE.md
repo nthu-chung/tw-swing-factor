@@ -38,6 +38,16 @@
 只報一條路徑等於挑路徑。引擎另有 `summary["eval_audit"]` 稽核評估窗上界，
 `days_beyond_last_pick` 必須為 0，否則 IS 會借用 OS 的績效。
 
+第三條屬於 freeze／forward：**凍結必須凍到全部規則**。強制點是
+`freeze_manifest.py`（config 的大寫參數預設全凍，排除要寫進 `NOT_FROZEN` 附理由）
+加上 `strategies/spec.py` 的 `StrategySpec`（訊號視窗／權重與持股數／再平衡天數／
+MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 34 個而 config 有 92 個，
+`BT_ORDER_SIZE_MODE`、漲跌停／處置模型、IS-OS／embargo 全部漏凍；S19 的 10 檔／
+20 日更是在 manifest 產生**之後**才被寫進 config，改成 3 檔／5 日 `rules_sha256_16`
+一個字都不會變。`forward_test.py` 只接受 `manifest_schema=2` 且通過
+`validate_manifest` 的 manifest（legacy／不完整／被改過一律 raise），套用凍結規格後
+跑滿所有相位、附等權基準，輸出不可覆寫並追加 append-only ledger。
+
 兩層之間唯一的介面是 `picks_by_date`，所以因子層可以整層抽換而不動執行層。
 
 ## 目標模組邊界
@@ -73,7 +83,10 @@
 - `factor_engine/data_fields.py`：從 operators 拆出的八個無視窗欄位。
 - `factor_engine/legacy_factors.py`：既有傳統因子。
 - `evaluation/splits.py`：統一 IS/OS 切割。
-- `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked。
+- `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
+  `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
+- `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked
+  （參數改由 `SPEC` 提供，舊模組常數只是它的投影）。
 - `execution/tradability.py`：回測使用的一字漲跌停與處置禁倉資料載入。
 - `execution/taiwan_rules.py`：普通股 tick、精確 10% 漲跌停與首五日例外介面。
 - `execution/costs.py`：研究小數股、整張、零股代理及券商成本。
