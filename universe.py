@@ -109,15 +109,21 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
 
 def get_research_candidates(universe_top_n: int = None,
                             candidate_pool_n: int = None) -> List[str]:
-    """Return the candidate set used to build a daily dynamic universe.
+    """legacy 單一日期候選池,**只能當顯式對照組**。
 
-    ``universe_top_n`` is the desired number of eligible names per date.  When
-    dynamic-universe mode is enabled, candidates must be broader than that
-    daily target; the current bootstrap uses the saved current top300 file.
+    ⚠ 這不是 PIT 候選池,也不是 PIT 的替代品。它讀的是 `outputs/universe_top*.json`
+    ——「某一天」的成交值排名。把它回套整段歷史 = 用今天知道誰熱門去決定兩年前能
+    選誰(AGENTS.md 陷阱 4),而且該檔存活的股票本身就有存活者偏誤。
 
-    This removes direct *daily ranking* look-ahead, but it does not make a
-    current top300 candidate file survivorship-free.  The backtest metadata
-    reports this limitation explicitly.
+    正式歷史策略請改用:
+
+        from universes import historical_pit_universe
+        pit = historical_pit_universe()          # 月頻 PIT:M 月只用完整 M-1 曆月
+
+    仍要用這個靜態池做對照時,呼叫引擎時必須顯式帶 `static_universe_comparator=True`,
+    結果才會被標成 `formal_evidence_eligible=False`(不可作正式證據)。
+
+    ``universe_top_n`` 是每日目標檔數;dynamic 模式下候選池必須比它寬。
     """
     target = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
     if not config.DYNAMIC_UNIVERSE_ENABLED:

@@ -221,6 +221,16 @@ SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
   所以整體 `survivorship_free` 維持 `False`。`build_universe.py` 的
   `outputs/universe_top*.json` 現在只供 legacy static 對照（`--static-universe`），
   **不得回套歷史**（偏誤上界見 `UNIVERSE_BIAS_REPORT.md`）。
+  這條界線現在由結構強制、不再靠自律：正式歷史候選池的入口是
+  `universes.historical_pit_universe()`；`backtest` 的 dynamic 正式回測沒有
+  `universe_provider` 就 raise，legacy 單日池必須顯式帶
+  `static_universe_comparator=True`，且結果會被標記
+  `candidate_pool_pit=False` / `formal_evidence_eligible=False`。
+  下列腳本目前仍是 research-only 的靜態池對照（其數字不可作正式證據）：
+  `factor_audit.py`、`factor_scan.py`、`rotation_research.py`、`defensive_rs.py`、
+  `regime_strategy_lab.py`、`market_filter_eval.py`、`experiment_weights.py`、
+  `validate_oos.py`、`evaluate_dynamic_universe.py`、`sector_rotation.py`、
+  `strategies/s19_chip_momentum.build_panel(use_pit_pool=False)`。
 - **還原價**：預設仍未還原；`price_adjust.py` 自建只處理除權息，不含分割／減資。
   真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。未還原價現在一律
   fail-closed raise（§9），不是警告。

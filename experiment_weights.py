@@ -66,9 +66,11 @@ WEIGHT_SETS = {
 def run_one(label: str, weights: dict, symbols, rebalance: int, top_n: int,
             start: str, end: str) -> dict:
     config.FACTOR_WEIGHTS = copy.deepcopy(weights)
+    # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
     res = backtest.backtest_portfolio(symbols=symbols, sample=False,
                                       start_date=start, end_date=end,
-                                      rebalance_every=rebalance, top_n=top_n)
+                                      rebalance_every=rebalance, top_n=top_n,
+                                      static_universe_comparator=True)
     if "summary" not in res:
         return {"label": label, "error": res.get("error", "?")}
     s = res["summary"]
@@ -93,7 +95,8 @@ def main():
     pick = 5
     symbols = uni.get_research_candidates(universe_top_n=top_n)
     calendar_run = backtest.backtest_portfolio(
-        symbols=symbols, sample=False, rebalance_every=rebalance, top_n=pick
+        symbols=symbols, sample=False, rebalance_every=rebalance, top_n=pick,
+        static_universe_comparator=True,
     )
     if "equity_curve" not in calendar_run:
         raise RuntimeError(calendar_run.get("error", "無法建立研究交易日曆"))

@@ -17,7 +17,8 @@ tw-swing-factor 統一入口
 參數：
   --pool N        backtest/ic:上月 PIT 候選池大小；screen:當下候選池大小
   --universe-top N 每個訊號日依20日平均成交值取前 N（預設100）
-  --static-universe 關閉動態 universe，僅供 legacy 對照
+  --static-universe 關閉動態 universe、改用 legacy 單日候選池;僅供對照,
+                  結果會標 formal_evidence_eligible=False(非 PIT,不可作正式證據)
   --full          用全市場 universe（預設小集合 SAMPLE_UNIVERSE）
   --date YYYY-MM-DD   指定選股日（僅 screen）
   --top N         每次選前 N 檔（預設 3）
@@ -32,7 +33,7 @@ import config
 import screener
 import backtest
 import universe as uni
-from universes import MonthlyPITUniverseProvider
+from universes import historical_pit_universe
 
 
 def _parse_args(argv):
@@ -87,27 +88,30 @@ def main():
                           rebalance_every=args["rebalance"],
                           pool=args["pool"],
                           dynamic_enabled=not args["static_universe"],
-                          universe_top_n=args["universe_top"])
+                          universe_top_n=args["universe_top"],
+                          static_comparator=args["static_universe"])
     elif cmd == "ic":
         symbols = None
         universe_provider = None
+        # --static-universe = legacy 單日池對照組(刻意保留),必須顯式宣告,
+        # 結果會標 formal_evidence_eligible=False。預設走月頻 PIT 候選池。
+        static_comparator = args["static_universe"] and not sample
         if not sample:
             if args["static_universe"]:
                 symbols = uni.get_universe(
                     top_n=args["pool"] or args["universe_top"]
                 )
             else:
-                universe_provider = MonthlyPITUniverseProvider.from_cache(
-                    top_n=args["pool"] or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
-                    min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
-                )
-                symbols = universe_provider.all_symbols
+                pit = historical_pit_universe(candidate_pool_n=args["pool"])
+                universe_provider = pit.provider
+                symbols = pit.symbols
         ic_df = backtest.factor_ic(
             symbols=symbols,
             sample=sample,
             dynamic_enabled=(not args["static_universe"]) and not sample,
             universe_top_n=args["universe_top"],
             universe_provider=universe_provider,
+            static_universe_comparator=static_comparator,
         )
         backtest._print_ic(ic_df)
     else:

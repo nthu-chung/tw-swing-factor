@@ -187,7 +187,8 @@ def _restore_portfolio_config(old):
 
 
 def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
-             start=None, end=None, phase: int = 0) -> Dict:
+             start=None, end=None, phase: int = 0,
+             universe_provider=None) -> Dict:
     """跑單一相位,回傳 backtest summary。
 
     ⚠ `start_date`/`end_date` 必須傳給 `backtest_portfolio`。只限制 `picks_by_date`
@@ -195,10 +196,17 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
     資料末端。實測(2026-08-03 修):IS 的權益曲線跑超出切點 144 天,把 8 筆未平倉
     部位在 OS 期間的 **+101.8%** 漲幅算進 IS 的 Sharpe。這是評估層的前視,
     會讓 IS 數字虛高,而且用它選出來的參數也連帶失效。
+
+    `universe_provider` 要往下傳:S19 自己建 panel、自己算 picks,引擎走的是
+    external picks 路徑,沒有 provider 的話 summary 只會寫
+    `candidate_source=external_picks_by_date` —— 之後沒人能從結果判斷候選池是不是
+    PIT。傳了 provider,summary 才會保留真實的候選池規則與 pool as-of。
     """
     picks = build_picks(panel, score, start, end, phase)
     if not picks:
         return {}
+    if universe_provider is None:
+        universe_provider = panel.attrs.get("universe_provider")
     old = _apply_portfolio_config()
     try:
         r = backtest.backtest_portfolio(
@@ -206,6 +214,7 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
             start_date=start, end_date=end,     # ← 必傳:見下
             rebalance_every=PORT_REBALANCE_DAYS,
             top_n=PORT_MAX_POSITIONS, picks_by_date=picks,
+            universe_provider=universe_provider,
         )
     finally:
         _restore_portfolio_config(old)
@@ -213,7 +222,7 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
 
 
 def evaluate(panel: pd.DataFrame, symbols: List[str],
-             start=None, end=None) -> pd.DataFrame:
+             start=None, end=None, universe_provider=None) -> pd.DataFrame:
     """跑滿所有等價再平衡相位。回傳每相位一列。
 
     只報單一相位的 Sharpe 是這個 repo 反覆踩過的坑(S04):同一訊號不同相位
@@ -226,7 +235,8 @@ def evaluate(panel: pd.DataFrame, symbols: List[str],
     # 早期版本上限寫死 5,等於只抽樣 20 個路徑中的 5 個,中位數/最小值本身就
     # 帶抽樣誤差。跑滿才是實際會遇到的分布。
     for ph in range(PORT_REBALANCE_DAYS):
-        s = run_once(panel, score, symbols, start, end, ph)
+        s = run_once(panel, score, symbols, start, end, ph,
+                     universe_provider=universe_provider)
         if not s:
             continue
         rows.append({
@@ -296,11 +306,14 @@ def build_panel(symbols: Optional[List[str]] = None,
     excluded = compute_excluded(symbols)      # 對這組 symbols 當場算,不讀全域檔
     symbols = [s for s in symbols if s not in excluded]
 
+    # static_universe_comparator=True:這條是 legacy 單日靜態池對照組(偏誤案例),
+    # 必須顯式宣告,引擎才會放行並在 summary 標 formal_evidence_eligible=False。
     panel = backtest._prepare_panel(
         symbols, config.MIN_COMPOSITE, None, None,
         dynamic_enabled=True,
         universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
         keep_non_members=True,
+        static_universe_comparator=True,
     )
     return attach_chip_fields(panel), symbols
 
@@ -314,14 +327,13 @@ def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     """
     import dynamic_universe as du
     import live_signal
-    from universes import MonthlyPITUniverseProvider
+    from universes import historical_pit_universe
 
-    provider = MonthlyPITUniverseProvider.from_cache(
-        top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
-        min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
-    )
-    union = provider.all_symbols
-    union = sorted(set(union) - compute_excluded(union))   # 對 PIT 聯集當場算
+    # 正式歷史候選池的入口(月頻 PIT)。價格完整性黑名單要對「PIT 聯集」當場算,
+    # 所以先取聯集再扣;扣完仍是聯集的子集,引擎的 PIT 一致性檢查會通過。
+    pit = historical_pit_universe()
+    provider = pit.provider
+    union = sorted(set(pit.symbols) - compute_excluded(pit.symbols))
 
     panel = live_signal.build_light_panel(union, apply_membership=False)
     if panel.empty:
@@ -340,6 +352,9 @@ def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     # 「20 列」跨過數月，製造錯誤視窗。候選資格只透過旗標在選股時套用。
     panel = panel.sort_values(["date", "stock_id"]).reset_index(drop=True)
     panel.attrs["universe"] = provider.metadata()
+    # provider 本身也帶著走:run_once 要把它傳進引擎,summary 才留得住真實的
+    # 候選池 metadata(external picks 路徑沒有 panel,引擎讀不到 attrs)。
+    panel.attrs["universe_provider"] = provider
     return panel, union
 
 

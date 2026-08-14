@@ -109,11 +109,15 @@ def _metrics_from_equity(eq: pd.DataFrame) -> dict:
 
 def _run(symbols, weights, start, end, rebalance, pick, universe_top_n):
     config.FACTOR_WEIGHTS = copy.deepcopy(weights)
+    # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
+    # 這支腳本的 OOS 數字因此不是 PIT 正式證據(summary 會標
+    # formal_evidence_eligible=False);正式路徑見 universes.historical_pit_universe。
     res = backtest.backtest_portfolio(symbols=symbols, sample=False,
                                       start_date=start, end_date=end,
                                       rebalance_every=rebalance, top_n=pick,
                                       dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
-                                      universe_top_n=universe_top_n)
+                                      universe_top_n=universe_top_n,
+                                      static_universe_comparator=True)
     return res
 
 

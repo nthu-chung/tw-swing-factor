@@ -129,10 +129,12 @@ def _metrics(eq: pd.DataFrame) -> dict:
 
 
 def _run_strategy(symbols, picks, start, end, reb, pick):
+    # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
     return backtest.backtest_portfolio(symbols=symbols, sample=False,
                                        start_date=start, end_date=end,
                                        rebalance_every=reb, top_n=pick,
-                                       picks_by_date=picks)
+                                       picks_by_date=picks,
+                                       static_universe_comparator=True)
 
 
 def _daily_ret(eq):
@@ -160,7 +162,8 @@ def run(pool=100, top_k=3, reb=5, pick=5):
 
     # 用基線全期取得交易日 → IS/OS 切點
     base_full = backtest.backtest_portfolio(symbols=symbols_full, sample=False,
-                                            rebalance_every=reb, top_n=pick)
+                                            rebalance_every=reb, top_n=pick,
+                                            static_universe_comparator=True)
     split = evaluation_split.build_evaluation_split(base_full["equity_curve"]["date"])
     n = split.n_total
     IS = split.is_window
@@ -180,7 +183,8 @@ def run(pool=100, top_k=3, reb=5, pick=5):
             if picks is None:
                 res = backtest.backtest_portfolio(symbols=symbols_full, sample=False,
                                                   start_date=st, end_date=en,
-                                                  rebalance_every=reb, top_n=pick)
+                                                  rebalance_every=reb, top_n=pick,
+                                                  static_universe_comparator=True)
             else:
                 res = _run_strategy(symbols_full, picks, st, en, reb, pick)
             if "equity_curve" not in res:
@@ -211,7 +215,8 @@ def run(pool=100, top_k=3, reb=5, pick=5):
         if picks is None:
             res = backtest.backtest_portfolio(symbols=symbols_full, sample=False,
                                               start_date=OS[0], end_date=OS[1],
-                                              rebalance_every=reb, top_n=pick)
+                                              rebalance_every=reb, top_n=pick,
+                                              static_universe_comparator=True)
         else:
             res = _run_strategy(symbols_full, picks, OS[0], OS[1], reb, pick)
         boot[label] = vo._block_bootstrap_ci(res["equity_curve"]) if "equity_curve" in res else None

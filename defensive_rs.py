@@ -72,10 +72,12 @@ def get_panel(rebuild: bool, top_n: int = 100) -> pd.DataFrame:
     else:
         symbols = uni.get_research_candidates(universe_top_n=top_n)
         print(f"[def-rs] 建 panel：{len(symbols)} 檔 …")
+        # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
         panel = backtest._prepare_panel(
             symbols, 0.0, None, None,
             dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
             universe_top_n=top_n,
+            static_universe_comparator=True,
         )
         panel["industry"] = panel["stock_id"].map(uni.get_industry_map()).fillna("")
         pickle.dump(panel, open(PANEL_PATH, "wb"))
@@ -212,6 +214,7 @@ def portfolio_compare(symbols, rebalance, pick, crash_start, crash_end,
             res = backtest.backtest_portfolio(
                 symbols=symbols, sample=False, start_date=start, end_date=end,
                 rebalance_every=rebalance, top_n=pick,
+                static_universe_comparator=True,   # research-only:非 PIT 候選池
             )
             if "equity_curve" not in res:
                 rows.append({"weights": label, "segment": segment,

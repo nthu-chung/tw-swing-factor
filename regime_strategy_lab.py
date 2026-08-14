@@ -143,7 +143,8 @@ def _run(symbols, picks, filt=False, reb=5, pick=5, start=None, end=None):
         return backtest.backtest_portfolio(
             symbols=symbols, sample=False, start_date=start, end_date=end,
             rebalance_every=reb, top_n=pick,
-            dynamic_enabled=True, picks_by_date=picks)
+            dynamic_enabled=True, picks_by_date=picks,
+            static_universe_comparator=True)   # research-only:非 PIT 候選池
     finally:
         config.MARKET_FILTER_ENABLED = filt_orig
 
@@ -152,9 +153,11 @@ def run(pool=300, pick=5, reb=5, vol_th=0.25):
     symbols = uni.get_research_candidates(universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
                                           candidate_pool_n=pool)
     print(f"[lab] 候選池 {len(symbols)} 檔｜snapshot {config.SNAPSHOT_END_DATE}｜建 panel …")
+    # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
     panel = backtest._prepare_panel(symbols, 0.0, None, None,
                                     dynamic_enabled=True,
-                                    universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N)
+                                    universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
+                                    static_universe_comparator=True)
     if panel.empty:
         print("[lab] panel 為空,結束。"); return
     print(f"[lab] panel {len(panel)} 列、{panel['date'].nunique()} 交易日、"

@@ -66,7 +66,11 @@ def build_research_panel(
     *,
     universe_top_n: int = 100,
 ) -> pd.DataFrame:
-    """Return a point-in-time panel with group and entry-trigger fields."""
+    """Return a research panel with group and entry-trigger fields.
+
+    ⚠ research-only:候選池是 legacy 單一日期排名(非 PIT),所以顯式宣告成
+    static comparator。要做正式歷史證據請走 `universes.historical_pit_universe()`。
+    """
     if symbols is None:
         symbols = uni.get_universe(top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL)
     panel = backtest._prepare_panel(
@@ -76,6 +80,7 @@ def build_research_panel(
         None,
         dynamic_enabled=True,
         universe_top_n=universe_top_n,
+        static_universe_comparator=True,
     )
     if panel.empty:
         return panel

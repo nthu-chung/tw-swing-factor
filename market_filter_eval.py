@@ -77,11 +77,13 @@ def _metrics(eq: pd.DataFrame) -> dict:
 
 
 def _run(symbols, start, end, rebalance, pick, universe_top_n):
+    # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
     return backtest.backtest_portfolio(symbols=symbols, sample=False,
                                        start_date=start, end_date=end,
                                        rebalance_every=rebalance, top_n=pick,
                                        dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
-                                       universe_top_n=universe_top_n)
+                                       universe_top_n=universe_top_n,
+                                       static_universe_comparator=True)
 
 
 def _split(symbols, rebalance, pick, universe_top_n):

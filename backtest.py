@@ -32,7 +32,9 @@ import evaluation_split
 import factors
 import price_integrity
 import universe as uni
-from universes import MonthlyPITUniverseProvider
+# MonthlyPITUniverseProvider 這裡不直接呼叫(候選池一律走 historical_pit_universe),
+# 但保留 re-export:它是 provider 的正式類別,測試與外部腳本以 backtest 為錨點取用。
+from universes import MonthlyPITUniverseProvider, historical_pit_universe  # noqa: F401
 from execution.tradability import detect_limit_lock as _limit_lock
 from execution.tradability import load_disposition_days as _load_disposition_days
 from execution.costs import OrderSizeMode, TaiwanStockCostModel, size_long_order
@@ -160,24 +162,154 @@ def _check_exit(bar: pd.Series, pos: dict, days_held: int) -> Optional[tuple]:
     return None
 
 
+# ── PIT 候選池強制點(引擎邊界)────────────────────────────────────────────
+# 2026-08-15:舊條件是「`universe_provider is None and dynamic_enabled and not
+# sample and symbols is None` 才自動補上月 PIT provider」。問題是所有研究入口都
+# 顯式傳 `symbols=`(全部來自 `universe.get_research_candidates()` 的單日靜態池),
+# 所以那個「安全預設」一次都沒觸發過 —— 等於預設就是用今天的成交值排名回套歷史
+# (AGENTS.md 陷阱 4 的選股 look-ahead),而程式看起來像有保護。
+#
+# 現在改成:引擎不再從 `symbols is None` 猜呼叫端意圖,呼叫端必須把意圖講清楚:
+#   1. 正式歷史回測 → 傳 universe_provider(最短路徑 universes.historical_pit_universe)
+#   2. legacy 單日池對照 → 顯式 static_universe_comparator=True(結果標為不可作正式證據)
+#   3. smoke test → sample=True
+# 三者都沒有就 raise,不再靜默退回靜態池。
+def _static_comparator_provenance() -> Dict:
+    """legacy 單日靜態池的誠實標籤(進 summary["universe"])。"""
+    return {
+        "candidate_pool_pit": False,
+        "static_universe_comparator": True,
+        "formal_evidence_eligible": False,
+        "evidence_note": (
+            "legacy 單一日期候選池(outputs/universe_top*.json):非 PIT,"
+            "含選股 look-ahead,僅供對照,不可作正式證據"
+        ),
+    }
+
+
+def _resolve_universe_source(symbols: Optional[List[str]], *,
+                             sample: bool,
+                             dynamic_enabled: bool,
+                             universe_provider,
+                             static_universe_comparator: bool,
+                             caller: str,
+                             external_picks: bool = False):
+    """把候選池的來源與誠實標籤一次決定好。
+
+    回傳 `(symbols, universe_provider, provenance)`;`provenance` 會併進
+    `summary["universe"]`,讓「這段績效能不能當正式證據」寫在結果裡而不是靠記憶。
+
+    `external_picks=True`(呼叫端自帶 picks_by_date)時引擎不建候選池,無法驗證
+    PIT,所以不 raise,但一律標 `formal_evidence_eligible=False`(除非同時傳了
+    provider),避免外部 picks 冒充 PIT 正式證據。
+    """
+    if universe_provider is not None and static_universe_comparator:
+        raise ValueError(
+            "universe_provider 與 static_universe_comparator 互斥:"
+            "PIT 候選池與 legacy 單日池對照不可同時成立"
+        )
+
+    if universe_provider is not None:
+        if not dynamic_enabled:
+            raise ValueError("PIT universe_provider 只能搭配 dynamic_enabled=True")
+        union = set(universe_provider.all_symbols)
+        if symbols is None:
+            symbols = sorted(union)
+            n_excluded = 0
+        else:
+            extra = sorted(set(symbols) - union)
+            if extra:
+                raise ValueError(
+                    f"[fail-closed] {caller}:symbols 有 {len(extra)} 檔不在 PIT 候選池"
+                    f"聯集內(例:{extra[:3]})→ 候選池已不是由 PIT 規則決定。"
+                    "只允許聯集的子集(唯一正當理由是資料品質黑名單)。"
+                )
+            n_excluded = len(union - set(symbols))
+        provenance = {
+            "candidate_pool_pit": True,
+            "static_universe_comparator": False,
+            "formal_evidence_eligible": True,
+            "candidate_symbols_excluded": n_excluded,
+        }
+        return symbols, universe_provider, provenance
+
+    if static_universe_comparator:
+        return symbols, None, _static_comparator_provenance()
+
+    if not sample and not external_picks:
+        if dynamic_enabled:
+            raise RuntimeError(
+                f"[fail-closed] {caller}:dynamic universe 的正式歷史回測必須顯式提供"
+                " PIT 候選池 provider。\n"
+                "  正式做法:from universes import historical_pit_universe\n"
+                "            pit = historical_pit_universe()\n"
+                "            backtest.backtest_portfolio(**pit.backtest_kwargs(), ...)\n"
+                "  legacy 單日池對照:顯式傳 static_universe_comparator=True"
+                "(結果會標 formal_evidence_eligible=False,不可作正式證據)。\n"
+                "  smoke test:sample=True。\n"
+                "  為什麼會擋:舊版只在 symbols is None 時才自動補 provider,但每個研究"
+                "入口都會傳 symbols,那個安全預設從未觸發 —— 預設值其實是把單日排名池"
+                "回套歷史(選股 look-ahead)。"
+            )
+        # 關掉 dynamic universe 又不是 sample = legacy 單日候選池,同樣要顯式宣告
+        # 成對照組,否則「靜態池」會不留痕跡地變成正式回測的候選池。
+        raise RuntimeError(
+            f"[fail-closed] {caller}:dynamic_enabled=False 等於用 legacy 單一日期"
+            "候選池,必須顯式 static_universe_comparator=True 宣告成對照組"
+            "(結果會標 formal_evidence_eligible=False);正式歷史回測請改走 "
+            "universes.historical_pit_universe()。"
+        )
+
+    if external_picks and dynamic_enabled and not sample:
+        # 候選池由呼叫端決定,引擎沒有辦法驗證它是不是 PIT → 誠實標記,不猜。
+        return symbols, None, {
+            "candidate_pool_pit": False,
+            "static_universe_comparator": False,
+            "formal_evidence_eligible": False,
+            "evidence_note": (
+                "picks_by_date 由呼叫端提供且未附 universe_provider:"
+                "引擎無法驗證候選池是否 PIT;要作正式證據請傳 universe_provider"
+            ),
+        }
+
+    return symbols, None, {
+        "candidate_pool_pit": False,
+        "static_universe_comparator": False,
+        "formal_evidence_eligible": False,
+        "evidence_note": (
+            "sample smoke test" if sample else "static(非 dynamic universe)模式"
+        ),
+    }
+
+
 # ── 預先計算所有股票的因子（含未來報酬）──────────────────────────────
 def _prepare_panel(symbols: List[str], min_score_for_trade: float,
                    start_date: Optional[str], end_date: Optional[str],
                    dynamic_enabled: Optional[bool] = None,
                    universe_top_n: Optional[int] = None,
                    keep_non_members: bool = False,
-                   universe_provider=None) -> pd.DataFrame:
+                   universe_provider=None,
+                   sample: bool = False,
+                   static_universe_comparator: bool = False) -> pd.DataFrame:
     """
     把所有股票每一天的因子 + 綜合分數 + 未來N日報酬，攤平成一個大 panel。
     這個 panel 同時用於 (1) 整體回測選股 (2) 因子 IC 分析。
     """
-    # 未還原價 fail-closed:任何走這個引擎的路徑（回測/IC/OOS/factor_audit/rotation）
-    # 在未還原價且偵測到公司行動斷點時,先擋在這裡,不讓假績效產生。
-    _assert_price_integrity(symbols)
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
         if dynamic_enabled is None else bool(dynamic_enabled)
     )
+    # 候選池來源的強制點:panel 就是候選池真正被「套用到歷史」的地方,所以閘門放這裡,
+    # 直接呼叫 _prepare_panel 的研究腳本也一樣要講清楚意圖。
+    symbols, universe_provider, universe_provenance = _resolve_universe_source(
+        symbols, sample=sample, dynamic_enabled=dynamic_enabled,
+        universe_provider=universe_provider,
+        static_universe_comparator=static_universe_comparator,
+        caller="_prepare_panel",
+    )
+    # 未還原價 fail-closed:任何走這個引擎的路徑（回測/IC/OOS/factor_audit/rotation）
+    # 在未還原價且偵測到公司行動斷點時,先擋在這裡,不讓假績效產生。
+    _assert_price_integrity(symbols)
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
 
     name_map = uni.get_name_map()
@@ -269,10 +401,10 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
     }
     candidate_mask = None
     if universe_provider is not None:
-        if not dynamic_enabled:
-            raise ValueError("PIT universe_provider 只能搭配 dynamic_enabled=True")
         candidate_mask = universe_provider.candidate_mask(panel)
         universe_meta.update(universe_provider.metadata())
+    # provenance 最後蓋上:誠實標籤不可被 provider metadata 或舊欄位覆寫。
+    universe_meta.update(universe_provenance)
     if dynamic_enabled:
         ranked = dynamic_universe.add_membership(
             panel,
@@ -343,7 +475,8 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        picks_by_date: Optional[Dict] = None,
                        let_positions_run: bool = False,
                        rebalance_phase: int = 0,
-                       universe_provider=None) -> Dict:
+                       universe_provider=None,
+                       static_universe_comparator: bool = False) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -370,19 +503,14 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         raise ValueError(
             f"rebalance_phase 必須在 [0, {rebalance_every - 1}]，目前為 {rebalance_phase}"
         )
-    if universe_provider is None and dynamic_enabled and not sample and symbols is None:
-        # 正式入口若呼叫端沒有提供 universe，安全預設也必須是上月 PIT；禁止再
-        # 靜默退回「今天的 top-N」並把它回套歷史。
-        universe_provider = MonthlyPITUniverseProvider.from_cache(
-            top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
-            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
-        )
-    if universe_provider is not None:
-        provider_symbols = list(universe_provider.all_symbols)
-        if symbols is None:
-            symbols = provider_symbols
-        elif set(symbols) != set(provider_symbols):
-            raise ValueError("symbols 必須等於 universe_provider 的歷史成員聯集")
+    # 候選池來源:不再從 symbols is None 猜意圖(舊版那條安全預設從未觸發過)。
+    external_picks = picks_by_date is not None
+    symbols, universe_provider, universe_provenance = _resolve_universe_source(
+        symbols, sample=sample, dynamic_enabled=dynamic_enabled,
+        universe_provider=universe_provider,
+        static_universe_comparator=static_universe_comparator,
+        caller="backtest_portfolio", external_picks=external_picks,
+    )
     if symbols is None:
         symbols = uni.get_universe(sample=sample)
 
@@ -437,13 +565,14 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     # picks_by_date 可由外部注入（例如 sector_rotation：族群輪動選股）。外部注入時
     # 跳過 composite/趨勢過濾（呼叫端自理），並用價格快取的交易日曆當 all_dates，
     # 避免重建整個 panel（省時、且不受 FACTOR_WEIGHTS 影響）。
-    external_picks = picks_by_date is not None
     if not external_picks:
         panel = _prepare_panel(
             symbols, config.MIN_COMPOSITE, start_date, end_date,
             dynamic_enabled=dynamic_enabled,
             universe_top_n=universe_top_n,
             universe_provider=universe_provider,
+            sample=sample,
+            static_universe_comparator=static_universe_comparator,
         )
         if panel.empty:
             return {"error": "panel 為空，無法回測"}
@@ -496,10 +625,19 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "survivorship_free": False, "industry_pit": False,
             "industry_asof": _asof, "candidate_pool_asof": _asof,
         }
+        # 呼叫端自建 panel/picks 但仍傳了真正的 PIT provider(S19 就是這樣)時,
+        # summary 必須保留 provider 的真實 metadata —— 否則正式策略的候選池規則、
+        # pool as-of 會在結果裡被寫成 "external_picks_by_date" 這種空白標籤,
+        # 之後沒人能從 summary 判斷這段績效的候選池到底是不是 PIT。
+        if universe_provider is not None:
+            universe_info["picks_source"] = "external_picks_by_date"
+            universe_info.update(universe_provider.metadata())
+        universe_info.update(universe_provenance)
     else:
         universe_info = panel.attrs.get("universe", {
             "enabled": dynamic_enabled, "direction": "long_only",
             "top_n": universe_top_n if dynamic_enabled else None,
+            **universe_provenance,
         })
 
     # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
@@ -878,7 +1016,8 @@ def factor_ic(symbols: Optional[List[str]] = None,
               end_date: Optional[str] = None,
               dynamic_enabled: Optional[bool] = None,
               universe_top_n: Optional[int] = None,
-              universe_provider=None) -> pd.DataFrame:
+              universe_provider=None,
+              static_universe_comparator: bool = False) -> pd.DataFrame:
     """
     每個因子分數對「未來 BT_IC_HORIZON 日報酬」的 Spearman rank IC。
 
@@ -898,17 +1037,12 @@ def factor_ic(symbols: Optional[List[str]] = None,
         if dynamic_enabled is None else bool(dynamic_enabled)
     )
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
-    if universe_provider is None and dynamic_enabled and not sample and symbols is None:
-        universe_provider = MonthlyPITUniverseProvider.from_cache(
-            top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
-            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
-        )
-    if universe_provider is not None:
-        provider_symbols = list(universe_provider.all_symbols)
-        if symbols is None:
-            symbols = provider_symbols
-        elif set(symbols) != set(provider_symbols):
-            raise ValueError("symbols 必須等於 universe_provider 的歷史成員聯集")
+    symbols, universe_provider, _ = _resolve_universe_source(
+        symbols, sample=sample, dynamic_enabled=dynamic_enabled,
+        universe_provider=universe_provider,
+        static_universe_comparator=static_universe_comparator,
+        caller="factor_ic",
+    )
     if symbols is None:
         symbols = uni.get_universe(sample=sample)
     panel = _prepare_panel(
@@ -916,6 +1050,8 @@ def factor_ic(symbols: Optional[List[str]] = None,
         dynamic_enabled=dynamic_enabled,
         universe_top_n=universe_top_n,
         universe_provider=universe_provider,
+        sample=sample,
+        static_universe_comparator=static_universe_comparator,
     )
     if panel.empty:
         return pd.DataFrame()
@@ -1060,8 +1196,14 @@ def _print_ic(ic_df: pd.DataFrame):
 def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
              pool: Optional[int] = None,
              dynamic_enabled: Optional[bool] = None,
-             universe_top_n: Optional[int] = None):
-    """一次跑完整體回測 + 因子IC，並印報告。"""
+             universe_top_n: Optional[int] = None,
+             static_comparator: bool = False):
+    """一次跑完整體回測 + 因子IC，並印報告。
+
+    `static_comparator=True` = 關掉 dynamic universe、用 legacy 單日靜態池跑對照組。
+    這條路徑刻意保留(它是偏誤對照組),但結果會在 summary 標
+    `formal_evidence_eligible=False`,不可當正式證據。
+    """
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
         if dynamic_enabled is None else bool(dynamic_enabled)
@@ -1070,19 +1212,26 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
     effective_dynamic = dynamic_enabled and not sample
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
     universe_provider = None
+    # 非 sample 又關掉 dynamic universe = legacy 單日池;必須顯式宣告成對照組,
+    # 否則單日排名池會被當成正式歷史候選池(選股 look-ahead)。
+    static_comparator = bool(static_comparator) or (
+        not dynamic_enabled and not sample
+    )
     if effective_dynamic:
-        candidate_pool_n = pool or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL
-        universe_provider = MonthlyPITUniverseProvider.from_cache(
-            top_n=candidate_pool_n,
-            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
-        )
-        symbols = universe_provider.all_symbols
+        # 正式歷史回測的最短路徑:月頻 PIT 候選池。
+        pit = historical_pit_universe(candidate_pool_n=pool)
+        universe_provider = pit.provider
+        symbols = pit.symbols
     elif pool:
         symbols = uni.get_universe(top_n=pool)
     else:
         symbols = uni.get_universe(sample=sample)
     print(f"\n[backtest] universe = {len(symbols)} 檔，建立統一 IS/OS 交易日曆...\n")
+    if static_comparator and not sample:
+        print("[backtest] ⚠ static comparator 模式:legacy 單一日期候選池,非 PIT,"
+              "含選股 look-ahead —— 僅供對照,不可作正式證據。\n")
 
+    static_flag = static_comparator and not effective_dynamic
     # 全期只用來取得可交易日曆，不展示或拿來選參數。
     calendar_res = backtest_portfolio(
         symbols=symbols, sample=sample,
@@ -1090,6 +1239,7 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
         dynamic_enabled=effective_dynamic,
         universe_top_n=universe_top_n,
         universe_provider=universe_provider,
+        static_universe_comparator=static_flag,
     )
     if "equity_curve" not in calendar_res:
         _print_bt_summary(calendar_res)
@@ -1118,6 +1268,7 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
                 dynamic_enabled=effective_dynamic,
                 universe_top_n=universe_top_n,
                 universe_provider=universe_provider,
+                static_universe_comparator=static_flag,
             )
             results[(segment, phase)] = res
             if "summary" not in res:
@@ -1171,6 +1322,7 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
             dynamic_enabled=effective_dynamic,
             universe_top_n=universe_top_n,
             universe_provider=universe_provider,
+            static_universe_comparator=static_flag,
         )
         ic_results[segment] = ic
         _print_ic(ic)

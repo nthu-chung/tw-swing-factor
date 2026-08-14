@@ -62,17 +62,24 @@ def run(manifest_path: str | None) -> None:
 
     # 延後 import,確保 _apply_rules 先生效
     import backtest
-    import universe as uni
+    from universes import historical_pit_universe
 
-    symbols = uni.get_research_candidates()
+    # forward 是唯一能產生真 clean OOS 的路徑,候選池必須是 PIT 的。
+    # 舊版用 universe 模組那支 legacy 靜態候選池函式(單一日期排名)當候選池:
+    # 那等於用「凍結之後才知道誰熱門」決定 forward 期能選誰 —— 前視污染的正是
+    # 這條路徑最不能污染的數字。改走月頻 PIT 入口。
+    if not config.DYNAMIC_UNIVERSE_ENABLED:
+        print("[forward] DYNAMIC_UNIVERSE_ENABLED=False:forward 不接受 legacy "
+              "單日靜態池(非 PIT),拒絕產出假 clean OOS。")
+        return
+    pit = historical_pit_universe()
     start = (pd.to_datetime(freeze_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"[forward] manifest={manifest_path}")
     print(f"[forward] 凍結日 {freeze_date} → forward 窗 {start} ~ {latest}"
           f"｜規則 hash {m.get('rules_sha256_16')}")
 
     res = backtest.backtest_portfolio(
-        symbols=symbols, sample=False, start_date=start,
-        dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
+        **pit.backtest_kwargs(), start_date=start,
     )
     if "summary" not in res:
         print(f"[forward] 無法回測:{res.get('error')}")

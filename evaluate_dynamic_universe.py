@@ -28,6 +28,8 @@ def _cagr(eq: pd.DataFrame) -> float:
 def _run(label: str, symbols: list[str], dynamic: bool,
          universe_top: int, pick: int, rebalance: int) -> tuple[dict, pd.DataFrame]:
     started = time.time()
+    # research-only:這支腳本比較的是 dynamic 與 static 兩種變體,兩邊的候選池都是
+    # legacy 單一日期排名(非 PIT)→ 顯式 static comparator,結果不可作正式證據。
     res = backtest.backtest_portfolio(
         symbols=symbols,
         sample=False,
@@ -35,6 +37,7 @@ def _run(label: str, symbols: list[str], dynamic: bool,
         top_n=pick,
         dynamic_enabled=dynamic,
         universe_top_n=universe_top,
+        static_universe_comparator=True,
     )
     if "summary" not in res:
         return {"variant": label, "error": res.get("error", "?")}, pd.DataFrame()
