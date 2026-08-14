@@ -20,13 +20,14 @@ Point-in-time 候選池(survivorship-free)
 
 PIT 規則(關鍵)
 ---------------
-池在 `effective_date` 生效時,只能用 `effective_date - lag_days` 之前(含)的資料:
+月頻池採**完整上個曆月**，不是「往回 20 個交易日」:
 
-    5 月的池  ← 用 4 月底為止的成交值排名
-    7/31 的池 ← 用 7/30 收盤為止的成交值排名(lag_days=1)
+    5 月的池  ← 只用 4/1~4/30 的成交值排名
+    6 月的池  ← 只用 5/1~5/31 的成交值排名
 
-`build_pit_pools` 的 `lag_days` 就是這個。預設 1(嚴格:不含生效當日),
-月頻重建時等於「這個月用上個月的資料」。
+因此 5 月任何行情、以及今天的熱門名單，都不可能改寫 5 月候選池。日頻研究才使用
+`lag_days` + `lookback_days` 的滾動窗；兩種語意刻意分開，避免名稱叫月頻、實際卻
+混入前前月資料。
 
 界線
 ----
@@ -42,11 +43,8 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 import requests
-import urllib3
 
 import config
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TWSE_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TPEX_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
@@ -92,7 +90,9 @@ def fetch_twse_day(day: pd.Timestamp, session: requests.Session,
     for attempt in range(1, retries + 1):
         try:
             time.sleep(_SLEEP * attempt)
-            j = session.get(TWSE_URL, params=params, timeout=40, verify=False).json()
+            response = session.get(TWSE_URL, params=params, timeout=40)
+            response.raise_for_status()
+            j = response.json()
             break
         except Exception as e:
             last = e
@@ -140,7 +140,9 @@ def fetch_tpex_day(day: pd.Timestamp, session: requests.Session,
     for attempt in range(1, retries + 1):
         try:
             time.sleep(_SLEEP * attempt)
-            j = session.get(TPEX_URL, params=params, timeout=40, verify=False).json()
+            response = session.get(TPEX_URL, params=params, timeout=40)
+            response.raise_for_status()
+            j = response.json()
             break
         except Exception as e:
             last = e
@@ -239,7 +241,8 @@ def load_history(start, end, refresh: bool = False,
 
 
 def load_history_cached(start: str = "2024-06-01", end: Optional[str] = None,
-                        verbose: bool = False) -> pd.DataFrame:
+                        verbose: bool = False,
+                        require_complete: bool = False) -> pd.DataFrame:
     """讀已快取的逐日快照合併成 history(不發新請求,缺的日子直接略過)。
 
     `load_history` 會對缺的日子打 API;這支只吃 `_cache/pitsnap__*.pkl`,
@@ -247,6 +250,20 @@ def load_history_cached(start: str = "2024-06-01", end: Optional[str] = None,
     """
     end = end or (getattr(config, "SNAPSHOT_END_DATE", "").strip()
                   or pd.Timestamp.today().strftime("%Y-%m-%d"))
+    if require_complete:
+        # `load_history` 會連非交易的平日也存空 pickle。因此 business-day 檔名
+        # 連續性可以區分「休市」與「根本沒抓到」；正式 universe 缺任何一天都拒跑。
+        missing = [
+            d.strftime("%Y%m%d")
+            for d in pd.bdate_range(pd.Timestamp(start), pd.Timestamp(end))
+            if not (config.CACHE_DIR / f"pitsnap__{d.strftime('%Y%m%d')}.pkl").exists()
+        ]
+        if missing:
+            sample = ", ".join(missing[:5])
+            raise RuntimeError(
+                f"[pit] 正式月頻 universe 的逐日快照不完整，缺 {len(missing)} 個平日"
+                f"（例：{sample}）。請先用 load_history 補齊，拒絕把缺資料當成休市。"
+            )
     frames = []
     for p in sorted(config.CACHE_DIR.glob("pitsnap__*.pkl")):
         day = p.stem.split("__")[1]
@@ -269,27 +286,60 @@ def load_history_cached(start: str = "2024-06-01", end: Optional[str] = None,
 
 def build_pit_pools(history: pd.DataFrame, top_n: int = 300,
                     lookback_days: int = 20, lag_days: int = 1,
-                    freq: str = "M") -> Dict[pd.Timestamp, List[str]]:
+                    freq: str = "M", min_obs: int = 1) -> Dict[pd.Timestamp, List[str]]:
     """逐時點建候選池。回傳 {生效日: [stock_id, ...]}。
 
-    PIT 保證:生效日 D 的池只用 `D - lag_days` 之前(含)的成交值資料。
-      freq="M" → 每月第一個交易日生效,用上個月底為止的資料(你要的「5月用4月」)
+    PIT 保證:
+      freq="M" → 每月第一個交易日生效,**只用完整上個曆月**的資料
       freq="D" → 每個交易日生效,用前一日為止的資料
 
-    lag_days=1 是嚴格版(不含生效當日)。若執行慣例是「T 收盤選股、T+1 開盤進場」,
-    lag_days=0 也不算前視(T 的成交值在 T 收盤已知),但預設取嚴格的 1。
+    `lookback_days` / `lag_days` 只適用日頻。月頻保留這兩個參數是為了相容舊呼叫,
+    但不再讓「最近 20 日」冒充「上個月」。`min_obs` 是個股在上月最少有效交易日,
+    可避免剛上市一日的極端成交值直接取得高排名。
     """
     if history.empty:
         return {}
+    if top_n <= 0:
+        raise ValueError("top_n 必須 > 0")
+    if min_obs <= 0:
+        raise ValueError("min_obs 必須 > 0")
     h = history[["date", "stock_id", "turnover"]].copy()
     h["date"] = pd.to_datetime(h["date"])
+    h["turnover"] = pd.to_numeric(h["turnover"], errors="coerce")
+    h = h[h["turnover"].notna() & (h["turnover"] > 0)]
+    if h.empty:
+        return {}
     trading_days = pd.DatetimeIndex(sorted(h["date"].unique()))
 
-    if freq == "D":
-        effective = list(trading_days)
-    else:
-        s = pd.Series(trading_days, index=trading_days)
-        effective = list(s.groupby(s.dt.to_period("M")).first())
+    if freq == "M":
+        # 每個 target month 的第一個實際交易日生效；排名窗嚴格鎖在 target-1 月。
+        # 這裡不用「生效日前 20 日」，因為 20 日可能跨入前前月，並漏掉上月月初。
+        first_by_month = (
+            pd.Series(trading_days, index=trading_days)
+            .groupby(trading_days.to_period("M"))
+            .first()
+        )
+        h["month"] = h["date"].dt.to_period("M")
+        pools: Dict[pd.Timestamp, List[str]] = {}
+        for target_month, eff in first_by_month.items():
+            source_month = target_month - 1
+            win = h[h["month"] == source_month]
+            if win.empty:
+                continue
+            stats = (
+                win.groupby("stock_id", as_index=False)["turnover"]
+                .agg(avg_turnover="mean", observations="count")
+            )
+            stats = stats[stats["observations"] >= min_obs]
+            stats = stats.sort_values(
+                ["avg_turnover", "stock_id"], ascending=[False, True]
+            )
+            pools[pd.Timestamp(eff)] = stats.head(top_n)["stock_id"].tolist()
+        return pools
+
+    if freq != "D":
+        raise ValueError("freq 只接受 'M' 或 'D'")
+    effective = list(trading_days)
 
     pools: Dict[pd.Timestamp, List[str]] = {}
     for eff in effective:

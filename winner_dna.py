@@ -31,6 +31,7 @@ import pandas as pd
 
 import config
 import data
+import evaluation_split
 import factors
 import universe as uni
 
@@ -40,8 +41,6 @@ GAIN = 0.30          # 飆漲門檻：未來視窗內最大漲幅 >= 此值
 WIN = 60             # 飆漲視窗（交易日）
 POOL = 300           # 研究股票池（成交值前 N 大）
 NEG_GAIN_MAX = 0.10  # 對照組（沒飆）：未來視窗最大漲幅 < 此值才算乾淨負樣本
-IS_FRAC = 0.60       # 前 60% 時間找規則（in-sample）
-EMBARGO = WIN        # IS/OS 之間緩衝（= 視窗，避免事件橫跨）
 
 # 拿來比較的特徵欄位（全部來自 compute_factors，point-in-time 安全）
 FEATURES = [
@@ -144,12 +143,13 @@ def _label_events(panel: pd.DataFrame) -> pd.DataFrame:
 
 def _split_is_os(panel: pd.DataFrame):
     """以時間切分 IS / OS，中間留 embargo。"""
-    dates = np.sort(panel["date"].unique())
-    cut = dates[int(len(dates) * IS_FRAC)]
-    os_start = cut + pd.Timedelta(days=int(EMBARGO * 1.5))  # 日曆日緩衝（>交易日）
-    is_df = panel[panel["date"] <= cut]
-    os_df = panel[panel["date"] >= os_start]
-    return is_df, os_df, cut, os_start
+    split = evaluation_split.build_evaluation_split(
+        panel["date"], embargo_days=max(config.EMBARGO_DAYS, WIN),
+        minimum_embargo_days=WIN
+    )
+    is_df = panel[(panel["date"] >= split.is_start) & (panel["date"] <= split.is_end)]
+    os_df = panel[(panel["date"] >= split.os_start) & (panel["date"] <= split.os_end)]
+    return is_df, os_df, split.is_end, split.os_start
 
 
 def _compare(launch: pd.DataFrame, control: pd.DataFrame) -> pd.DataFrame:
@@ -217,9 +217,8 @@ def _hit_rate(df: pd.DataFrame, mask: pd.Series) -> dict:
 
 
 def run(gain: float, win: int, pool: int):
-    global GAIN, WIN, POOL, EMBARGO
+    global GAIN, WIN, POOL
     GAIN, WIN, POOL = gain, win, pool
-    EMBARGO = win
 
     panel = _load_panel(pool)
     if panel.empty:

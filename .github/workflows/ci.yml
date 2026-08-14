@@ -1,0 +1,54 @@
+# 最小的市場資料離線 CI（checkout 與安裝依賴仍需網路）。
+#
+# 鐵則:**這裡不呼叫 FinMind / TWSE / TPEx。** 研究資料鎖在 `SNAPSHOT_END_DATE`
+# 的本機 `_cache/`,而 `_cache/` 依設計不進版控,所以 CI 上本來就沒有資料 ——
+# 任何需要真實抓取的東西都不該放進 CI,要放就得先 mock 掉 HTTP(見 tests/ 慣例)。
+#
+# 刻意不設 `FINMIND_TOKEN`:若有測試不小心走了真實資料路徑,`data.py` 會 fail-closed
+# 直接報錯,而不是靜默回空表冒充「沒有資料」。CI 紅燈比假綠燈好。
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    name: market-data-offline tests / syntax / preflight
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      # 與 config.SNAPSHOT_END_DATE 預設一致;測試不得依賴 datetime.now()。
+      SWING_SNAPSHOT_END: "2026-06-22"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile / syntax smoke
+        # 語法層 smoke:確保每支模組至少能被編譯,不會有半途改壞的檔案混進去。
+        run: python -m compileall -q -x '(^|/)(\.venv|_cache|\.git|__pycache__)(/|$)' .
+
+      - name: Public repo preflight
+        # 密鑰檔名／內容、_cache 與 outputs 資料產物、必要公開文件、.gitignore。
+        run: python preflight.py
+
+      - name: Unit tests
+        # repo 規定的執行方式:unittest(不是 pytest),全部離線。
+        run: python -m unittest discover -s tests -p 'test_*.py'

@@ -35,10 +35,7 @@ FinMind 的 `TaiwanStockPriceAdj` 需付費層(register 層打了回 400),但
 """
 from __future__ import annotations
 
-import time
-
 import pandas as pd
-import requests
 
 import config
 
@@ -61,25 +58,17 @@ def fetch_dividend_events(stock_id: str, refresh: bool = False) -> pd.DataFrame:
         except Exception:
             pass
     end = snap if snap != "live" else pd.Timestamp.today().strftime("%Y-%m-%d")
-    params = {
-        "dataset": DIVIDEND_RESULT_DATASET,
-        "data_id": str(stock_id),
-        "start_date": "2000-01-01",
-        "end_date": end,
-        "token": config.FINMIND_TOKEN,
-    }
-    try:
-        time.sleep(config.FINMIND_SLEEP)
-        j = requests.get(config.FINMIND_BASE, params=params, timeout=30).json()
-    except Exception as e:
-        print(f"[adj] {stock_id} 除權息抓取失敗:{type(e).__name__}")
-        return pd.DataFrame(columns=["date", "factor"])
-    rows = j.get("data") or []
-    if j.get("status") != 200 or not rows:
+    # 重用資料層的 Authorization header + 有界重試。舊版把 token 放在 query string，
+    # 可能進入 proxy/access log；且失敗回空表會讓未還原價冒充還原成功。
+    import data as data_mod
+    raw = data_mod.fetch_finmind_dataset(
+        DIVIDEND_RESULT_DATASET, str(stock_id), "2000-01-01", end
+    )
+    if raw.empty:
         out = pd.DataFrame(columns=["date", "factor"])
         out.to_pickle(cache)
         return out
-    d = pd.DataFrame(rows)
+    d = raw.copy()
     d["date"] = pd.to_datetime(d["date"], errors="coerce")
     before = pd.to_numeric(d.get("before_price"), errors="coerce")
     after = pd.to_numeric(d.get("after_price"), errors="coerce")

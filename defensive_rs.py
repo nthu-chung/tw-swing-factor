@@ -18,7 +18,7 @@
         兩組，看抗跌/RS 因子是否『在弱市翻正』。這是可交易的（regime 用過去資訊）。
   (3) 前瞻-regime 診斷 IC：依「未來20日大盤是否下跌」分組，直接檢驗抗跌因子的
         機械前提——大盤真的跌時，高抗跌分的股是否真的相對抗跌。（診斷用，非訊號）
-  (4) 投組層級比較：純動能 vs 動能+RS/抗跌，全期 MaxDD / Sharpe，以及 2025 關稅
+  (4) 投組層級比較：純動能 vs 動能+RS/抗跌，分 IS/OS 報 MaxDD / Sharpe，以及 2025 關稅
         股災窗口（大盤 -28.7% 那段）的表現。看加抗跌是否真能壓低回撤。
 
 防未來函數：
@@ -45,6 +45,7 @@ import data
 import factors
 import universe as uni
 import backtest
+import evaluation_split
 
 
 PANEL_PATH = config.CACHE_DIR / (
@@ -200,20 +201,27 @@ def _equity_metrics(eq: pd.DataFrame, crash_start, crash_end) -> dict:
             "calmar": calmar, "crash_ret": crash_ret, "worst20": worst20}
 
 
-def portfolio_compare(symbols, rebalance, pick, crash_start, crash_end) -> pd.DataFrame:
+def portfolio_compare(symbols, rebalance, pick, crash_start, crash_end,
+                      split) -> pd.DataFrame:
     orig = copy.deepcopy(config.FACTOR_WEIGHTS)
     rows = []
     for label, w in WEIGHT_SETS.items():
         config.FACTOR_WEIGHTS = copy.deepcopy(w)
-        res = backtest.backtest_portfolio(symbols=symbols, sample=False,
-                                          rebalance_every=rebalance, top_n=pick)
-        if "equity_curve" not in res:
-            rows.append({"weights": label, "error": res.get("error", "?")})
-            continue
-        m = _equity_metrics(res["equity_curve"], crash_start, crash_end)
-        s = res.get("summary", {})
-        rows.append({"weights": label, "n_trades": s.get("n_trades"),
-                     "win_rate": s.get("win_rate"), **m})
+        for segment, (start, end) in {"IS": split.is_window,
+                                      "OS": split.os_window}.items():
+            res = backtest.backtest_portfolio(
+                symbols=symbols, sample=False, start_date=start, end_date=end,
+                rebalance_every=rebalance, top_n=pick,
+            )
+            if "equity_curve" not in res:
+                rows.append({"weights": label, "segment": segment,
+                             "error": res.get("error", "?")})
+                continue
+            m = _equity_metrics(res["equity_curve"], crash_start, crash_end)
+            s = res.get("summary", {})
+            rows.append({"weights": label, "segment": segment,
+                         "n_trades": s.get("n_trades"),
+                         "win_rate": s.get("win_rate"), **m})
     config.FACTOR_WEIGHTS = orig
     return pd.DataFrame(rows)
 
@@ -268,14 +276,15 @@ def main():
 
     # (4) 投組層級比較
     print("\n" + "=" * 92)
-    print(f"  (4) 投組比較：純動能 vs 動能+RS/抗跌（全期 + 股災窗口 {crash_start}~{crash_end}）")
+    split = evaluation_split.build_evaluation_split(panel["date"])
+    print(f"  (4) 投組比較：純動能 vs 動能+RS/抗跌（IS/OS + 股災窗口 {crash_start}~{crash_end}）")
     print("=" * 92)
-    pc = portfolio_compare(symbols, rebalance, pick, crash_start, crash_end)
-    print(f"  {'權重組':<20}{'筆數':>5}{'年化':>9}{'Sharpe':>8}{'MaxDD':>9}{'Calmar':>8}{'股災報酬':>10}{'最痛20日':>10}")
+    pc = portfolio_compare(symbols, rebalance, pick, crash_start, crash_end, split)
+    print(f"  {'權重組':<20}{'段':<4}{'筆數':>5}{'年化':>9}{'Sharpe':>8}{'MaxDD':>9}{'Calmar':>8}{'股災報酬':>10}{'最痛20日':>10}")
     for _, r in pc.iterrows():
         if "error" in r and isinstance(r.get("error"), str) and pd.notna(r.get("error")):
-            print(f"  {r['weights']:<20}  ERROR {r['error']}"); continue
-        print(f"  {r['weights']:<20}{int(r['n_trades']) if pd.notna(r['n_trades']) else 0:>5}"
+            print(f"  {r['weights']:<20}{r['segment']:<4} ERROR {r['error']}"); continue
+        print(f"  {r['weights']:<20}{r['segment']:<4}{int(r['n_trades']) if pd.notna(r['n_trades']) else 0:>5}"
               f"{r['ann']:>+8.1%}{r['sharpe']:>8.2f}{r['mdd']:>+8.1%}"
               f"{(r['calmar'] if pd.notna(r['calmar']) else 0):>8.2f}"
               f"{r['crash_ret']:>+9.1%}{r['worst20']:>+9.1%}")

@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import evaluation_split
 
 HORIZONS = (1, 5, 20)
 
@@ -108,9 +109,11 @@ def run():
     ev = pd.DataFrame(rows)
     if ev.empty:
         print("[event] 無有效事件。"); return
-    # IS/OS 切分(依 disp_end)
-    cut = ev["disp_end"].quantile(config.IS_OS_SPLIT)
-    _report(ev, cut, snap)
+    # 用市場交易日切割，不用事件分位數；事件集中時，分位數會扭曲時間邊界。
+    split = evaluation_split.build_evaluation_split(
+        tx["date"], minimum_embargo_days=max(HORIZONS)
+    )
+    _report(ev, split, snap)
     return ev
 
 
@@ -124,7 +127,7 @@ def _stat(s):
             "win": (s > 0).mean(), "t": t}
 
 
-def _report(ev, cut, snap):
+def _report(ev, split, snap):
     print("=" * 92)
     print(f"  處置解除(出關)事件研究｜snapshot {snap}｜出關次日開盤進場 → T+h 收盤")
     print(f"  事件數 {len(ev)}｜{ev['stock_id'].nunique()} 檔｜⚠ 處置為 proxy、僅快取股(偏大型)、未還原價")
@@ -143,7 +146,10 @@ def _report(ev, cut, snap):
               f"{raw['win']:>8.0%}{exs:>9}{ext:>8}  {v}")
     # IS/OS
     print("  " + "-" * 84)
-    for seg, m in [("IS", ev["disp_end"] <= cut), ("OS", ev["disp_end"] > cut)]:
+    for seg, m in [
+        ("IS", (ev["disp_end"] >= split.is_start) & (ev["disp_end"] <= split.is_end)),
+        ("OS", (ev["disp_end"] >= split.os_start) & (ev["disp_end"] <= split.os_end)),
+    ]:
         sub = ev[m]
         ex20 = _stat(sub["h20_ex"])
         if ex20:

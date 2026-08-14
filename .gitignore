@@ -11,10 +11,19 @@ outputs/*
 # 環境與密鑰（不要把 FinMind token 進版控）
 .env
 *.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
 
 # Python
 __pycache__/
 *.pyc
+.ruff_cache/
 .venv/
 venv/
 

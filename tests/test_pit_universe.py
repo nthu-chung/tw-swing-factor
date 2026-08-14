@@ -110,6 +110,53 @@ class PitSemanticsTest(unittest.TestCase):
         self.assertEqual(picks[0], "1111", "前期應選成交值最高的 1111")
         self.assertEqual(picks[-1], "3333", "後期應換成 3333")
 
+    def test_monthly_pool_uses_only_previous_calendar_month(self):
+        """8 月池只能看 7 月；6 月舊強者與 8 月當月暴量都不得滲入。"""
+        rows = []
+        for d in pd.bdate_range("2026-06-01", "2026-06-30"):
+            rows += [
+                {"date": d, "stock_id": "A", "turnover": 1_000_000},
+                {"date": d, "stock_id": "B", "turnover": 1},
+            ]
+        for d in pd.bdate_range("2026-07-01", "2026-07-31"):
+            rows += [
+                {"date": d, "stock_id": "A", "turnover": 10},
+                {"date": d, "stock_id": "B", "turnover": 100},
+            ]
+        # 8 月第一個交易日 A 暴量；若偷看當月，排名會被反轉。
+        rows += [
+            {"date": pd.Timestamp("2026-08-03"), "stock_id": "A", "turnover": 1e12},
+            {"date": pd.Timestamp("2026-08-03"), "stock_id": "B", "turnover": 1},
+        ]
+        pools = pu.build_pit_pools(pd.DataFrame(rows), top_n=1, freq="M")
+        self.assertEqual(pools[pd.Timestamp("2026-08-03")], ["B"])
+
+    def test_adding_current_month_rows_cannot_rewrite_month_pool(self):
+        """反事實測試：附加 8 月未來資料，8 月既有 universe 必須完全不變。"""
+        july = pd.DataFrame([
+            {"date": d, "stock_id": sid, "turnover": value}
+            for d in pd.bdate_range("2026-07-01", "2026-07-31")
+            for sid, value in [("A", 100), ("B", 50)]
+        ])
+        first_august = pd.DataFrame([
+            {"date": "2026-08-03", "stock_id": "A", "turnover": 1},
+            {"date": "2026-08-03", "stock_id": "B", "turnover": 1e12},
+        ])
+        future_august = pd.DataFrame([
+            {"date": d, "stock_id": sid, "turnover": value}
+            for d in pd.bdate_range("2026-08-04", "2026-08-31")
+            for sid, value in [("A", 1), ("B", 1e12)]
+        ])
+        before = pu.build_pit_pools(
+            pd.concat([july, first_august], ignore_index=True), top_n=1, freq="M"
+        )
+        after = pu.build_pit_pools(
+            pd.concat([july, first_august, future_august], ignore_index=True),
+            top_n=1, freq="M",
+        )
+        self.assertEqual(before[pd.Timestamp("2026-08-03")], ["A"])
+        self.assertEqual(after[pd.Timestamp("2026-08-03")], ["A"])
+
     def test_lag_excludes_effective_day(self):
         """lag_days=1 時,生效日當天的資料不得進入排名 —— 這是 PIT 的核心保證。"""
         h = self._history()
@@ -131,6 +178,21 @@ class PitSemanticsTest(unittest.TestCase):
         self.assertEqual(pu.pool_for_date(pools, "2026-02-15"), ["A"])
         self.assertEqual(pu.pool_for_date(pools, "2026-03-01"), ["B"])
         self.assertEqual(pu.pool_for_date(pools, "2025-12-31"), [])
+
+
+class CachedHistoryCompletenessTest(unittest.TestCase):
+    def test_formal_load_fails_when_business_day_cache_is_missing(self):
+        """網路漏抓不能靜默變成「那天休市」，否則整月排名會被污染。"""
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            pu.config, "CACHE_DIR", Path(tmp)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "快照不完整"):
+                pu.load_history_cached(
+                    start="2026-07-01", end="2026-07-03", require_complete=True,
+                )
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ import pandas as pd
 import config
 import data
 import dynamic_universe
+import evaluation_split
 import factors
 import universe as uni
 
@@ -41,7 +42,6 @@ POOL = 300
 FWD = 20            # 族群未來報酬視窗（交易日）— 驗證延續性用
 MOM_WIN = 20        # 族群動能回看窗
 MIN_SECTOR_N = 5    # 少於此檔數的產業不算族群
-IS_FRAC = 0.60
 
 
 def _load_stock_panels(pool: int):
@@ -105,10 +105,6 @@ def _build_sector_daily(panels: dict, imap: dict):
         )
         long = ranked[ranked["in_dynamic_universe"]].copy()
 
-    # 過濾：族群股數需 >= MIN_SECTOR_N
-    sec_counts = long.groupby("industry")["mom_ret"].count()
-    big = sec_counts.index  # 後面用每日實際 count 控制；這裡先不砍，聚合後再說
-
     agg = long.groupby(["date", "industry"]).agg(
         ret20=("mom_ret", "median"),
         breadth=("above_ma20", "mean"),
@@ -127,9 +123,10 @@ def _sector_momentum_ic(agg: pd.DataFrame):
     IC>0 且樣本外站得住 = 強勢族群會續強 = 輪動可被抓。
     回傳 IS/OS 各特徵的平均 IC。
     """
-    dates = np.sort(agg["date"].unique())
-    cut = dates[int(len(dates) * IS_FRAC)]
-    os_start = cut + pd.Timedelta(days=int(FWD * 1.5))
+    split = evaluation_split.build_evaluation_split(
+        agg["date"], minimum_embargo_days=FWD
+    )
+    cut, os_start = split.is_end, split.os_start
     feats = ["ret20", "breadth", "inst6d"]
 
     def _avg_ic(sub):
@@ -145,8 +142,8 @@ def _sector_momentum_ic(agg: pd.DataFrame):
             out[fcol] = (np.mean(ics) if ics else np.nan, len(ics))
         return out
 
-    is_ic = _avg_ic(agg[agg["date"] <= cut])
-    os_ic = _avg_ic(agg[agg["date"] >= os_start])
+    is_ic = _avg_ic(agg[(agg["date"] >= split.is_start) & (agg["date"] <= cut)])
+    os_ic = _avg_ic(agg[(agg["date"] >= os_start) & (agg["date"] <= split.os_end)])
     return is_ic, os_ic, cut, os_start
 
 

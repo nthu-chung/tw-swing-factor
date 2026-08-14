@@ -42,6 +42,7 @@ import pandas as pd
 
 import config
 import backtest
+import evaluation_split
 import universe as uni
 
 
@@ -124,20 +125,9 @@ def _split_dates(symbols, rebalance, pick, universe_top_n):
     )
     if "equity_curve" not in res:
         return None
-    dates = pd.to_datetime(res["equity_curve"]["date"]).sort_values().reset_index(drop=True)
-    n = len(dates)
-    cut_i = int(n * config.IS_OS_SPLIT)
-    is_end = dates.iloc[cut_i]
-    # embargo：OS 起點往後推 EMBARGO_DAYS 個「交易日」
-    os_i = min(n - 1, cut_i + config.EMBARGO_DAYS)
-    os_start = dates.iloc[os_i]
-    return {
-        "is_start": str(dates.iloc[0].date()),
-        "is_end": str(is_end.date()),
-        "os_start": str(os_start.date()),
-        "os_end": str(dates.iloc[-1].date()),
-        "n_total": n,
-    }
+    return evaluation_split.build_evaluation_split(
+        res["equity_curve"]["date"]
+    ).to_dict()
 
 
 def _block_bootstrap_ci(eq: pd.DataFrame):

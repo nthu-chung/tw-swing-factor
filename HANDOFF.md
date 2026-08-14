@@ -1,18 +1,34 @@
 # 交接文檔（HANDOFF）
 
-> 給下一個接力研究的對話。**請先讀完這份，再讀 README.md。**
-> 最後更新：2026-07-23
+> 給下一個接力研究的對話。**請先讀 [AGENTS.md](AGENTS.md)（工作規則），再讀這份
+> （研究脈絡），最後讀 README.md（對外說明）。**
+> 研究結論最後更新：2026-07-23｜環境與架構段落最後更新：2026-08-15
+>
+> ⚠️ **第 2 節是研究結論的歷史層。** 那些數字大多產自 static universe ＋未還原價
+> ＋單一相位，現在都標為 historical/invalid（原因見 README 與 `STRATEGY_REGISTRY.md`）。
+> **保留它們是為了記住怎麼被騙的，不是為了引用。** 負面結論（哪些因子無效、
+> 哪些策略被證偽）至今仍有效，不要重做。
 
 ---
 
 ## 0. 環境（先做，否則跑不動）
 
 - 系統 `python3` 是 3.14，套件裝不起來。**一律用 `.venv/bin/python`**（已建好，python3.11）。
-- 若 `.venv` 不在：`python3.11 -m venv .venv && .venv/bin/pip install pandas numpy requests scipy yfinance`
-- FinMind token 自動複用 `../taiwan-industry-analyzer/backend/.env`，免設定。
-- **重現任何 top100/200/300 回測前,先跑 `.venv/bin/python build_universe.py`
-  建池**(產 `outputs/universe_top*.json`,已 gitignore、不進版控)。否則
-  `uni.get_universe(top_n=100)` 會**靜默降級到 14 檔小集合**,回測數字與報告完全對不上。
+- 若 `.venv` 不在：`python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+  （`scipy` / `yfinance` 是**選用**：前者只影響 `cs_quantile` 的高斯化，缺了會退回置中
+  rank；後者只給 VIX。核心路徑不需要它們，所以不在 `requirements.txt`。）
+- 離線就能驗證 repo 沒壞，**不需要 token**：
+  `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p 'test_*.py'`，
+  以及公開前檢查 `PYTHONPATH=. .venv/bin/python preflight.py`。同樣兩步跑在
+  `.github/workflows/ci.yml`（Python 3.11、離線、不呼叫 FinMind/TWSE/TPEx）。
+- FinMind token 只從 `FINMIND_TOKEN` 環境變數讀取；不再跨 repo 讀取 `.env`。
+- **正式回測的候選池不再需要 `build_universe.py`。** 現在走
+  `universes/monthly_pit.py`：M 月成員只由完整 M-1 曆月的交易所逐日快照決定。
+  `build_universe.py` 與 `outputs/universe_top*.json` 只剩 **legacy static 對照組**用途
+  （`--static-universe`），這些 JSON 是**刻意進版控的 fixture**，不是 gitignore
+  （早期版本的說明寫反了）。
+- `uni.get_universe(top_n=...)` 失敗時**會 raise，不會靜默降級到 14 檔小集合**
+  （2026-08 修）。以前那個靜默降級讓回測數字與報告對不上，是這份文件最早的警告之一。
 - 資料快照(2026-06-22 加):`config.SNAPSHOT_END_DATE="2026-06-22"` 鎖住資料截止日。
   在 snapshot 鎖住時 **`_cache/` 永久有效**(換 snapshot 才主動推進);若要重抓,
   改 SNAPSHOT 或手動清 cache(top100 約 2~3 分鐘)。設成 `""` 退回 `datetime.now()`,
@@ -32,6 +48,12 @@
 ---
 
 ## 2. 目前累積的研究結論（依可信度排序）
+
+> ⛔ **本節所有絕對績效數字一律視為 historical / invalid。**
+> 它們產自 static universe、未還原價與單一再平衡相位；現行程式在同樣設定下
+> 會被價格完整性閘門擋下，跑不出這些數字。負面結果仍應保留，避免在相同資料與
+> 相同定義下重做；但它們也不是合格資料上的永久定論。若資料或假說定義實質改變，
+> 必須重新預註冊再驗證，不能沿用舊數字。
 
 ### ⛔ 2026-07-23 P0：公司行動已實際污染回測與模型選擇
 - `_cache/price__2327.pkl` 中，國巨收盤由 2025-08-13 的 546 跳至
@@ -131,8 +153,16 @@
   research baseline，不代表上線／實盤建議。
   `FACTOR_WEIGHTS_LEGACY_MOMQ`(舊上線) / `FACTOR_WEIGHTS_LEGACY_9`(更舊) 保留備查。
 - 資料快照:`config.SNAPSHOT_END_DATE="2026-06-22"`,所有回測以此為截止日。
-- **最大瓶頸**:候選池仍是 current top300、原始價且只有 2 年，
-  **結構上做不出可信的 survivorship-free OOS**。
+- **候選池瓶頸已部分解除(2026-08)。** 正式路徑改為兩層 PIT:
+  上月 PIT 候選池(`universes/monthly_pit.py`,含當時在市、後來下市者)→
+  每日 dynamic universe(`dynamic_universe.py`,截至訊號日的 ADV20 排名)。
+  所以 `candidate_membership_survivorship_free=True`。
+- **但整體仍不是 survivorship-free。** 剩下的兩個結構性缺口:
+  1. **價格覆蓋**:下市股的完整還原序列可能缺,所以
+     `price_history_survivorship_free=False`、`survivorship_free=False`。
+  2. **價格品質**:官方還原價被鎖,自建還原不含分割/減資;未還原價現在
+     一律 fail-closed raise(不是警告)。
+  加上資料只有 2 年單一偏多頭 regime,**仍做不出可信的 clean OOS**。
   這比微調權重更根本。
 
 ---
@@ -169,9 +199,18 @@
 | `STRATEGY_REGISTRY.md` | 策略永久台帳、證據狀態與下一個可證偽測試 |
 | `NEW_STRATEGY_EXPERIMENTS.md` | E01失敗紀錄與 E02~E06 預註冊規格 |
 | `run_pipeline.sh` | 串選股 + DNA 的 pipeline |
-| `outputs/ROTATION_STRATEGY_REVIEW.html` | 最新第一讀研究結論與資料採購清單 |
+| `pit_universe.py` | 交易所逐日快照 → PIT 候選池(含下市股) |
+| `universes/monthly_pit.py` | 正式候選池 provider:M 月只用完整 M-1 曆月 |
+| `evaluation/splits.py` | 統一 IS / embargo / OS 切割(舊入口 `evaluation_split.py`) |
+| `execution/` | 回測可成交性:台股 tick/漲跌停、一字鎖停、處置禁倉、成本 |
+| `factor_engine/` | `data_fields.py`(無視窗欄位)＋`operators.py`(有視窗算子)＋傳統因子 |
+| `preflight.py` | 公開前離線檢查:密鑰檔名/內容、資料產物誤追蹤、必要文件 |
+| `.github/workflows/ci.yml` | 離線 CI:Python 3.11、unittest、語法 smoke、preflight |
 | `outputs/WEIGHT_FIX_REPORT.md` | 2026-06-22 上線權重修正 + 資料漂移修法 |
-| `outputs/*_REPORT.md` | 各研究的報告 |
+| `outputs/*_REPORT.md` | 各研究的報告(**append-only 歷史紀錄,非目前有效績效**) |
+
+> `outputs/ROTATION_STRATEGY_REVIEW.html` 是本機產物,**不進版控**(`.gitignore` 只
+> 收 `outputs/*.md` 與少數 fixture)。乾淨 clone 不會有這個檔,別把它寫進對外文件的連結。
 
 ---
 

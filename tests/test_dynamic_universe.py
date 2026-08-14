@@ -64,6 +64,23 @@ class DynamicUniverseTest(unittest.TestCase):
             .sort_values(["stock_id", "date"]).reset_index(drop=True),
         )
 
+    def test_daily_rank_is_limited_to_locked_candidate_pool(self):
+        """非月池成員即使成交值最大，也不能擠掉當月合法候選。"""
+        panel = _panel([
+            ("A", "2026-01-01", 1_000_000, 10_000, 10),
+            ("A", "2026-01-02", 1_000_000, 10_000, 10),
+            ("B", "2026-01-01", 100, 10_000, 10),
+            ("B", "2026-01-02", 100, 10_000, 10),
+        ])
+        candidate = panel["stock_id"].eq("B")
+        out = add_membership(
+            panel, top_n=1, lookback=2, min_obs=2,
+            min_avg_volume_lots=0, candidate_mask=candidate,
+        )
+        day2 = out[out["date"] == pd.Timestamp("2026-01-02")]
+        self.assertEqual(day2.loc[day2["in_dynamic_universe"], "stock_id"].tolist(), ["B"])
+        self.assertFalse(bool(day2.loc[day2["stock_id"] == "A", "universe_eligible"].iloc[0]))
+
     def test_zero_price_placeholder_is_removed(self):
         raw = pd.DataFrame([
             {"date": "2026-01-01", "open": 10, "high": 11, "low": 9,

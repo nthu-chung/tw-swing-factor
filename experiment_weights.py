@@ -35,6 +35,7 @@ import pandas as pd
 
 import config
 import backtest
+import evaluation_split
 import universe as uni
 
 
@@ -62,15 +63,18 @@ WEIGHT_SETS = {
 }
 
 
-def run_one(label: str, weights: dict, symbols, rebalance: int, top_n: int) -> dict:
+def run_one(label: str, weights: dict, symbols, rebalance: int, top_n: int,
+            start: str, end: str) -> dict:
     config.FACTOR_WEIGHTS = copy.deepcopy(weights)
     res = backtest.backtest_portfolio(symbols=symbols, sample=False,
+                                      start_date=start, end_date=end,
                                       rebalance_every=rebalance, top_n=top_n)
     if "summary" not in res:
         return {"label": label, "error": res.get("error", "?")}
     s = res["summary"]
     return {
         "label": label,
+        "segment": "IS",
         "n_trades": s["n_trades"],
         "win_rate": s["win_rate"],
         "payoff": s["payoff_ratio"],
@@ -88,21 +92,27 @@ def main():
     rebalance = 5
     pick = 5
     symbols = uni.get_research_candidates(universe_top_n=top_n)
-    print(f"[experiment] universe={len(symbols)} 檔，rebalance={rebalance}日，最多持有{pick}檔\n")
+    calendar_run = backtest.backtest_portfolio(
+        symbols=symbols, sample=False, rebalance_every=rebalance, top_n=pick
+    )
+    if "equity_curve" not in calendar_run:
+        raise RuntimeError(calendar_run.get("error", "無法建立研究交易日曆"))
+    split = evaluation_split.build_evaluation_split(calendar_run["equity_curve"]["date"])
+    start, end = split.is_window
+    print(f"[experiment] universe={len(symbols)} 檔，rebalance={rebalance}日，最多持有{pick}檔")
+    print(f"[experiment] 參數比較只使用 IS {start}~{end}；OS {split.os_window[0]} 起不在本腳本揭露\n")
 
     orig = copy.deepcopy(config.FACTOR_WEIGHTS)
     rows = []
     for label, w in WEIGHT_SETS.items():
         print(f"  跑：{label} ...")
-        rows.append(run_one(label, w, symbols, rebalance, pick))
+        rows.append(run_one(label, w, symbols, rebalance, pick, start, end))
     config.FACTOR_WEIGHTS = orig  # 還原
 
     df = pd.DataFrame(rows)
     print("\n" + "=" * 92)
-    print("  權重實驗對比（top100 / 2024-06~2026-06 / trend 退場）")
+    print(f"  權重實驗對比（IS only {start}~{end} / trend 退場）")
     print("=" * 92)
-    cols = ["label", "n_trades", "win_rate", "payoff", "cum_ret",
-            "ann_ret", "sharpe", "sortino", "calmar", "max_dd"]
     hdr = f"  {'權重組':<22}{'筆數':>5}{'勝率':>7}{'賺賠':>6}{'累積':>8}{'年化':>8}{'Sharpe':>8}{'Sortino':>8}{'Calmar':>8}{'MaxDD':>8}"
     print(hdr)
     print("  " + "-" * 88)

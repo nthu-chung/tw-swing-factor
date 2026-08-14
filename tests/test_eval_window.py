@@ -87,6 +87,34 @@ class EvalWindowTest(unittest.TestCase):
         self.assertGreater(leaked, clean,
                            "若兩者相同,代表測試資料沒造出洩漏效果,測試本身失效")
 
+    def test_stale_position_without_delisting_data_fails_closed(self):
+        """下市/長停牌不能用最後收盤假裝可成交，否則會低估 long-only 左尾。"""
+        self.cache["A"] = self.cache["A"].iloc[:40].copy()
+        with mock.patch.object(config, "BT_DELIST_RECOVERY", None):
+            with self.assertRaisesRegex(RuntimeError, "拒絕假設可用最後收盤"):
+                self._run()
+
+    def test_explicit_delisting_recovery_is_audited(self):
+        self.cache["A"] = self.cache["A"].iloc[:40].copy()
+        with mock.patch.object(config, "BT_DELIST_RECOVERY", 0.0):
+            r = self._run()
+        self.assertEqual(r["summary"]["delisting"]["recovery_assumption"], 0.0)
+        self.assertEqual(r["summary"]["delisting"]["n_stale_exits"], 1)
+
+    def test_rebalance_phase_is_explicit_and_changes_path(self):
+        phase0 = self._run(rebalance_phase=0)
+        phase1 = self._run(rebalance_phase=1)
+        self.assertEqual(phase0["summary"]["params"]["rebalance_phase"], 0)
+        self.assertEqual(phase1["summary"]["params"]["rebalance_phase"], 1)
+        self.assertNotEqual(
+            phase0["trades"].iloc[0]["entry_date"],
+            phase1["trades"].iloc[0]["entry_date"],
+        )
+
+    def test_invalid_rebalance_phase_fails(self):
+        with self.assertRaises(ValueError):
+            self._run(rebalance_phase=20)
+
 
 if __name__ == "__main__":
     unittest.main()

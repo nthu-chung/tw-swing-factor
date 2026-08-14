@@ -32,6 +32,7 @@ import pandas as pd
 
 import config
 import backtest
+import evaluation_split
 import universe as uni
 
 
@@ -86,13 +87,10 @@ def _run(symbols, start, end, rebalance, pick, universe_top_n):
 def _split(symbols, rebalance, pick, universe_top_n):
     _set_filter(False, None, None)
     res = _run(symbols, None, None, rebalance, pick, universe_top_n)
-    dates = pd.to_datetime(res["equity_curve"]["date"]).sort_values().reset_index(drop=True)
-    n = len(dates)
-    cut = int(n * config.IS_OS_SPLIT)
-    os_i = min(n - 1, cut + config.EMBARGO_DAYS)
-    return {"is": (str(dates.iloc[0].date()), str(dates.iloc[cut].date())),
-            "os": (str(dates.iloc[os_i].date()), str(dates.iloc[-1].date())),
-            "n": n, "eq_full": res["equity_curve"]}
+    split = evaluation_split.build_evaluation_split(res["equity_curve"]["date"])
+    return {"is": split.is_window, "os": split.os_window,
+            "n": split.n_total, "split": split.to_dict(),
+            "eq_full": res["equity_curve"]}
 
 
 def _dd_episode(eq: pd.DataFrame):
@@ -118,7 +116,7 @@ def run(pool, rebalance, pick):
     sp = _split(symbols, rebalance, pick, pool)
     pk, tr, mdd = _dd_episode(sp["eq_full"])
     print(f"[mf] 全期 {sp['is'][0]} ~ {sp['os'][1]}（{sp['n']} 日）")
-    print(f"[mf] IS {sp['is'][0]}~{sp['is'][1]} | embargo {config.EMBARGO_DAYS}日 | OS {sp['os'][0]}~{sp['os'][1]}")
+    print(f"[mf] IS {sp['is'][0]}~{sp['is'][1]} | embargo {sp['split']['n_embargo']}日 | OS {sp['os'][0]}~{sp['os'][1]}")
     print(f"[mf] 基線最大回撤 {mdd:+.1%}：波峰 {pk} → 谷底 {tr}\n")
 
     rows = []

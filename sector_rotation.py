@@ -36,6 +36,7 @@ import pandas as pd
 
 import config
 import data
+import evaluation_split
 import factors
 import universe as uni
 import backtest
@@ -43,7 +44,6 @@ import validate_oos as vo   # 重用 block bootstrap / buyhold baseline
 
 MIN_SECTOR_N = 5     # 少於此檔數的產業不算族群
 TOP_K_SECTORS = 3    # 取前 K 強勢族群
-IS_FRAC = config.IS_OS_SPLIT
 
 
 # ── 載入個股因子面板（族群特徵用；不需 market → 跳過 RS 計算較快）──────────
@@ -161,11 +161,10 @@ def run(pool=100, top_k=3, reb=5, pick=5):
     # 用基線全期取得交易日 → IS/OS 切點
     base_full = backtest.backtest_portfolio(symbols=symbols_full, sample=False,
                                             rebalance_every=reb, top_n=pick)
-    dates = pd.to_datetime(base_full["equity_curve"]["date"]).sort_values().reset_index(drop=True)
-    n = len(dates); cut = int(n * IS_FRAC)
-    os_i = min(n - 1, cut + config.EMBARGO_DAYS)
-    IS = (str(dates.iloc[0].date()), str(dates.iloc[cut].date()))
-    OS = (str(dates.iloc[os_i].date()), str(dates.iloc[-1].date()))
+    split = evaluation_split.build_evaluation_split(base_full["equity_curve"]["date"])
+    n = split.n_total
+    IS = split.is_window
+    OS = split.os_window
     print(f"[rot] 全期 {IS[0]}~{OS[1]}（{n}日）| IS {IS[0]}~{IS[1]} | OS {OS[0]}~{OS[1]}")
 
     strategies = {

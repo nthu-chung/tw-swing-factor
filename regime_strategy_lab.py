@@ -34,6 +34,7 @@ import pandas as pd
 import config
 import data
 import backtest
+import evaluation_split
 import universe as uni
 import sector_rotation as sr
 
@@ -133,14 +134,15 @@ def _metrics(eq: pd.DataFrame, regime: pd.DataFrame) -> dict:
     return out
 
 
-def _run(symbols, picks, filt=False, reb=5, pick=5):
+def _run(symbols, picks, filt=False, reb=5, pick=5, start=None, end=None):
     filt_orig = getattr(config, "MARKET_FILTER_ENABLED", False)
     if filt:
         config.MARKET_FILTER_ENABLED = True
         config.MARKET_FILTER_RULE = "vol"
     try:
         return backtest.backtest_portfolio(
-            symbols=symbols, sample=False, rebalance_every=reb, top_n=pick,
+            symbols=symbols, sample=False, start_date=start, end_date=end,
+            rebalance_every=reb, top_n=pick,
             dynamic_enabled=True, picks_by_date=picks)
     finally:
         config.MARKET_FILTER_ENABLED = filt_orig
@@ -159,6 +161,7 @@ def run(pool=300, pick=5, reb=5, vol_th=0.25):
           f"{panel['stock_id'].nunique()} 檔成員")
 
     regime = market_regime(vol_th)
+    split = evaluation_split.build_evaluation_split(panel["date"])
     picks = build_all_picks(panel)
     for k, v in picks.items():
         print(f"[lab] {k}: {len(v)} 個有訊號日")
@@ -174,18 +177,23 @@ def run(pool=300, pick=5, reb=5, vol_th=0.25):
 
     rows, eqs = [], {}
     for label, pk, filt in configs:
-        if not pk:
-            rows.append({"strategy": label, "error": "無訊號"}); continue
-        res = _run(symbols, pk, filt=filt, reb=reb, pick=pick)
-        if "equity_curve" not in res:
-            rows.append({"strategy": label, "error": res.get("error", "?")}); continue
-        s = res["summary"]; m = _metrics(res["equity_curve"], regime)
-        eqs[label] = res["equity_curve"]
-        rows.append({
-            "strategy": label, "n_trades": s["n_trades"],
-            "win_rate": s["win_rate"], "bypass": s["data"].get("integrity_bypassed"),
-            **m,
-        })
+        for segment, (start, end) in {"IS": split.is_window,
+                                      "OS": split.os_window}.items():
+            if not pk:
+                rows.append({"strategy": label, "segment": segment,
+                             "error": "無訊號"}); continue
+            res = _run(symbols, pk, filt=filt, reb=reb, pick=pick,
+                       start=start, end=end)
+            if "equity_curve" not in res:
+                rows.append({"strategy": label, "segment": segment,
+                             "error": res.get("error", "?")}); continue
+            s = res["summary"]; m = _metrics(res["equity_curve"], regime)
+            eqs[f"{label}:{segment}"] = res["equity_curve"]
+            rows.append({
+                "strategy": label, "segment": segment, "n_trades": s["n_trades"],
+                "win_rate": s["win_rate"], "bypass": s["data"].get("integrity_bypassed"),
+                **m,
+            })
 
     df = pd.DataFrame(rows)
     _report(df, eqs, pool, pick, reb, vol_th)
@@ -204,13 +212,13 @@ def _report(df, eqs, pool, pick, reb, vol_th):
           f"snapshot {config.SNAPSHOT_END_DATE}）")
     print("  ⚠ 未還原價 upper-bound(integrity_bypassed)、僅相對排名可參考")
     print("=" * 104)
-    hdr = f"  {'策略':<26}{'筆':>4}{'勝率':>7}{'年化':>9}{'Sharpe':>8}{'MaxDD':>9}{'Calmar':>8}{'壓力日bp':>9}{'平順日bp':>9}"
+    hdr = f"  {'策略':<26}{'段':<4}{'筆':>4}{'勝率':>7}{'年化':>9}{'Sharpe':>8}{'MaxDD':>9}{'Calmar':>8}{'壓力日bp':>9}{'平順日bp':>9}"
     print(hdr)
     print("  " + "-" * 100)
     for _, r in df.iterrows():
         if "error" in r and isinstance(r.get("error"), str) and pd.notna(r.get("error")):
-            print(f"  {r['strategy']:<26}  ERROR {r['error']}"); continue
-        print(f"  {r['strategy']:<26}{int(r['n_trades']):>4}{r['win_rate']:>7.0%}"
+            print(f"  {r['strategy']:<26}{r['segment']:<4} ERROR {r['error']}"); continue
+        print(f"  {r['strategy']:<26}{r['segment']:<4}{int(r['n_trades']):>4}{r['win_rate']:>7.0%}"
               f"{_f(r['ann']):>9}{_f(r['sharpe'],0):>8}{_f(r['mdd']):>9}{_f(r['calmar'],0):>8}"
               f"{r.get('ret_stress_bp',float('nan')):>9.1f}{r.get('ret_calm_bp',float('nan')):>9.1f}")
     print("=" * 104)
@@ -230,13 +238,13 @@ def _report(df, eqs, pool, pick, reb, vol_th):
         "",
         "## 策略比較",
         "",
-        "| 策略 | 筆數 | 勝率 | 年化 | Sharpe | MaxDD | Calmar | 壓力日bp | 平順日bp |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| 策略 | 段 | 筆數 | 勝率 | 年化 | Sharpe | MaxDD | Calmar | 壓力日bp | 平順日bp |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for _, r in df.iterrows():
         if "error" in r and isinstance(r.get("error"), str) and pd.notna(r.get("error")):
-            lines.append(f"| {r['strategy']} | — | — | — | — | — | — | — | ERR |"); continue
-        lines.append(f"| {r['strategy']} | {int(r['n_trades'])} | {r['win_rate']:.0%} | "
+            lines.append(f"| {r['strategy']} | {r['segment']} | — | — | — | — | — | — | — | ERR |"); continue
+        lines.append(f"| {r['strategy']} | {r['segment']} | {int(r['n_trades'])} | {r['win_rate']:.0%} | "
                      f"{_f(r['ann'])} | {_f(r['sharpe'],0)} | {_f(r['mdd'])} | {_f(r['calmar'],0)} | "
                      f"{r.get('ret_stress_bp',float('nan')):.1f} | {r.get('ret_calm_bp',float('nan')):.1f} |")
     lines += [

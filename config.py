@@ -6,14 +6,12 @@
 --------
 - 所有「可調的數字」集中在這裡，方便日後做參數掃描 / 上嚴格驗證。
 - 因子權重用 dict 表示，加總不必為 1（評分時會自動正規化）。
-- FinMind token 優先讀環境變數 FINMIND_TOKEN；
-  若無，fallback 去讀同工作區 taiwan-industry-analyzer/backend/.env（複用既有 token）。
+- FinMind token 只讀環境變數 FINMIND_TOKEN。公開 repo 不應隱性讀取相鄰專案的密鑰。
 """
 
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 # ── 路徑 ────────────────────────────────────────────────────────────────
@@ -26,18 +24,8 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ── FinMind Token ──────────────────────────────────────────────────────
 def _load_finmind_token() -> str:
-    """優先環境變數，否則複用 taiwan-industry-analyzer 的 .env。"""
-    tok = os.getenv("FINMIND_TOKEN", "").strip()
-    if tok:
-        return tok
-    # fallback：同層工作區的既有專案
-    candidate = ROOT.parent / "taiwan-industry-analyzer" / "backend" / ".env"
-    if candidate.exists():
-        txt = candidate.read_text(encoding="utf-8", errors="ignore")
-        m = re.search(r"(?im)^\s*FINMIND_TOKEN\s*=\s*(.+)\s*$", txt)
-        if m:
-            return m.group(1).strip().strip('"').strip("'")
-    return ""
+    """只接受目前程序明確注入的環境變數，避免跨 repo 偷讀密鑰。"""
+    return os.getenv("FINMIND_TOKEN", "").strip()
 
 
 FINMIND_TOKEN = _load_finmind_token()
@@ -45,6 +33,8 @@ FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
 
 # FinMind 免費版有流量限制，抓取之間 sleep（秒）
 FINMIND_SLEEP = 0.35
+FINMIND_MAX_RETRIES = int(os.getenv("SWING_API_MAX_RETRIES", "3"))
+FINMIND_RETRY_BACKOFF = float(os.getenv("SWING_API_RETRY_BACKOFF", "1.0"))
 
 
 # ── 資料抓取範圍 ────────────────────────────────────────────────────────
@@ -101,12 +91,13 @@ EXCLUDE_ETF_PREFIX0 = True      # 排除 00 開頭 ETF
 MIN_AVG_VOLUME_LOTS = 500       # 近20日均量門檻（張），低於視為流動性不足
 
 # ── 動態 universe（long-only；只決定「當日可選哪些股票」）──────────────
-# 重要：動態排名能消除「拿期末 top100 回套整段歷史」的直接 look-ahead，
-# 但若候選池本身仍是期末 top300，仍殘留 candidate-pool survivorship bias。
-# 論文級驗證應把候選池換成「歷史上所有曾上市櫃股票（含下市）」。
+# 正式回測採兩層規則：M 月候選 top300 只用完整 M-1 月交易所快照建立；再於
+# 候選池內做每日 top100。現在的 top300 名單只可供即時選股或 legacy 對照，
+# 不得回套歷史。月頻 provider 見 universes/monthly_pit.py。
 DYNAMIC_UNIVERSE_ENABLED = True
 DYNAMIC_UNIVERSE_TOP_N = 100          # 每個訊號日成交值排名前 N 才可被選
-DYNAMIC_UNIVERSE_CANDIDATE_POOL = 300 # 現階段用既有 top300 當 bootstrap 候選池
+DYNAMIC_UNIVERSE_CANDIDATE_POOL = 300 # 每月候選池大小（正式回測不是 current top300）
+DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS = 5  # 上月至少有 N 個有效交易日才可進候選排名
 DYNAMIC_UNIVERSE_LOOKBACK = 20        # 用截至訊號日的近 N 個交易日平均成交值/量
 DYNAMIC_UNIVERSE_MIN_OBS = 20         # 暖身不足不納入
 DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS = MIN_AVG_VOLUME_LOTS
@@ -254,10 +245,12 @@ BT_EXIT_MODE = "trend"
 BT_MA_EXIT = 20          # 收盤跌破此均線（MA20）即出場（搭配 MA60 為更慢的版本）
 BT_TREND_STOP_LOSS = 0.08  # 硬停損 -8%（趨勢沒走出來時的保命線）
 BT_MAX_HOLD_DAYS = 120   # 最長持有（約半年上限，避免殭屍部位）
-# 缺 bar(下市/長停牌)超過此交易日數 → 視為下市,以最後已知收盤強制平倉。
-# 沒有這道,缺 bar 部位會逃過所有出場判定、永遠凍結佔槽,survivorship-free 重跑時
-# 會忽略下市虧損(偏樂觀)。10 日 ≈ 兩週無交易。
+# 缺 bar(下市/長停牌)超過此交易日數 → 觸發清算資料檢查。不能假設最後收盤可成交。
 BT_STALE_EXIT_DAYS = 10
+_DELIST_RECOVERY_RAW = os.getenv("SWING_DELIST_RECOVERY", "").strip()
+BT_DELIST_RECOVERY = (float(_DELIST_RECOVERY_RAW) if _DELIST_RECOVERY_RAW else None)
+if BT_DELIST_RECOVERY is not None and not 0.0 <= BT_DELIST_RECOVERY <= 1.0:
+    raise ValueError("SWING_DELIST_RECOVERY 必須介於 0 與 1 之間")
 
 # fixed 模式參數（僅 BT_EXIT_MODE="fixed" 時生效）
 BT_HOLD_DAYS = 20        # 固定持有天數
@@ -270,19 +263,42 @@ BT_ENTRY_NEXT_OPEN = True  # 隔日開盤進場（避免用當日收盤訊號當
 BT_FEE = 0.001425        # 手續費（單邊）
 BT_TAX = 0.003           # 證交稅（賣出）
 
-# ── 漲跌停可成交性(2026-08-01 加)────────────────────────────────────────
-# 台股漲跌幅 ±10%(2015/6/1 起)。一字鎖漲停(open==high==low 且跳空≈+10%)時委買
-# 遠大於委賣、實務上『買不到』;一字鎖跌停時『賣不掉』。回測若無條件用開盤成交會
-# 系統性高估(追動能最想買的封板股恰恰最難成交)。開此模型:進場遇一字漲停→跳過
-# (買不到);出場遇一字跌停→順延到能成交日(賣不掉、被迫續抱)。不需額外資料,
-# 直接由 OHLC 推(high==low 無盤中區間=鎖死)。
+# 股數與資金模型。research_fractional 用於純 alpha 比較、不可宣稱可直接下單；
+# regular_lot 才會按普通交易 1,000 股整張下單。odd_lot_proxy 只把股數取整數，成交價
+# 仍借用普通交易日線 open，沒有零股撮合資料時只能做敏感度測試。
+BT_ORDER_SIZE_MODE = os.getenv(
+    "SWING_ORDER_SIZE_MODE", "research_fractional").strip().lower()
+_VALID_ORDER_SIZE_MODES = {"research_fractional", "regular_lot", "odd_lot_proxy"}
+if BT_ORDER_SIZE_MODE not in _VALID_ORDER_SIZE_MODES:
+    raise ValueError(
+        f"SWING_ORDER_SIZE_MODE 必須是 {sorted(_VALID_ORDER_SIZE_MODES)}，"
+        f"目前為 {BT_ORDER_SIZE_MODE!r}"
+    )
+BT_INITIAL_CAPITAL = float(os.getenv("SWING_INITIAL_CAPITAL", "1000000"))
+if BT_INITIAL_CAPITAL <= 0:
+    raise ValueError("SWING_INITIAL_CAPITAL 必須大於 0")
+BT_REGULAR_LOT_SHARES = 1000
+# 最低手續費屬券商收費，不是交易所統一規則；預設 0 保持中立，使用者應按券商設定。
+BT_MIN_COMMISSION = float(os.getenv("SWING_MIN_COMMISSION", "0"))
+if BT_MIN_COMMISSION < 0:
+    raise ValueError("SWING_MIN_COMMISSION 不得為負")
+
+# ── 漲跌停可成交性──────────────────────────────────────────────────────
+# 台股普通股漲跌幅 ±10%(2015/6/1 起)，但合法價格還要依升降單位向範圍內調整。
+# 一字漲停視為買不到、一字跌停視為賣不掉；正式價位由 execution.taiwan_rules 算，
+# 可選用官方 TaiwanStockPriceLimit，未驗證前則清楚標記 derived_prev_close。
 BT_MODEL_LIMIT_LOCK = os.getenv("SWING_MODEL_LIMIT_LOCK", "1").strip() != "0"
-BT_LIMIT_PCT = 0.095     # 判定鎖漲跌停的跳空門檻(略低於 10% 容 tick 圓整)
+# 正式判定由 execution.taiwan_rules 依開盤競價基準與升降單位計算。公司行動日若資料
+# 沒有 reference_price，才會暫以昨日收盤推導，並在文件標為資料層待補欄位。
+BT_PRICE_LIMIT_SOURCE = os.getenv(
+    "SWING_PRICE_LIMIT_SOURCE", "derived_prev_close").strip().lower()
+if BT_PRICE_LIMIT_SOURCE not in {"derived_prev_close", "official"}:
+    raise ValueError("SWING_PRICE_LIMIT_SOURCE 必須是 derived_prev_close 或 official")
 
 # ── 處置期間禁新倉(需先跑 twse_disposition.py + tpex_disposition.py 建快取)────
 # 處置期間改分盤集合競價(每5/20分)+預收款券+停信用,實務難以在開盤正常建倉。
 # 開此模型:處置期間內的股票不得新建倉(禁新倉)。預設關(需處置快取,clean clone
-# 沒有);SWING_MODEL_DISPOSITION=1 開啟,兩邊快取都缺則自動 no-op、只有單邊會警告。
+# 沒有);SWING_MODEL_DISPOSITION=1 開啟後缺任一市場快取即 fail-closed。
 #
 # 兩市場資料品質不同(source 欄位據實標示):
 #   上市 TWSE → 免費端點只給當前處置,歷史由真實「注意」用連續3日規則**推導**
@@ -314,6 +330,10 @@ MARKET_FILTER_VOL_THRESHOLD = 0.30  # vol 規則唯一參數：年化波動門�
 
 # ── 因子 IC / 驗證 ──────────────────────────────────────────────────────
 BT_IC_HORIZON = 20       # IC 用的未來報酬視窗（交易日，約一個月＝波段尺度）
-# IS/OS 切分（階段三嚴格驗證用；先放著，backtest 已預留接口）
-IS_OS_SPLIT = 0.70       # 前 70% 時間 in-sample，後 30% out-of-sample
-EMBARGO_DAYS = 20        # IS/OS 之間的緩衝（= IC_HORIZON，避免重疊洩漏）
+# IS/OS 切分。所有研究腳本應呼叫 evaluation_split.build_evaluation_split，禁止各自算索引。
+# ratio:前段比例切割；weeks:從資料尾端往回取固定 OS 週數，再取固定 IS 週數。
+EVAL_SPLIT_MODE = os.getenv("SWING_EVAL_SPLIT_MODE", "ratio").strip().lower()
+IS_OS_SPLIT = float(os.getenv("SWING_IS_RATIO", "0.70"))
+IS_WEEKS = int(os.getenv("SWING_IS_WEEKS", "52"))
+OS_WEEKS = int(os.getenv("SWING_OS_WEEKS", "26"))
+EMBARGO_DAYS = int(os.getenv("SWING_EMBARGO_DAYS", "20"))

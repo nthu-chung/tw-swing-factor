@@ -163,11 +163,21 @@
 
 ### A. 乾淨 clone 後重現既有結果
 ```bash
-.venv/bin/pip install -r requirements.txt
-# universe 候選池 fixture 已進版控(outputs/universe_top*.json);若要重建:
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 1) 離線閘門(不需 token,不連網;CI 跑的就是這兩行)
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p "test_*.py"
+PYTHONPATH=. .venv/bin/python preflight.py
+
+# 2) 正式回測的候選池走月頻 PIT,不需要 build_universe.py。
+#    第一次要補齊交易所逐日快照(之後逐日快取重用):
+.venv/bin/python -c "import pit_universe as p; p.load_history('2024-06-01','2026-06-22')"
+
+# 3) legacy static 對照組才需要 outputs/universe_top*.json(已進版控的 fixture)。
+#    要重建:
 .venv/bin/python build_universe.py 300
-.venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 應 30 passed
 ```
+不寫死「應 N passed」——測試數會隨新增回歸測試變動，用**綠燈**而不是數字當判準。
 
 ### B. 推進研究窗（換資料）
 ```bash
@@ -203,7 +213,19 @@ SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
 ```
 
 ### F. 尚未修好的（仍是揭露、非強制）——升級結論前必須先處理
-- **候選池倖存者**：仍是「當前 top300」，缺歷史下市/轉板股（`UNIVERSE_BIAS_REPORT.md` 量化上界）。根治需外部下市清單，重建 survivorship-free PIT 全市場池。
-- **還原價**：預設仍未還原；真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。
+- **候選池倖存者（已部分修復）**：正式回測改走兩層 PIT——`universes/monthly_pit.py`
+  用完整 M-1 曆月的交易所逐日快照建 M 月候選（含當時在市、後來下市者），再由
+  `dynamic_universe.py` 在池內依截至訊號日的 ADV20 排每日 top-N。因此
+  `candidate_membership_survivorship_free=True`。
+  **但 `price_history_survivorship_free` 仍為 `False`**：下市股的完整價格序列可能缺，
+  所以整體 `survivorship_free` 維持 `False`。`build_universe.py` 的
+  `outputs/universe_top*.json` 現在只供 legacy static 對照（`--static-universe`），
+  **不得回套歷史**（偏誤上界見 `UNIVERSE_BIAS_REPORT.md`）。
+- **還原價**：預設仍未還原；`price_adjust.py` 自建只處理除權息，不含分割／減資。
+  真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。未還原價現在一律
+  fail-closed raise（§9），不是警告。
+- **產業分類非 PIT**：歷史日期套用當前 FinMind 標籤，族群策略保留 `industry_pit=False`。
 - **單一多頭窗**：資料僅 2024–2026，無足夠空頭；clean OOS 檢定力低，靠 forward-only 累積。
-- 在上述三項處理完之前，**所有絕對績效一律標「樂觀上界、待重驗」**，不得作為上線依據。
+- 在上述各項處理完之前，**所有絕對績效一律標「樂觀上界、待重驗」**，不得作為上線依據。
+  已標為 historical/invalid 的舊報告不得因為閘門修好而回收再用——**修好閘門不等於
+  重新證明策略**，要重新宣稱就得重跑。

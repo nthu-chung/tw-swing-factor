@@ -13,7 +13,8 @@
 - 每檔股票每類資料 -> 一個 pickle 快取檔（_cache/<dataset>__<stock>.pkl）。
   快取當天有效，避免重複打 API（FinMind 免費版有流量限制）。
 - 全部回傳 pandas.DataFrame，欄位統一小寫、date 轉成 datetime。
-- 抓不到 / 失敗 -> 回傳空 DataFrame，不丟例外（讓上層自己決定跳過）。
+- 服務明確回「沒有資料」才回空 DataFrame；連線、額度或認證失敗會有界重試後
+  raise，禁止把 API 故障靜默解讀成「該期間沒有資料」。
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ import requests
 import config
 
 _SESSION = requests.Session()
+
+
+class FinMindAPIError(RuntimeError):
+    """FinMind 資料無法可靠取得；不得用空表冒充真實的無資料。"""
 
 
 # ── 快取工具 ────────────────────────────────────────────────────────────
@@ -85,11 +90,11 @@ def _save_cache(dataset: str, stock_id: str, df: pd.DataFrame) -> None:
 
 
 # ── FinMind 低階呼叫 ────────────────────────────────────────────────────
-def _finmind_get(dataset: str, data_id: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """打 FinMind API，回傳 DataFrame（失敗回空）。"""
+def fetch_finmind_dataset(dataset: str, data_id: str,
+                          start_date: str, end_date: str) -> pd.DataFrame:
+    """打 FinMind API；瞬斷有界重試，耗盡或權限錯誤時 fail-closed。"""
     if not config.FINMIND_TOKEN:
-        print("[data] 警告：FINMIND_TOKEN 未設定，無法抓取資料")
-        return pd.DataFrame()
+        raise FinMindAPIError("FINMIND_TOKEN 未設定；拒絕回空表冒充無資料")
 
     params = {
         "dataset": dataset,
@@ -98,26 +103,45 @@ def _finmind_get(dataset: str, data_id: str, start_date: str, end_date: str) -> 
         "end_date": end_date,
     }
     headers = {"Authorization": f"Bearer {config.FINMIND_TOKEN}"}
-    try:
-        time.sleep(config.FINMIND_SLEEP)
-        resp = _SESSION.get(
-            config.FINMIND_BASE, params=params, headers=headers, timeout=30
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        data = payload.get("data") or []
-        if not data:
-            return pd.DataFrame()
-        return pd.DataFrame(data)
-    except requests.HTTPError as e:
-        # 402 = 流量用盡；429 = 太頻繁
-        code = getattr(e.response, "status_code", "?")
-        print(f"[data] {dataset} {data_id} HTTP {code}：{e}")
-        return pd.DataFrame()
-    except Exception as e:
-        # 不印 request headers / 完整 URL，避免認證資訊進入 log。
-        print(f"[data] {dataset} {data_id} 連線失敗：{type(e).__name__}")
-        return pd.DataFrame()
+    retries = max(1, int(getattr(config, "FINMIND_MAX_RETRIES", 3)))
+    backoff = max(0.0, float(getattr(config, "FINMIND_RETRY_BACKOFF", 1.0)))
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            time.sleep(config.FINMIND_SLEEP + backoff * (attempt - 1))
+            resp = _SESSION.get(
+                config.FINMIND_BASE, params=params, headers=headers, timeout=30
+            )
+            code = resp.status_code
+            # 401/402/403/其他 4xx 是憑證、額度或請求問題；重試不會改善。
+            if 400 <= code < 500 and code != 429:
+                raise FinMindAPIError(
+                    f"FinMind {dataset} {data_id or 'ALL'} HTTP {code}；請檢查權限/額度/參數"
+                )
+            resp.raise_for_status()
+            payload = resp.json()
+            status = payload.get("status")
+            if status is not None and int(status) != 200:
+                raise FinMindAPIError(
+                    f"FinMind {dataset} {data_id or 'ALL'} API status={status}"
+                )
+            rows = payload.get("data") or []
+            return pd.DataFrame(rows) if rows else pd.DataFrame()
+        except FinMindAPIError:
+            raise
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            last_error = exc
+            if attempt < retries:
+                print(f"[data] {dataset} {data_id or 'ALL'} 第 {attempt}/{retries} 次失敗:"
+                      f"{type(exc).__name__}，準備重試")
+    raise FinMindAPIError(
+        f"FinMind {dataset} {data_id or 'ALL'} 重試 {retries} 次仍失敗:"
+        f"{type(last_error).__name__}；拒絕回空表"
+    )
+
+
+# 舊內部名稱保留，避免外部研究腳本壞掉；新程式請用公開函式名。
+_finmind_get = fetch_finmind_dataset
 
 
 def _date_range(history_days: int = None):
@@ -132,9 +156,10 @@ def _date_range(history_days: int = None):
     if snap:
         try:
             end = datetime.strptime(snap, "%Y-%m-%d")
-        except ValueError:
-            print(f"[data] 警告：SNAPSHOT_END_DATE='{snap}' 格式不對，退回 now()")
-            end = datetime.now()
+        except ValueError as exc:
+            raise ValueError(
+                f"SNAPSHOT_END_DATE={snap!r} 格式錯誤；拒絕退回 now() 以免讀到未來資料"
+            ) from exc
     else:
         end = datetime.now()
     start = end - timedelta(days=history_days)
@@ -205,8 +230,9 @@ def _maybe_self_adjust(stock_id: str, df: pd.DataFrame, dataset: str) -> pd.Data
         out.attrs["price_dataset"] = f"{dataset}+selfadj"
         return out
     except Exception as e:
-        print(f"[data] {stock_id} 自建還原價失敗:{type(e).__name__};退回原始價。")
-        return df
+        raise RuntimeError(
+            f"{stock_id} 自建還原價失敗:{type(e).__name__}；拒絕退回未還原價"
+        ) from e
 
 
 def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
@@ -245,6 +271,36 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     df.attrs["price_dataset"] = dataset
     _save_cache(cache_key, stock_id, df)   # 快取存**原始**價,還原在讀取後套用
     return _maybe_self_adjust(stock_id, df, dataset)
+
+
+def fetch_price_limits(stock_id: str, history_days: int = None) -> pd.DataFrame:
+    """官方逐日參考價與漲跌停價：date/reference_price/limit_up/limit_down。
+
+    這組欄位是 execution 的資料契約；缺欄位時必須 fail-closed，不能退回昨日收盤後
+    還把來源標成 official。新上市無漲跌幅列的實際空值語意尚未完成真實 API 驗證，
+    因此目前也不自行把空值解讀為豁免。
+    """
+    cached = _load_cache("price_limit", stock_id)
+    if cached is not None:
+        return cached
+    start, end = _date_range(history_days)
+    df = _finmind_get("TaiwanStockPriceLimit", stock_id, start, end)
+    if df.empty:
+        return df
+    required = {"date", "reference_price", "limit_up", "limit_down"}
+    missing = required - set(df.columns)
+    if missing:
+        raise FinMindAPIError(
+            f"TaiwanStockPriceLimit {stock_id} schema 缺少 {sorted(missing)}"
+        )
+    out = df[["date", "reference_price", "limit_up", "limit_down"]].copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    for col in ("reference_price", "limit_up", "limit_down"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=["date"]).sort_values("date").drop_duplicates(
+        "date", keep="last").reset_index(drop=True)
+    _save_cache("price_limit", stock_id, out)
+    return out
 
 
 # ── 3. 三大法人買賣超 ───────────────────────────────────────────────────
@@ -436,7 +492,7 @@ def fetch_vix(history_days: int = None) -> pd.DataFrame:
 def fetch_market_index(history_days: int = None) -> pd.DataFrame:
     """
     回傳大盤加權指數（TAIEX）日資料：date, open, high, low, close, volume。
-    來源 FinMind TaiwanStockPrice / data_id=TAIEX。失敗回空 DataFrame。
+    來源 FinMind TaiwanStockPrice / data_id=TAIEX。服務明確無資料才回空；API 失敗 raise。
     """
     cached = _load_cache("market", "TAIEX")
     if cached is not None:

@@ -77,7 +77,10 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
                 if s not in seen:
                     seen.add(s); out.append(s)
             return out
-        print(f"[universe] 找不到 top{top_n} 池，請先跑 build_universe.py")
+        raise FileNotFoundError(
+            f"找不到或無法載入 top{top_n} 候選池；請先跑 "
+            f"`.venv/bin/python build_universe.py {top_n}`。拒絕降級成 sample universe。"
+        )
 
     if sample:
         seen, out = set(), []
@@ -89,8 +92,7 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
 
     info = data.fetch_stock_info()
     if info.empty:
-        print("[universe] 無法取得全市場清單，改用 sample")
-        return get_universe(sample=True)
+        raise RuntimeError("無法取得全市場股票清單；拒絕降級成 sample universe")
 
     out = []
     for _, row in info.iterrows():

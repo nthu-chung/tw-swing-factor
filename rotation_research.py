@@ -23,6 +23,7 @@ import pandas as pd
 import backtest
 import config
 import data
+import evaluation_split
 import price_integrity
 import universe as uni
 
@@ -436,16 +437,10 @@ def market_relative_metrics(eq: pd.DataFrame, start_date: str, end_date: str) ->
 
 
 def split_dates(panel: pd.DataFrame) -> dict:
-    dates = pd.Series(sorted(panel["date"].unique()))
-    cut = int(len(dates) * config.IS_OS_SPLIT)
-    os_idx = min(len(dates) - 1, cut + config.EMBARGO_DAYS)
-    return {
-        "is_start": str(pd.Timestamp(dates.iloc[0]).date()),
-        "is_end": str(pd.Timestamp(dates.iloc[cut - 1]).date()),
-        "os_start": str(pd.Timestamp(dates.iloc[os_idx]).date()),
-        "os_end": str(pd.Timestamp(dates.iloc[-1]).date()),
-        "n_dates": int(len(dates)),
-    }
+    split = evaluation_split.build_evaluation_split(panel["date"])
+    out = split.to_dict()
+    out["n_dates"] = out["n_total"]
+    return out
 
 
 def theme_case_audit(

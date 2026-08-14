@@ -28,9 +28,14 @@ import pandas as pd
 import config
 import data
 import dynamic_universe
+import evaluation_split
 import factors
 import price_integrity
 import universe as uni
+from universes import MonthlyPITUniverseProvider
+from execution.tradability import detect_limit_lock as _limit_lock
+from execution.tradability import load_disposition_days as _load_disposition_days
+from execution.costs import OrderSizeMode, TaiwanStockCostModel, size_long_order
 
 
 # ── 未還原價 fail-closed 閘門（下沉到所有績效/因子路徑的共同咽喉點）─────────
@@ -116,78 +121,6 @@ def _assert_price_integrity(symbols: List[str]) -> None:
         )
 
 
-# ── 處置期間禁新倉:載入處置日集 {sid -> set(交易日)}────────────────────────
-def _load_disposition_days(all_dates) -> Dict[str, set]:
-    """合併上市(TWSE)+上櫃(TPEx)處置期間,展開成 {sid -> set(處置交易日)}。
-
-    需先跑 twse_disposition.py / tpex_disposition.py 建快取;兩邊都缺則回 {}(no-op)。
-
-    2026-08-02 加上櫃:原本只讀 TWSE 快取,但候選池裡上櫃約佔四分之一(top100 22 檔
-    /top300 76 檔),且上櫃多為中小型冷門股、更容易被列注意處置 —— 只保護上市等於
-    保護在最需要的地方缺席。只載到單邊時會明講缺哪邊,不靜默半套。
-
-    來源品質不同,`source` 欄位據實標示:上市是由注意「推導」(derived,偏寬),
-    上櫃是官方真實起訖(tpex_disposal_actual)。
-    """
-    if not getattr(config, "BT_MODEL_DISPOSITION", False):
-        return {}
-    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
-    sources = {
-        "上市(TWSE,推導)": config.CACHE_DIR / f"disposition__ALL__{snap}.pkl",
-        "上櫃(TPEx,真實)": config.CACHE_DIR / f"disposition_tpex__ALL__{snap}.pkl",
-    }
-    frames, loaded, missing = [], [], []
-    for label, path in sources.items():
-        if not path.exists():
-            missing.append(f"{label}→{path.name}")
-            continue
-        try:
-            frames.append(pd.read_pickle(path))
-            loaded.append(label)
-        except Exception as e:
-            missing.append(f"{label}(載入失敗 {type(e).__name__})")
-    if not frames:
-        print(f"[backtest] ⚠ BT_MODEL_DISPOSITION 開啟但無任何處置快取"
-              f"({'、'.join(missing)}),先跑 twse_disposition.py / tpex_disposition.py;"
-              f"本次不套處置禁倉。")
-        return {}
-    if missing:
-        print(f"[backtest] ⚠ 處置禁倉只涵蓋 {'、'.join(loaded)};缺 {'、'.join(missing)} "
-              f"→ 該市場的處置期間不受保護,結果偏樂觀。")
-    try:
-        import twse_disposition
-        disp = pd.concat(frames, ignore_index=True)
-        return twse_disposition.disposition_day_set(disp, all_dates)
-    except Exception as e:
-        print(f"[backtest] 處置快取合併失敗:{type(e).__name__};不套處置禁倉。")
-        return {}
-
-
-# ── 一字鎖漲/跌停判定(可成交性)──────────────────────────────────────────
-def _limit_lock(bar: pd.Series, prev_close: Optional[float]) -> Optional[str]:
-    """回傳 'up'/'down'/None:當日是否一字鎖漲/跌停。
-
-    鎖死特徵:全日只有一個價位(high==low,無盤中區間),且相對前收跳空 ≈ ±10%。
-    一字漲停 → 委買遠大於委賣,實務買不到;一字跌停 → 賣不掉。用已有 OHLC 即可判,
-    不需額外漲跌停資料表。
-    """
-    if prev_close is None or prev_close <= 0:
-        return None
-    try:
-        hi = float(bar["high"]); lo = float(bar["low"]); o = float(bar["open"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if hi != lo:                      # 有盤中高低差 = 沒鎖死,可成交
-        return None
-    gap = o / prev_close - 1.0
-    thr = getattr(config, "BT_LIMIT_PCT", 0.095)
-    if gap >= thr:
-        return "up"
-    if gap <= -thr:
-        return "down"
-    return None
-
-
 # ── 單筆部位的「當日出場判定」────────────────────────────────────────────
 def _check_exit(bar: pd.Series, pos: dict, days_held: int) -> Optional[tuple]:
     """
@@ -232,7 +165,8 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
                    start_date: Optional[str], end_date: Optional[str],
                    dynamic_enabled: Optional[bool] = None,
                    universe_top_n: Optional[int] = None,
-                   keep_non_members: bool = False) -> pd.DataFrame:
+                   keep_non_members: bool = False,
+                   universe_provider=None) -> pd.DataFrame:
     """
     把所有股票每一天的因子 + 綜合分數 + 未來N日報酬，攤平成一個大 panel。
     這個 panel 同時用於 (1) 整體回測選股 (2) 因子 IC 分析。
@@ -333,6 +267,12 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         "industry_asof": _asof,          # = 資料快照日(TaiwanStockInfo 以此戳快取)
         "candidate_pool_asof": _pool_asof,  # 候選池 json 的真實 as_of provenance
     }
+    candidate_mask = None
+    if universe_provider is not None:
+        if not dynamic_enabled:
+            raise ValueError("PIT universe_provider 只能搭配 dynamic_enabled=True")
+        candidate_mask = universe_provider.candidate_mask(panel)
+        universe_meta.update(universe_provider.metadata())
     if dynamic_enabled:
         ranked = dynamic_universe.add_membership(
             panel,
@@ -341,6 +281,7 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
             min_obs=config.DYNAMIC_UNIVERSE_MIN_OBS,
             min_avg_volume_lots=config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
             min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
+            candidate_mask=candidate_mask,
         )
         universe_meta.update({
             "top_n": universe_top_n,
@@ -400,7 +341,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        dynamic_enabled: Optional[bool] = None,
                        universe_top_n: Optional[int] = None,
                        picks_by_date: Optional[Dict] = None,
-                       let_positions_run: bool = False) -> Dict:
+                       let_positions_run: bool = False,
+                       rebalance_phase: int = 0,
+                       universe_provider=None) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -421,22 +364,72 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         if dynamic_enabled is None else bool(dynamic_enabled)
     )
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    if rebalance_every <= 0:
+        raise ValueError("rebalance_every 必須為正整數")
+    if not 0 <= rebalance_phase < rebalance_every:
+        raise ValueError(
+            f"rebalance_phase 必須在 [0, {rebalance_every - 1}]，目前為 {rebalance_phase}"
+        )
+    if universe_provider is None and dynamic_enabled and not sample and symbols is None:
+        # 正式入口若呼叫端沒有提供 universe，安全預設也必須是上月 PIT；禁止再
+        # 靜默退回「今天的 top-N」並把它回套歷史。
+        universe_provider = MonthlyPITUniverseProvider.from_cache(
+            top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
+            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
+        )
+    if universe_provider is not None:
+        provider_symbols = list(universe_provider.all_symbols)
+        if symbols is None:
+            symbols = provider_symbols
+        elif set(symbols) != set(provider_symbols):
+            raise ValueError("symbols 必須等於 universe_provider 的歷史成員聯集")
     if symbols is None:
-        if dynamic_enabled and not sample:
-            symbols = uni.get_research_candidates(universe_top_n)
-        else:
-            symbols = uni.get_universe(sample=sample)
+        symbols = uni.get_universe(sample=sample)
 
     max_positions = config.BT_MAX_POSITIONS
 
     # 每檔 price（含 MA_EXIT 供 trend 退場），date -> 列索引
     price_cache: Dict[str, pd.DataFrame] = {}
     date_idx_map: Dict[str, Dict] = {}
+    price_limit_source = getattr(config, "BT_PRICE_LIMIT_SOURCE", "derived_prev_close")
     for sid in symbols:
         p = data.fetch_price(sid)
         if p is None or p.empty:
             continue
         p = p.reset_index(drop=True)
+        if price_limit_source == "official":
+            limits = data.fetch_price_limits(sid)
+            if limits is None or limits.empty:
+                raise RuntimeError(
+                    f"{sid} 指定 official 漲跌停資料，但 TaiwanStockPriceLimit 為空"
+                )
+            p = p.merge(limits, on="date", how="left", validate="one_to_one")
+            # 自建 back-adjust 後，官方原始價格也要乘同一因子才可與 OHLC 比較。
+            if "adj_factor" in p.columns:
+                for col in ("reference_price", "limit_up", "limit_down"):
+                    p[col] = pd.to_numeric(p[col], errors="coerce") * p["adj_factor"]
+            elif getattr(config, "PRICE_DATASET", "TaiwanStockPrice") == "TaiwanStockPriceAdj":
+                raise RuntimeError(
+                    f"{sid} 使用供應商還原價但沒有逐日 adj_factor，無法把官方原始"
+                    "漲跌停價對齊到同一尺度"
+                )
+            required = {"reference_price", "limit_up", "limit_down"}
+            missing = required - set(p.columns)
+            if missing:
+                raise RuntimeError(
+                    f"{sid} 指定 official 漲跌停資料，但價格列缺少 {sorted(missing)}；"
+                    "拒絕把 derived_prev_close 冒充官方資料"
+                )
+            exempt = p.get("price_limit_exempt", pd.Series(False, index=p.index)).fillna(False)
+            covered = p["reference_price"].notna() & (
+                (p["limit_up"].notna() & p["limit_down"].notna()) | exempt.astype(bool)
+            )
+            if not bool(covered.all()):
+                bad_dates = p.loc[~covered, "date"].astype(str).str[:10].head(3).tolist()
+                raise RuntimeError(
+                    f"{sid} official 漲跌停資料覆蓋不完整，例：{bad_dates}；"
+                    "拒絕靜默退回昨日收盤推導"
+                )
         p["ma_exit"] = p["close"].rolling(config.BT_MA_EXIT).mean()
         price_cache[sid] = p
         date_idx_map[sid] = {d: i for i, d in enumerate(p["date"])}
@@ -450,6 +443,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             symbols, config.MIN_COMPOSITE, start_date, end_date,
             dynamic_enabled=dynamic_enabled,
             universe_top_n=universe_top_n,
+            universe_provider=universe_provider,
         )
         if panel.empty:
             return {"error": "panel 為空，無法回測"}
@@ -492,8 +486,6 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             all_dates = [d for d in all_dates if d <= bound]
         elif hard_end is not None:
             all_dates = [d for d in all_dates if d <= hard_end]
-    date_pos = {d: i for i, d in enumerate(all_dates)}
-
     # universe 資訊:external picks 路徑沒有 panel,給一個安全的 metadata（避免
     # summary 讀 panel.attrs 時 UnboundLocalError）。誠實標籤沿用同一組。
     _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
@@ -518,18 +510,25 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     n_regime_switches = 0
     n_limit_skip = 0            # 因一字漲停買不到而跳過的進場數
     n_disp_skip = 0            # 因處置期間禁新倉而跳過的進場數
+    n_stale_exits = 0          # 顯式 recovery 假設下的疑似下市/長停牌結算數
+    n_lot_skip = 0             # 分配資金不足一個合法交易單位
     disp_days = _load_disposition_days(all_dates)   # {sid -> set(處置交易日)}
     _prev_riskoff = False
 
     # 投組狀態
-    equity = 1.0
-    cash = 1.0
+    initial_capital = float(getattr(config, "BT_INITIAL_CAPITAL", 1_000_000.0))
+    order_size_mode = OrderSizeMode(
+        getattr(config, "BT_ORDER_SIZE_MODE", OrderSizeMode.RESEARCH_FRACTIONAL.value))
+    cost_model = TaiwanStockCostModel(
+        commission_rate=config.BT_FEE,
+        minimum_commission=getattr(config, "BT_MIN_COMMISSION", 0.0),
+        sell_tax_rate=config.BT_TAX,
+    )
+    equity = initial_capital
+    cash = initial_capital
     positions: Dict[str, dict] = {}   # sid -> 部位
     equity_curve = []                 # (date, equity)
     trades = []
-
-    fee = config.BT_FEE
-    sell_cost = config.BT_FEE + config.BT_TAX
 
     def _price_row(sid, d):
         idx = date_idx_map.get(sid, {}).get(d)
@@ -560,8 +559,15 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 # 以最後已知收盤強制平倉(survivorship-free 重跑時才不會忽略下市虧損)。
                 stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
                 if stale >= config.BT_STALE_EXIT_DAYS:
-                    exit_price = pos["last_close"]
-                    proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                    recovery = getattr(config, "BT_DELIST_RECOVERY", None)
+                    if recovery is None:
+                        raise RuntimeError(
+                            f"{sid} 已連續 {stale} 個市場交易日無 bar（疑似長停牌/下市）；"
+                            "沒有正式清算資料，拒絕假設可用最後收盤賣出。"
+                            "可用 SWING_DELIST_RECOVERY=0~1 做明確敏感度測試"
+                        )
+                    exit_price = pos["last_close"] * float(recovery)
+                    proceeds = float(cost_model.sell_proceeds(pos["shares"], exit_price))
                     cash += proceeds
                     gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
                     net = proceeds / pos["cost"] - 1.0
@@ -571,6 +577,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                         "entry_date": pos["entry_date"], "exit_date": d,
                         "entry_price": round(pos["entry_price"], 2),
                         "exit_price": round(exit_price, 2),
+                        "shares": pos["shares"],
+                        "entry_cost": round(pos["cost"], 2),
+                        "exit_proceeds": round(proceeds, 2),
                         "hold_bars": di - pos.get("entry_di", di),
                         "gross_ret": round(gross, 4),
                         "ret": round(net, 4),
@@ -578,6 +587,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                         "composite": round(pos["composite"], 2),
                     })
                     del positions[sid]
+                    n_stale_exits += 1
                 continue  # 當天該股沒資料(未達門檻)→ 續抱
             if idx <= pos["entry_idx"]:
                 continue  # 進場當天不在這裡出（出場判定從進場日的 _check_exit 已含）
@@ -591,7 +601,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             ex = _check_exit(bar, pos, days_held)
             if ex is not None:
                 exit_price, reason = ex
-                proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                proceeds = float(cost_model.sell_proceeds(pos["shares"], exit_price))
                 cash += proceeds
                 gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
                 net = proceeds / pos["cost"] - 1.0
@@ -601,6 +611,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     "entry_date": pos["entry_date"], "exit_date": d,
                     "entry_price": round(pos["entry_price"], 2),
                     "exit_price": round(exit_price, 2),
+                    "shares": pos["shares"],
+                    "entry_cost": round(pos["cost"], 2),
+                    "exit_proceeds": round(proceeds, 2),
                     "hold_bars": days_held,
                     "gross_ret": round(gross, 4),
                     "ret": round(net, 4),
@@ -623,7 +636,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 exit_price = float(bar["open"])
                 if not np.isfinite(exit_price) or exit_price <= 0:
                     continue
-                proceeds = pos["shares"] * exit_price * (1 - sell_cost)
+                proceeds = float(cost_model.sell_proceeds(pos["shares"], exit_price))
                 cash += proceeds
                 gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
                 net = proceeds / pos["cost"] - 1.0
@@ -634,6 +647,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                     "entry_date": pos["entry_date"], "exit_date": d,
                     "entry_price": round(pos["entry_price"], 2),
                     "exit_price": round(exit_price, 2),
+                    "shares": pos["shares"],
+                    "entry_cost": round(pos["cost"], 2),
+                    "exit_proceeds": round(proceeds, 2),
                     "hold_bars": days_held,
                     "gross_ret": round(gross, 4),
                     "ret": round(net, 4),
@@ -646,7 +662,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
 
         # ── 2) 逢 rebalance 日，用空位進場（T+1 開盤＝今天的 open）──────
         # 訊號日是「昨天」(d-1)，今天開盤進場。
-        if di > 0 and (di - 1) % rebalance_every == 0:
+        if di > 0 and (di - 1 - rebalance_phase) % rebalance_every == 0:
             signal_date = all_dates[di - 1]
             candidates = picks_by_date.get(signal_date, [])[:top_n]
             entry_cap = target_positions if filter_on else max_positions
@@ -673,13 +689,22 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 if cash < alloc * 0.5:
                     break  # 現金不足
                 alloc = min(alloc, cash)
-                shares = alloc * (1 - fee) / entry_price  # 扣買進手續費
-                cash -= alloc
+                shares, total_cost = size_long_order(
+                    alloc,
+                    entry_price,
+                    mode=order_size_mode,
+                    costs=cost_model,
+                    regular_lot_shares=getattr(config, "BT_REGULAR_LOT_SHARES", 1000),
+                )
+                if shares <= 0:
+                    n_lot_skip += 1
+                    continue
+                cash -= total_cost
                 positions[sid] = {
                     "name": name, "composite": float(comp),
                     "signal_date": signal_date, "entry_date": d,
                     "entry_idx": idx, "entry_price": entry_price,
-                    "cost": alloc, "shares": shares,
+                    "cost": total_cost, "shares": shares,
                     "ma_exit_today": np.nan,
                     "pending_ma_exit": False,
                     "last_close": entry_price,      # MTM 缺 bar 時延用最後收盤(見下)
@@ -707,7 +732,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     eq = pd.DataFrame(equity_curve, columns=["date", "equity"]).set_index("date")
     daily_ret = eq["equity"].pct_change().dropna()
 
-    cum_ret = float(eq["equity"].iloc[-1] - 1.0)
+    cum_ret = float(eq["equity"].iloc[-1] / initial_capital - 1.0)
     peak = eq["equity"].cummax()
     max_dd = float(((eq["equity"] - peak) / peak).min())
     ann_ret = float(daily_ret.mean() * 252)
@@ -763,6 +788,40 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "modeled": bool(disp_days),
             "n_entries_skipped_disposition": n_disp_skip,
         },
+        "execution": {
+            "rules_version": "tw-stock-2015-06-01",
+            "order_size_mode": order_size_mode.value,
+            "lot_aware": order_size_mode == OrderSizeMode.REGULAR_LOT,
+            "price_limit_source": getattr(
+                config, "BT_PRICE_LIMIT_SOURCE", "derived_prev_close"),
+            "price_and_lot_realistic": (
+                order_size_mode == OrderSizeMode.REGULAR_LOT
+                and getattr(config, "BT_PRICE_LIMIT_SOURCE", "derived_prev_close") == "official"
+            ),
+            # 日線仍無法重建排隊、盤中穩定措施、處置分盤與完整交割帳本；在這些
+            # 元件完成前，不得因股數和漲跌停正確就宣稱 execution 已完整真實。
+            "execution_realistic": False,
+            "unmodeled_components": [
+                "intraday_queue_and_price_stabilization",
+                "disposition_batch_fill_probability",
+                "full_delivery_cash_precollection",
+                "t_plus_2_settlement_ledger",
+            ],
+            "initial_capital": initial_capital,
+            "regular_lot_shares": getattr(config, "BT_REGULAR_LOT_SHARES", 1000),
+            "commission_rate": float(cost_model.commission_rate),
+            "minimum_commission": float(cost_model.minimum_commission),
+            "sell_tax_rate": float(cost_model.sell_tax_rate),
+            "n_entries_skipped_lot_size": n_lot_skip,
+            "odd_lot_fill_warning": (
+                "使用普通交易日線開盤價代理零股成交價"
+                if order_size_mode == OrderSizeMode.ODD_LOT_PROXY else None
+            ),
+        },
+        "delisting": {
+            "recovery_assumption": getattr(config, "BT_DELIST_RECOVERY", None),
+            "n_stale_exits": n_stale_exits,
+        },
         "period": [str(all_dates[0])[:10], str(all_dates[-1])[:10]],
         # 評估窗稽核:讓「回測實際跑了哪段」可被檢查,而不是只能從 Sharpe 猜。
         # picks_window 是訊號涵蓋的期間;eval_window 是引擎實際 MTM 的期間。
@@ -805,6 +864,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "max_hold": config.BT_MAX_HOLD_DAYS,
             "min_composite": config.MIN_COMPOSITE,
             "rebalance_every": rebalance_every,
+            "rebalance_phase": rebalance_phase,
             "max_positions": max_positions,
         },
     }
@@ -817,7 +877,8 @@ def factor_ic(symbols: Optional[List[str]] = None,
               start_date: Optional[str] = None,
               end_date: Optional[str] = None,
               dynamic_enabled: Optional[bool] = None,
-              universe_top_n: Optional[int] = None) -> pd.DataFrame:
+              universe_top_n: Optional[int] = None,
+              universe_provider=None) -> pd.DataFrame:
     """
     每個因子分數對「未來 BT_IC_HORIZON 日報酬」的 Spearman rank IC。
 
@@ -837,15 +898,24 @@ def factor_ic(symbols: Optional[List[str]] = None,
         if dynamic_enabled is None else bool(dynamic_enabled)
     )
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    if universe_provider is None and dynamic_enabled and not sample and symbols is None:
+        universe_provider = MonthlyPITUniverseProvider.from_cache(
+            top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
+            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
+        )
+    if universe_provider is not None:
+        provider_symbols = list(universe_provider.all_symbols)
+        if symbols is None:
+            symbols = provider_symbols
+        elif set(symbols) != set(provider_symbols):
+            raise ValueError("symbols 必須等於 universe_provider 的歷史成員聯集")
     if symbols is None:
-        if dynamic_enabled and not sample:
-            symbols = uni.get_research_candidates(universe_top_n)
-        else:
-            symbols = uni.get_universe(sample=sample)
+        symbols = uni.get_universe(sample=sample)
     panel = _prepare_panel(
         symbols, 0.0, start_date, end_date,
         dynamic_enabled=dynamic_enabled,
         universe_top_n=universe_top_n,
+        universe_provider=universe_provider,
     )
     if panel.empty:
         return pd.DataFrame()
@@ -923,7 +993,13 @@ def _print_bt_summary(res: dict):
               f"候選 {u.get('n_candidate_symbols', '—')} 檔 / "
               f"{u.get('lookback')}日平均成交值排名")
         if not u.get("survivorship_free", False):
-            print("  ⚠ 候選池仍是 current-pool bootstrap；尚非完整 survivorship-free PIT")
+            if u.get("candidate_membership_survivorship_free", False):
+                print("  ⚠ 候選名單已 PIT；但下市股完整還原價格覆蓋尚未證明，"
+                      "整體仍不標 survivorship-free")
+            elif str(u.get("candidate_source", "")).startswith("saved_current_"):
+                print("  ⚠ 候選池仍是 current-pool bootstrap；不可作正式歷史結論")
+            else:
+                print("  ⚠ universe／價格歷史尚未證明完整 survivorship-free")
     else:
         print("  Universe：static（legacy comparison）")
     print("-" * 72)
@@ -993,42 +1069,129 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
     # 小型 sample 是 smoke test，不冒充動態全市場研究。
     effective_dynamic = dynamic_enabled and not sample
     universe_top_n = universe_top_n or config.DYNAMIC_UNIVERSE_TOP_N
+    universe_provider = None
     if effective_dynamic:
-        symbols = uni.get_research_candidates(
-            universe_top_n=universe_top_n,
-            candidate_pool_n=pool,
+        candidate_pool_n = pool or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL
+        universe_provider = MonthlyPITUniverseProvider.from_cache(
+            top_n=candidate_pool_n,
+            min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
         )
+        symbols = universe_provider.all_symbols
     elif pool:
         symbols = uni.get_universe(top_n=pool)
     else:
         symbols = uni.get_universe(sample=sample)
-    print(f"\n[backtest] universe = {len(symbols)} 檔，開始回測...\n")
+    print(f"\n[backtest] universe = {len(symbols)} 檔，建立統一 IS/OS 交易日曆...\n")
 
-    res = backtest_portfolio(symbols=symbols, sample=sample,
-                             rebalance_every=rebalance_every, top_n=top_n,
-                             dynamic_enabled=effective_dynamic,
-                             universe_top_n=universe_top_n)
-    _print_bt_summary(res)
-
-    ic_df = factor_ic(
+    # 全期只用來取得可交易日曆，不展示或拿來選參數。
+    calendar_res = backtest_portfolio(
         symbols=symbols, sample=sample,
+        rebalance_every=rebalance_every, top_n=top_n,
         dynamic_enabled=effective_dynamic,
         universe_top_n=universe_top_n,
+        universe_provider=universe_provider,
     )
-    print()
-    _print_ic(ic_df)
+    if "equity_curve" not in calendar_res:
+        _print_bt_summary(calendar_res)
+        return {"error": calendar_res.get("error", "無法建立交易日曆")}, {}
+    split = evaluation_split.build_evaluation_split(
+        calendar_res["equity_curve"]["date"],
+        minimum_embargo_days=config.BT_IC_HORIZON,
+    )
+    print(f"[backtest] split={split.mode}｜IS {split.is_window[0]}~{split.is_window[1]} "
+          f"({split.n_is}日)｜embargo {split.n_embargo}日｜"
+          f"OS {split.os_window[0]}~{split.os_window[1]} ({split.n_os}日)")
+    print(f"[backtest] 每段跑滿 {rebalance_every} 個等價再平衡相位；決策看中位數與最小值。\n")
 
-    # 存檔
-    if "trades" in res:
+    phase_rows = []
+    trade_frames = []
+    results = {}
+    for segment, (start, end) in {"IS": split.is_window,
+                                  "OS": split.os_window}.items():
+        for phase in range(rebalance_every):
+            res = backtest_portfolio(
+                symbols=symbols, sample=sample,
+                start_date=start, end_date=end,
+                rebalance_every=rebalance_every,
+                rebalance_phase=phase,
+                top_n=top_n,
+                dynamic_enabled=effective_dynamic,
+                universe_top_n=universe_top_n,
+                universe_provider=universe_provider,
+            )
+            results[(segment, phase)] = res
+            if "summary" not in res:
+                phase_rows.append({"segment": segment, "phase": phase,
+                                   "error": res.get("error", "?")})
+                continue
+            summary = res["summary"]
+            actual_end = pd.Timestamp(summary["eval_audit"]["eval_window"][1])
+            if actual_end > pd.Timestamp(end):
+                raise RuntimeError(
+                    f"{segment} phase={phase} 評估窗溢出 {actual_end.date()} > {end}"
+                )
+            phase_rows.append({
+                "segment": segment, "phase": phase,
+                "n_trades": summary["n_trades"],
+                "ann_ret": summary["ann_ret"], "sharpe": summary["sharpe"],
+                "max_drawdown": summary["max_drawdown"],
+                "cum_ret": summary["cum_ret"],
+                "integrity_bypassed": summary["data"]["integrity_bypassed"],
+                "survivorship_free": summary["universe"].get("survivorship_free", False),
+                "eval_end": summary["eval_audit"]["eval_window"][1],
+            })
+            if "trades" in res and not res["trades"].empty:
+                trades = res["trades"].copy()
+                trades["segment"] = segment
+                trades["rebalance_phase"] = phase
+                trade_frames.append(trades)
+
+    phase_df = pd.DataFrame(phase_rows)
+    print("=" * 94)
+    print(f"  {'段':<4}{'相位':>5}{'交易':>7}{'年化':>10}{'Sharpe':>10}{'MaxDD':>10}{'累積':>10}")
+    print("-" * 94)
+    valid = phase_df[phase_df.get("error").isna()] if "error" in phase_df else phase_df
+    for _, row in valid.iterrows():
+        print(f"  {row['segment']:<4}{int(row['phase']):>5}{int(row['n_trades']):>7}"
+              f"{row['ann_ret']:>10.1%}{row['sharpe']:>10.2f}"
+              f"{row['max_drawdown']:>10.1%}{row['cum_ret']:>10.1%}")
+    print("-" * 94)
+    for segment, group in valid.groupby("segment", sort=False):
+        print(f"  {segment} 相位摘要：Sharpe 中位 {group['sharpe'].median():.2f} / "
+              f"最小 {group['sharpe'].min():.2f}；MaxDD 最差 {group['max_drawdown'].min():.1%}")
+    print("=" * 94)
+
+    ic_results = {}
+    for segment, (start, end) in {"IS": split.is_window,
+                                  "OS": split.os_window}.items():
+        print(f"\n[{segment}] 因子 IC {start}~{end}")
+        ic = factor_ic(
+            symbols=symbols, sample=sample,
+            start_date=start, end_date=end,
+            dynamic_enabled=effective_dynamic,
+            universe_top_n=universe_top_n,
+            universe_provider=universe_provider,
+        )
+        ic_results[segment] = ic
+        _print_ic(ic)
+
+    phase_path = config.OUTPUT_DIR / "backtest_phase_summary.csv"
+    phase_df.to_csv(phase_path, index=False, encoding="utf-8-sig")
+    print(f"\n  相位摘要已存：{phase_path}")
+    if trade_frames:
         path = config.OUTPUT_DIR / "backtest_trades.csv"
-        res["trades"].to_csv(path, index=False, encoding="utf-8-sig")
-        print(f"\n  交易明細已存：{path}")
-    if not ic_df.empty:
-        path = config.OUTPUT_DIR / "factor_ic.csv"
-        ic_df.to_csv(path, index=False, encoding="utf-8-sig")
-        print(f"  因子IC已存：{path}")
+        pd.concat(trade_frames, ignore_index=True).to_csv(
+            path, index=False, encoding="utf-8-sig"
+        )
+        print(f"  交易明細已存：{path}")
+    for segment, ic in ic_results.items():
+        if not ic.empty:
+            path = config.OUTPUT_DIR / f"factor_ic_{segment.lower()}.csv"
+            ic.to_csv(path, index=False, encoding="utf-8-sig")
+            print(f"  {segment} 因子IC已存：{path}")
 
-    return res, ic_df
+    return {"split": split.to_dict(), "phases": phase_df,
+            "results": results}, ic_results
 
 
 if __name__ == "__main__":

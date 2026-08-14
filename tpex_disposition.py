@@ -36,12 +36,9 @@ import time
 
 import pandas as pd
 import requests
-import urllib3
 
 import config
 from twse_disposition import _is_stock, _roc_to_date, disposition_day_set  # noqa: F401
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BULLETIN = "https://www.tpex.org.tw/www/zh-tw/bulletin"
 DISPOSAL_PATH = "disposal"
@@ -73,7 +70,7 @@ def _clean_cell(v) -> str:
 
 
 def _fetch(path: str, start: str, end: str, session: requests.Session, retries: int = 3):
-    """抓一段區間,回傳 (fields, data);全部重試失敗回 ([], [])。
+    """抓一段區間,回傳 (fields, data);全部重試失敗會 raise。
 
     重試是必要的:實測會偶發 ChunkedEncodingError(連線中斷)。沒有重試時,
     一次瞬斷會讓整個年度區間靜默變成 0 筆 —— 那是「看起來成功的資料遺漏」,
@@ -88,7 +85,8 @@ def _fetch(path: str, start: str, end: str, session: requests.Session, retries: 
     for attempt in range(1, retries + 1):
         try:
             time.sleep(_SLEEP * attempt)   # 退避
-            r = session.get(f"{BULLETIN}/{path}", params=params, timeout=30, verify=False)
+            r = session.get(f"{BULLETIN}/{path}", params=params, timeout=30)
+            r.raise_for_status()
             tables = r.json().get("tables") or []
             if not tables:
                 return [], []

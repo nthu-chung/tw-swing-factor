@@ -1,12 +1,22 @@
 # 策略記憶台帳
 
-> 最後盤點：2026-07-23。這是研究狀態帳，不是投資建議或績效排行榜。
+> 最後全面盤點：2026-07-23（S19 於 2026-08 單獨更新）。
+> 這是研究狀態帳，不是投資建議或績效排行榜。
 >
 > **全域證據閘門（P0）**：目前歷史價格預設為未還原 `TaiwanStockPrice`，已確認
 > 國巨（2327）2025-08 的公司行動斷點被當成約 -73.6% 的交易損失。因此所有用這份
 > 價格產生的回測絕對績效、退場優劣與 IS/OOS 選擇，皆不得視為已驗證；必須先以
-> 公司行動一致化的還原價與 PIT（含下市）universe 重跑。`price_integrity.py` 會
-> fail-closed，偵測到異常斷點時停止研究輸出。
+> 公司行動一致化的還原價與 PIT（含下市）universe 重跑。
+>
+> 閘門實作在 **`backtest._assert_price_integrity`**：未還原價一律 raise，
+> `SELF_ADJUST_PRICES` 對還原後序列掃殘留斷點，有殘留就擋。
+> **`price_integrity.py` 的斷點掃描是診斷，不是放行條件**——除息缺口 3~5% 落在
+> ±10% 漲跌停帶內，掃描結構上看不到，「0 命中」不等於「價格乾淨」。
+>
+> **候選池部分修復（2026-08）**：正式回測改走月頻 PIT
+> （`universes/monthly_pit.py`，M 月只用完整 M-1 曆月，含當時在市後來下市者），
+> 但下市股價格覆蓋仍不完整，`survivorship_free` 維持 `False`。
+> **修好閘門不等於重新證明策略**：本表所有既有績效在重跑前一律維持原證據等級。
 
 ## 狀態定義
 
@@ -213,9 +223,9 @@
 | 欄位 | 登記 |
 |---|---|
 | 核心規則 | `0.5*cs_rank(ts_ir(日報酬,20)) + 0.5*cs_rank((Σ20外資+Σ20投信)/近20日均量)`；閘門為動態 universe 成員 × `trend_ok`。 |
-| 資料與 universe | **自建還原價**（`price_adjust.py`）；**PIT 候選池**（`pit_universe.py` 逐月重建 top300，lag=1，來源為交易所逐日全市場快照，含下市股）；排除 45 檔殘留斷點股後 702 檔；每日動態 top100。 |
+| 資料與 universe | **自建還原價**（`price_adjust.py`）；正式程式現採 **M 月只用完整 M-1 曆月**的交易所逐日全市場快照重建 top300（含下市股，`universes/monthly_pit.py`），再於池內做每日動態 top100；快照缺日 fail-closed。 |
 | 進出場 | 10 檔等權、**20 日**再平衡、MA60 出場（次日開盤）、**-15%** 硬停損、T+1 開盤、含手續費與證交稅。 |
-| 證據等級 | **不足以宣稱 edge。** PIT 池、修正評估窗、跑滿 20 個再平衡相位後：IS 中位 0.520／最小 -0.412／最大 1.470／標準差 0.509，**只有 3/20 相位勝過被動基準 1.13**；OS 中位 1.661、12/20 勝基準 1.52，但 OS 已非乾淨 holdout（見下）。 |
+| 證據等級 | **不足以宣稱 edge。** 既有 IS/OS 數字使用舊的「生效日前 20 交易日」月池，不等於目前「完整上個曆月」規則；規則修正後尚未重跑，故舊績效只留作歷史診斷、不可引用為現版證據。 |
 | 關鍵機制 | 相位標準差 0.509 ≈ 訊號效果本身的量級 —— **「哪天開始執行」比訊號更決定結果**（rebalance timing luck）。實際下單只會走其中一條路徑，所以最小值 -0.412 不是理論數字。 |
 | **已作廢的數字** | ① 2026-08-02 版報「IS 五相位全 >1（中位 1.644）」—— 靜態候選池 look-ahead。② 2026-08-03 版報「IS 中位 1.607／OS 1.938」—— **評估窗洩漏**：`run_once` 未傳 `end_date`，IS 權益曲線溢出切點 144 天，把 OS 段的 +87.2% 算進 IS（真實 IS 為 0.306）。③ 兩版的 16 格參數掃描都建立在污染數字上，選出的 (10,20,MA60,0.15) 在乾淨掃描中**墊底**（0.131）。 |
 | 已知失效／偏誤 | **OS 不再是乾淨 holdout** —— 洩漏的 IS 已包含 OS 期間走勢，故參數選擇間接看過 OS。相位離散極大；OS 每相位僅 16~21 筆交易無統計意義；單一多頭窗；已下市股價格仍缺（下市虧損被低估）。**多重檢定**：同閘門下隨機選 10 檔的 IS 五相位中位分布為 μ=0.312／σ=0.167，16 格搜尋的運氣門檻 0.706 —— 乾淨掃描最佳 1.205 雖超過門檻，但只有 1/16 勝過被動基準，且該格五相位最小值 -0.016。 |
@@ -225,8 +235,9 @@
 
 ## 目前開發優先序
 
-1. 修資料：~~還原價~~（S19 已用 `price_adjust.py` 自建除權息還原價解決主要部分）、
-   分割／減資、PIT 全市場 universe、~~TPEx~~（處置資料層已補）與細產業／產品鏈標籤。
+1. 修資料：取得官方 `TaiwanStockPriceAdj` 後先驗收除息、配股、分割與減資案例；
+   `price_adjust.py` 的自建除權息還原只保留為 fallback，不視為完整解法。接著補齊
+   下市股價格覆蓋、~~TPEx~~（處置資料層已補）與 PIT 細產業／產品鏈標籤。
 2. 重跑 S03、S04、S07、S08 的完全相同規則，建立不可變的實驗 manifest。
 3. 將 S11 與 S13 固定版本的每日候選及市場狀態 append-only 保存，啟動真正
    forward paper log；不再用 2026-04~07 短窗微調 rank 門檻。
@@ -236,9 +247,18 @@
 
 ## 關聯檔案
 
-- 基線與執行：`config.py`、`backtest.py`、`factors.py`、`dynamic_universe.py`
-- 族群假說：`rotation_research.py`、`sector_scan.py`、`outputs/ROTATION_STRATEGY_REVIEW.html`
+- 基線與執行：`config.py`、`backtest.py`（事件驅動引擎）、
+  `factor_engine/`（`data_fields.py` 無視窗欄位／`operators.py` 有視窗算子／
+  `legacy_factors.py`；根目錄 `factors.py`、`operators.py` 為相容入口）、
+  `execution/`（台股 tick／漲跌停／一字鎖停／處置禁倉／成本）
+- Universe：`universes/monthly_pit.py`（正式：M 月只用完整 M-1 曆月）、
+  `dynamic_universe.py`（每日 ADV20 top-N）、`pit_universe.py`（交易所逐日快照）、
+  `universe.py` + `build_universe.py`（**legacy static，僅供對照，不得回套歷史**）
+- 評估邊界：`evaluation/splits.py`（IS／embargo／OS；相容入口 `evaluation_split.py`）
+- 族群假說：`rotation_research.py`、`sector_scan.py`
+  （`outputs/ROTATION_STRATEGY_REVIEW.html` 是本機產物，**不進版控**，乾淨 clone 沒有）
 - 即時觀察：`current_watchlist.py`、`market_flow_monitor.py`、`rank_flow_strategy.py`、`quiet_sponsor_strategy.py`
 - 新策略實驗：`NEW_STRATEGY_EXPERIMENTS.md`、`outputs/RANK_FLOW_EXPERIMENT_REVIEW.md`
-- 歷史審計：`outputs/WEIGHT_FIX_REPORT.md`、`outputs/DYNAMIC_UNIVERSE_REPORT.md`、`outputs/DEFENSIVE_RS_REPORT.md`、`outputs/MARKET_FILTER_REPORT.md`、`outputs/FACTOR_AUDIT_REPORT.md`、`outputs/winner_dna_report.md`
-- 價格誠信：`price_integrity.py`、`outputs/price_integrity_audit.csv`
+- 歷史審計（**append-only 紀錄，非目前有效績效**）：`outputs/WEIGHT_FIX_REPORT.md`、`outputs/DYNAMIC_UNIVERSE_REPORT.md`、`outputs/DEFENSIVE_RS_REPORT.md`、`outputs/MARKET_FILTER_REPORT.md`、`outputs/FACTOR_AUDIT_REPORT.md`、`outputs/winner_dna_report.md`
+- 價格誠信：閘門在 `backtest._assert_price_integrity`；`price_integrity.py` 與
+  `outputs/price_integrity_audit.csv` 是**診斷**，不是放行條件

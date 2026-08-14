@@ -11,11 +11,11 @@ tw-swing-factor 統一入口
   python3 main.py screen --date 2026-05-20  # 指定日選股（回看當時）
   python3 main.py backtest                 # 回測 + 因子IC（小集合）
   python3 main.py backtest --full --pool 300 --universe-top 100 --top 5
-                                            # long-only 動態 top100（候選 top300）
+                         # 每月用完整上月建候選 top300，再做每日動態 top100
   python3 main.py ic                       # 只看因子IC分析
 
 參數：
-  --pool N        動態模式的候選池大小（需先 python3 build_universe.py N）
+  --pool N        backtest/ic:上月 PIT 候選池大小；screen:當下候選池大小
   --universe-top N 每個訊號日依20日平均成交值取前 N（預設100）
   --static-universe 關閉動態 universe，僅供 legacy 對照
   --full          用全市場 universe（預設小集合 SAMPLE_UNIVERSE）
@@ -32,6 +32,7 @@ import config
 import screener
 import backtest
 import universe as uni
+from universes import MonthlyPITUniverseProvider
 
 
 def _parse_args(argv):
@@ -74,8 +75,7 @@ def main():
     sample = (not args["full"]) and args["pool"] is None
 
     if not config.FINMIND_TOKEN:
-        print("⚠️  未偵測到 FINMIND_TOKEN。請設定環境變數，或確認 "
-              "taiwan-industry-analyzer/backend/.env 內有 FINMIND_TOKEN。")
+        print("⚠️  未偵測到 FINMIND_TOKEN。請先設定環境變數 FINMIND_TOKEN。")
         return
 
     cmd = args["cmd"]
@@ -90,21 +90,24 @@ def main():
                           universe_top_n=args["universe_top"])
     elif cmd == "ic":
         symbols = None
+        universe_provider = None
         if not sample:
             if args["static_universe"]:
                 symbols = uni.get_universe(
                     top_n=args["pool"] or args["universe_top"]
                 )
             else:
-                symbols = uni.get_research_candidates(
-                    universe_top_n=args["universe_top"],
-                    candidate_pool_n=args["pool"],
+                universe_provider = MonthlyPITUniverseProvider.from_cache(
+                    top_n=args["pool"] or config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
+                    min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS,
                 )
+                symbols = universe_provider.all_symbols
         ic_df = backtest.factor_ic(
             symbols=symbols,
             sample=sample,
             dynamic_enabled=(not args["static_universe"]) and not sample,
             universe_top_n=args["universe_top"],
+            universe_provider=universe_provider,
         )
         backtest._print_ic(ic_df)
     else:

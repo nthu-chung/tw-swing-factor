@@ -29,6 +29,7 @@ import pandas as pd
 
 import config
 import backtest
+import evaluation_split
 import universe as uni
 import operators as op
 
@@ -143,8 +144,10 @@ def run(pool=300):
 
     # IS/OS 切分(時間;用成員列的日期)
     dates = np.sort(pmem["date"].unique())
-    cut = dates[int(len(dates) * config.IS_OS_SPLIT)]
-    os_start = dates[min(len(dates) - 1, int(len(dates) * config.IS_OS_SPLIT) + config.EMBARGO_DAYS)]
+    split = evaluation_split.build_evaluation_split(
+        dates, minimum_embargo_days=config.BT_IC_HORIZON
+    )
+    cut, os_start = split.is_end, split.os_start
     is_dates = set(dates[dates <= cut]); os_dates = set(dates[dates >= os_start])
 
     lib = build_factor_library()

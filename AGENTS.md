@@ -10,7 +10,13 @@
 ```bash
 .venv/bin/python              # 一律用這個。系統 python3 太新,套件不在
 PYTHONPATH=. .venv/bin/python tests/test_xxx.py    # 測試是 unittest,不是 pytest
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+PYTHONPATH=. .venv/bin/python preflight.py         # 公開前:密鑰/資料產物/文件
 ```
+
+離線閘門(unittest + preflight)同樣跑在 `.github/workflows/ci.yml`(Python 3.11)。
+CI **不設 `FINMIND_TOKEN`**:若有測試不小心走真實抓取,會 fail-closed 報錯而不是
+靜默通過。新測試一律離線、mock 掉 HTTP。
 
 - 資料鎖 `config.SNAPSHOT_END_DATE`(現 `2026-06-22`)。快照戳編進快取檔名,
   改快照 = cache miss = 真重抓。**不要為了跑快而繞過快照。**
@@ -169,13 +175,22 @@ IS/OS 是在凍結資料**內部**畫的線,引擎不知道那條線存在。兩
 | `data.py` | FinMind 資料層 + 快取(含快照戳) |
 | `price_adjust.py` | **自建還原價**(除權息回溯) |
 | `price_integrity.py` | 斷點稽核(診斷用,非放行條件) |
-| `pit_universe.py` | **PIT 候選池**(交易所逐日快照,含下市股) |
-| `universe.py` / `dynamic_universe.py` | 候選池載入 / 每日 top-N 成員 |
-| `factors.py` | 傳統因子與 0~1 分數 |
-| `operators.py` | WorldQuant 式算子庫(ts_ / cs_ / group_ / regression_) |
+| `pit_universe.py` | 交易所逐日快照抓取／解析 + PIT 池建構(含下市股) |
+| `universes/monthly_pit.py` | **正式候選池 provider**:M 月只用完整 M-1 曆月 |
+| `dynamic_universe.py` | 每日 top-N 成員(截至訊號日的 ADV20,不看未來) |
+| `universe.py` / `build_universe.py` | legacy static 候選池,**僅供對照,不得回套歷史** |
+| `factor_engine/legacy_factors.py` | 傳統因子與 0~1 分數；`factors.py` 為相容入口 |
+| `factor_engine/data_fields.py` | 無視窗衍生欄位(vwap / returns / true_range 等) |
+| `factor_engine/operators.py` | WorldQuant 式算子庫；`operators.py` 為相容入口 |
 | `backtest.py` | 事件驅動回測引擎(T+1 開盤、漲跌停、處置禁倉) |
-| `chip_momentum_strategy.py` | S19 策略單元 |
+| `execution/tradability.py` | 回測可成交性限制；不含券商下單 |
+| `execution/taiwan_rules.py` | 普通股升降單位、漲跌停與新上市例外規則 |
+| `execution/costs.py` | 整張／零股代理／研究小數股與券商成本 |
+| `evaluation/splits.py` | IS / embargo / OS 統一切割 |
+| `strategies/s19_chip_momentum.py` | S19 策略單元；舊檔名為相容入口 |
 | `live_signal.py` | 精簡資料路徑(只用 price+inst,省 API 額度) |
+| `preflight.py` | 公開前離線檢查:密鑰檔名/內容、資料產物誤追蹤、必要文件 |
+| `.github/workflows/ci.yml` | 離線 CI:語法 smoke + preflight + 全部 unittest |
 | `twse_disposition.py` / `tpex_disposition.py` | 注意/處置資料層 |
 | `DATA_SOURCES.md` | **免費資料源實測盤點 —— 找資料先看這裡** |
 | `STRATEGY_REGISTRY.md` | 策略台帳(狀態/證據/已證偽) |

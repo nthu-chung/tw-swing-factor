@@ -32,11 +32,8 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 import requests
-import urllib3
 
 import config
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 NOTICE_URL = "https://www.twse.com.tw/rwd/zh/announcement/notice"
 PUNISH_OPENAPI = "https://openapi.twse.com.tw/v1/announcement/punish"
@@ -66,19 +63,33 @@ def _is_stock(code: str) -> bool:
 
 
 # ── (1) 歷史注意(逐月)──────────────────────────────────────────────────
-def fetch_notice_month(yyyymm: str, session: requests.Session) -> pd.DataFrame:
+def fetch_notice_month(yyyymm: str, session: requests.Session,
+                       retries: int = 3) -> pd.DataFrame:
     y, m = int(yyyymm[:4]), int(yyyymm[4:6])
     start = f"{y}{m:02d}01"
     end_dt = (pd.Timestamp(y, m, 1) + pd.offsets.MonthEnd(1))
     end = end_dt.strftime("%Y%m%d")
-    try:
-        time.sleep(_SLEEP)
-        r = session.get(NOTICE_URL, params={"startDate": start, "endDate": end, "response": "json"},
-                        timeout=30, verify=False)
-        j = r.json()
-    except Exception as e:
-        print(f"[disp] notice {yyyymm} 失敗:{type(e).__name__}")
-        return pd.DataFrame()
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            time.sleep(_SLEEP * attempt)
+            r = session.get(
+                NOTICE_URL,
+                params={"startDate": start, "endDate": end, "response": "json"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            j = r.json()
+            break
+        except Exception as exc:
+            last = exc
+            print(f"[disp] notice {yyyymm} 第 {attempt}/{retries} 次失敗:"
+                  f"{type(exc).__name__}")
+    else:
+        raise RuntimeError(
+            f"[disp] notice {yyyymm} 重試 {retries} 次仍失敗:{type(last).__name__}；"
+            "拒絕回空表"
+        )
     if j.get("stat") != "OK" or not j.get("data"):
         return pd.DataFrame()
     fields = j["fields"]
@@ -118,13 +129,22 @@ def fetch_notice_history(start_date: str, end_date: str) -> pd.DataFrame:
 
 
 # ── (2) 當前真實處置(驗證用)────────────────────────────────────────────
-def fetch_current_punish() -> pd.DataFrame:
-    try:
-        r = requests.get(PUNISH_OPENAPI, timeout=30, verify=False)
-        data = r.json()
-    except Exception as e:
-        print(f"[disp] punish 失敗:{type(e).__name__}")
-        return pd.DataFrame()
+def fetch_current_punish(retries: int = 3) -> pd.DataFrame:
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            time.sleep(_SLEEP * attempt)
+            r = requests.get(PUNISH_OPENAPI, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            break
+        except Exception as exc:
+            last = exc
+            print(f"[disp] punish 第 {attempt}/{retries} 次失敗:{type(exc).__name__}")
+    else:
+        raise RuntimeError(
+            f"[disp] punish 重試 {retries} 次仍失敗:{type(last).__name__}；拒絕回空表"
+        )
     rows = []
     for it in data:
         code = str(it.get("Code", "")).strip()

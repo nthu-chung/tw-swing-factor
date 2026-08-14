@@ -5,13 +5,18 @@
 >
 > 想買資料前先讀最後一節「付費才有的東西」。目前結論:**還不需要付費**。
 > 規劃性質的比較(TEJ / FinMind 方案)見 `DATA_SOURCE_RESEARCH.md`。
+>
+> ⚠️ **這一頁的端點沒有一個會在測試或 CI 裡被呼叫。** `tests/` 一律離線、mock 掉
+> HTTP,`.github/workflows/ci.yml` 也不設 `FINMIND_TOKEN`。要動這些端點就是要動
+> 真實額度與真實資料,只在本機手動執行。
 
 ## 1. FinMind(免費層)
 
 **額度:600 次/小時**,每小時重置。查目前用量:
 
 ```bash
-curl -s "https://api.web.finmindtrade.com/v2/user_info?token=$FINMIND_TOKEN"
+請從 FinMind 帳號頁查看當前用量。不要把 token 放進 URL、shell history 或共享終端的
+process list；本 repo 的資料請求只用 `Authorization: Bearer ...` header。
 # → {"level":1,"level_title":"Free","api_request_limit_hour":600,"user_count":<已用>}
 ```
 
@@ -36,6 +41,12 @@ curl -s "https://api.web.finmindtrade.com/v2/user_info?token=$FINMIND_TOKEN"
 | `TaiwanStockFinancialStatements` | 損益表(EPS/毛利等) | 未用 |
 | `TaiwanStockMonthRevenue` | 月營收 | 未用 |
 | `TaiwanStockPER` | 本益比/淨值比 | 未用 |
+
+### 已確認 client schema、尚未實測權限與覆蓋
+
+| dataset | 公開 client 欄位 | 狀態 |
+|---|---|---|
+| `TaiwanStockPriceLimit` | `date / stock_id / reference_price / limit_up / limit_down` | 已接 `data.fetch_price_limits`；本機未設定 token，尚未驗證真實回應、免費層權限、新上市空值語意與歷史覆蓋，不列入「可用(已實測)」 |
 
 ### 被鎖(回 `status=400 Your level is register`)
 

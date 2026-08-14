@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-import urllib3
 from datetime import datetime
 from pathlib import Path
 
@@ -23,8 +22,6 @@ import requests
 
 import config
 import data as data_mod
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TWSE_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_ALL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
@@ -43,7 +40,7 @@ def _is_normal_4digit(code: str) -> bool:
 
 
 def fetch_twse_rows() -> list[dict]:
-    r = requests.get(TWSE_ALL, timeout=30, verify=False)
+    r = requests.get(TWSE_ALL, timeout=30)
     r.raise_for_status()
     out = []
     for it in r.json():
@@ -61,7 +58,7 @@ def fetch_twse_rows() -> list[dict]:
 
 
 def fetch_tpex_rows() -> list[dict]:
-    r = requests.get(TPEX_ALL, timeout=30, verify=False)
+    r = requests.get(TPEX_ALL, timeout=30)
     r.raise_for_status()
     out = []
     for it in r.json():
