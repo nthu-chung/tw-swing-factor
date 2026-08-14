@@ -32,6 +32,7 @@ import evaluation_split
 import factors
 import price_integrity
 import universe as uni
+from factor_engine import panel_density
 # MonthlyPITUniverseProvider 這裡不直接呼叫(候選池一律走 historical_pit_universe),
 # 但保留 re-export:它是 provider 的正式類別,測試與外部腳本以 backtest 為錨點取用。
 from universes import MonthlyPITUniverseProvider, historical_pit_universe  # noqa: F401
@@ -285,6 +286,7 @@ def _resolve_universe_source(symbols: Optional[List[str]], *,
 # ── 預先計算所有股票的因子（含未來報酬）──────────────────────────────
 def _prepare_panel(symbols: List[str], min_score_for_trade: float,
                    start_date: Optional[str], end_date: Optional[str],
+                   *,
                    dynamic_enabled: Optional[bool] = None,
                    universe_top_n: Optional[int] = None,
                    keep_non_members: bool = False,
@@ -294,6 +296,12 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
     """
     把所有股票每一天的因子 + 綜合分數 + 未來N日報酬，攤平成一個大 panel。
     這個 panel 同時用於 (1) 整體回測選股 (2) 因子 IC 分析。
+
+    ⚠ 這是**引擎內部**函式,`keep_non_members` 預設 False(只留動態 universe 成員日)
+    是為了引擎自己的橫斷面選股;研究/策略程式請一律走公開入口
+    `build_research_panel()`(預設稠密)。回傳的 panel 會戳上稠密度標籤
+    (`panel.attrs["panel_density"]`),稀疏 panel 上做 `ts_`/rolling 會被
+    `factor_engine.panel_density` 擋下(不變式 3)。
     """
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
@@ -434,7 +442,61 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         panel = panel[panel["date"] <= pd.to_datetime(end_date)]
     panel = panel.reset_index(drop=True)
     panel.attrs["universe"] = universe_meta
+    # 稠密度標籤:讓「這個 panel 能不能拿去算 ts_」寫在資料上,而不是靠呼叫端記得。
+    # static 模式沒有成員過濾(整段都 in_dynamic_universe=True),序列本來就連續。
+    panel_density.tag(
+        panel,
+        panel_density.DENSE if (keep_non_members or not dynamic_enabled)
+        else panel_density.MEMBERS_ONLY,
+    )
     return panel
+
+
+# ── 公開入口:研究/策略要 panel 一律走這裡（不變式 3 的預設安全）──────────
+def build_research_panel(symbols: Optional[List[str]] = None, *,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None,
+                         dynamic_enabled: Optional[bool] = None,
+                         universe_top_n: Optional[int] = None,
+                         universe_provider=None,
+                         sample: bool = False,
+                         static_universe_comparator: bool = False,
+                         members_only: bool = False) -> pd.DataFrame:
+    """回傳研究用 panel,**預設稠密**(每檔保留完整交易日序列)。
+
+    為什麼要有這個入口:`_prepare_panel` 的 `keep_non_members` 預設是 False,
+    也就是「只留動態 universe 成員日」。那個預設對引擎自己的橫斷面選股是對的,
+    但對任何 `ts_`／rolling 因子都是錯的 —— long panel 的 `rolling(20)` 算的是
+    「20 列」,一檔間歇進出 universe 的股票,那 20 列會橫跨 60+ 個日曆日
+    (AGENTS.md 陷阱 1)。實測 `rotation_research` 的 `breakout_20` 因此翻轉約 3%
+    的訊號、命中率被灌水約 +9.6%。
+
+    所以正確的分工是:
+
+        panel = backtest.build_research_panel(**pit.backtest_kwargs())  # 稠密
+        score = build_signal(panel)                       # 因子在稠密 panel 上算
+        picks = panel[panel["in_dynamic_universe"]]        # 成員過濾留到選股階段
+
+    `members_only=True` 只給「純當日橫斷面統計」用(IC、分位、族群 breadth):
+    那類統計本來就只看同一天的橫斷面,因子本身已在 `_prepare_panel` 內部於完整
+    個股序列上算好。這種 panel 會被標成 `members_only`,之後任何 `ts_` 算子都會
+    fail-closed raise,而不是靜默給出失真的值。
+
+    候選池的意圖仍由 `_resolve_universe_source` 強制(PIT provider / 顯式
+    static comparator / sample),這裡只決定稠密度。
+    """
+    return _prepare_panel(
+        symbols,
+        0.0,                      # min_score_for_trade:引擎歷史殘留參數,panel 不用它
+        start_date,
+        end_date,
+        dynamic_enabled=dynamic_enabled,
+        universe_top_n=universe_top_n,
+        keep_non_members=not members_only,
+        universe_provider=universe_provider,
+        sample=sample,
+        static_universe_comparator=static_universe_comparator,
+    )
 
 
 # ── 市場濾網 / 擇時 overlay：大盤(TAIEX) risk-off 判定（全因果）──────────

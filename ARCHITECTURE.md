@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 1 | **候選池只用完整的上一曆月** | `universes/monthly_pit.py`（`candidate_rule=month_M_uses_only_calendar_month_M_minus_1`）；逐日快照缺任何平日即 fail-closed。入口為 `universes.historical_pit_universe()`，引擎邊界 `backtest._resolve_universe_source` 在 dynamic 正式歷史回測沒有 provider 時 raise（不再從 `symbols is None` 推測意圖）；legacy 單日池要顯式 `static_universe_comparator=True`，結果標 `formal_evidence_eligible=False` | 當月行情或今天的熱門名單回頭改寫歷史成員；實測舊條件因為每個入口都會傳 `symbols=` 而從未觸發，預設其實是單日排名池回套歷史 |
 | 2 | **每日 universe 只用截至訊號日的資料** | `dynamic_universe.add_membership`（ADV20 rolling 含當日、不含未來） | 成員資格偷看未來 |
-| 3 | **因子在稠密 panel 上算** | `backtest._prepare_panel(keep_non_members=True)`＋`in_dynamic_universe` 旗標，成員過濾延到選股 | `ts_` 的「20 列」橫跨 60+ 個日曆日，算子全面失真 |
+| 3 | **因子在稠密 panel 上算** | 公開入口 `backtest.build_research_panel()`（**預設稠密**；`members_only=True` 只給純橫斷面統計，要顯式指定）。`_prepare_panel` 降為引擎內部函式並在 `panel.attrs["panel_density"]` 戳稠密度；`factor_engine/panel_density.py` 提供 `require_dense()`，`PanelOps` 的 `ts_*` 在 `members_only` panel 上 fail-closed raise（`cs_*`／`group_*` 照常放行）。成員過濾延到選股階段套 `in_dynamic_universe`；`strategies/` 禁止直接用 `_prepare_panel`（`tests/test_dense_panel_factors.py` 以 AST 掃描釘住） | `ts_` 的「20 列」橫跨 60+ 個日曆日，算子全面失真。實測 `rotation_research` 用預設稀疏 panel 算 `breakout_20`／`breakout_volume_ratio`／`positive_day_share_20`：突破訊號翻轉約 3%、命中率相對灌水約 +9.6%，而這三欄直接決定 `rotation_breakout` 的 eligible 與 `signal_score` |
 | 4 | **field / operator 分界：有視窗才是 operator** | `factor_engine/data_fields.py` vs `factor_engine/operators.py` | 視窗長度被寫死，搜尋空間只涵蓋教科書版本 |
 | 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
@@ -81,6 +81,8 @@ MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 3
   `universe.get_research_candidates()` 的單日靜態池降級為顯式對照組。
 - `factor_engine/operators.py`：正式算子實作。
 - `factor_engine/data_fields.py`：從 operators 拆出的八個無視窗欄位。
+- `factor_engine/panel_density.py`：panel 稠密度標籤與 `ts_`／rolling 的 fail-closed
+  閘門（不變式 3 的第二道防線；預設安全來自 `backtest.build_research_panel()`）。
 - `factor_engine/legacy_factors.py`：既有傳統因子。
 - `evaluation/splits.py`：統一 IS/OS 切割。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；

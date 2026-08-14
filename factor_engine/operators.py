@@ -20,6 +20,10 @@ Arithmetic 的核心子集;Vector/Reduce/Special 等多值/order-book 算子不�
 只用當日與過去;cs_*/group_* 一律 groupby(當日[/×產業]) 只用同一橫斷面 → 不看未來、
 不跨未來洩漏。panel index 需唯一(_prepare_panel 已 reset_index)。
 
+稠密度保證：ts_* 只算「20 列」而不是「20 交易日」,所以在只留動態 universe 成員日的
+panel 上一律 **fail-closed raise**(見 `panel_density`);cs_*/group_* 只看當日橫斷面,
+不受影響、照常放行。因子要在稠密 panel 上算,成員過濾留到選股階段。
+
 用法：
     ops = PanelOps(panel["date"], panel["stock_id"])
     z   = ops.cs_zscore(panel["mom_ret"])           # 當日跨股 z-score
@@ -32,6 +36,8 @@ from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
+
+from . import panel_density
 
 try:
     from scipy.stats import norm as _norm
@@ -83,6 +89,10 @@ class PanelOps:
             raise ValueError("date 與 stock 的 index 必須一致")
         if date.index.duplicated().any():
             raise ValueError("panel index 需唯一(先 reset_index(drop=True))")
+        # 稠密度標籤要在 pd.to_datetime 之前抓:轉型會產生新 Series、attrs 就沒了。
+        # 取自 panel 的欄位(attrs 會從 DataFrame 傳播到單欄),未標記 = 未知 = 放行。
+        self._panel_density = (panel_density.density_of(date)
+                               or panel_density.density_of(stock))
         self.date = pd.to_datetime(date)
         self.stock = stock.astype(str)
         self._orig_index = date.index
@@ -91,9 +101,23 @@ class PanelOps:
         self._sorted_index = order.sort_values(["s", "d"], kind="stable").index
         self._stock_sorted = self.stock.loc[self._sorted_index]
 
+    # ---- 內部:稀疏 panel 上禁止時序運算（不變式 3 的第二道防線）----
+    def _require_dense(self, op_name: str) -> None:
+        """ts_ 類算子在「只留成員日」的 panel 上一律 fail-closed。
+
+        為什麼要擋在算子這一層:因子失真不會 crash,只會讓 Sharpe 變好看,所以
+        必須在計算發生的那一刻擋住,而不是靠呼叫端記得傳 keep_non_members=True。
+        panel 沒有稠密度標籤(例如手寫的測試 panel)時放行 —— 見 panel_density。
+        """
+        panel_density.require_dense_density(
+            self._panel_density,
+            who=f"PanelOps.{op_name}", what=f"時序算子 {op_name}",
+        )
+
     # ---- 內部:時序 rolling（因果,只看過去 d 含當日）----
     def _ts(self, x: pd.Series, d: int, func: Callable, min_periods: Optional[int] = None,
             raw: bool = False, use_apply: bool = False) -> pd.Series:
+        self._require_dense("ts_*")
         if d < 1:
             raise ValueError("d 必須 >= 1")
         mp = d if min_periods is None else min_periods
@@ -108,6 +132,7 @@ class PanelOps:
         return res.loc[self._orig_index]
 
     def ts_delay(self, x: pd.Series, d: int) -> pd.Series:
+        self._require_dense("ts_delay")
         xs = x.loc[self._sorted_index]
         res = xs.groupby(self._stock_sorted, sort=False).shift(d)
         return res.loc[self._orig_index]
@@ -235,6 +260,7 @@ class PanelOps:
 
         只往**過去**取,不會用到未來 —— 這點必須守住,否則等於前視補值。
         """
+        self._require_dense("ts_backfill")
         xs = x.loc[self._sorted_index]
         filled = xs.groupby(self._stock_sorted, sort=False).ffill(limit=max(0, d - 1))
         return filled.loc[self._orig_index]
@@ -271,6 +297,7 @@ class PanelOps:
         這是**路徑相依**的遞迴,必須逐股循序算。實測顯示周轉率是弱訊號策略的
         主導因素(見 chip_momentum_strategy 的說明),所以這個算子值得有。
         """
+        self._require_dense("hump")
         xs = x.loc[self._sorted_index]
         out = np.full(len(xs), np.nan)
         vals = xs.to_numpy(dtype=float)

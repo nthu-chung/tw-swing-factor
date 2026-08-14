@@ -158,6 +158,7 @@
 | CI 下界>0 ≠ edge（§7） | `validate_oos` beta-aware verdict + 寫入 buy&hold 基準 | OS 普漲時自動降級結論，不再無條件宣稱「維持上線合理」 |
 | 凍結必須凍到全部規則（§8） | `freeze_manifest`：反向 allowlist（config 大寫參數預設全凍，要排除得寫進 `NOT_FROZEN` 並附理由）＋ `strategies/spec.py` 的 `StrategySpec` | 手維護 `FROZEN_KEYS` 只列 34 個、config 有 92 個 → 改 `BT_ORDER_SIZE_MODE`／處置模型／IS-OS 切割，hash 一個字都不會變；S19 的 10 檔／20 日更是在 manifest 之後才寫進 config，完全沒被凍 |
 | 凍結版本不可冒充（§8） | `freeze_manifest.validate_manifest` + `apply_rules` fail-closed；label 進檔名不進 hash | legacy／不完整／被改過的 manifest 不得被 forward 使用；同日不同 label 不再互相覆寫 |
+| 因子必須在稠密 panel 上算（§6） | 公開入口 `backtest.build_research_panel()` 預設稠密（`members_only=True` 只給純橫斷面統計）＋ `factor_engine/panel_density.py` 的標籤；`PanelOps` 的 `ts_*` 在 `members_only` panel 上 raise | long panel 的 `rolling(20)` 算的是「20 **列**」：間歇進出 universe 的股票會橫跨 60+ 個日曆日。`rotation_research` 的 `breakout_20`／量比／`positive_day_share_20` 正是這樣算出來的（訊號翻轉約 3%、命中率相對灌水約 +9.6%），2026-08-15 修為「稠密算因子、選股才套成員資格」 |
 | forward 不得挑相位／缺基準（§7） | `forward_test.run` 走策略單元的全相位掃描 + 等權基準 + 不可覆寫的輸出 | 舊版只跑單一相位、吃引擎預設 `rebalance_every=5/top_n=3`、沒有基準、每次重跑覆寫同名檔 |
 
 ## 10. 標準操作流程（指令級）

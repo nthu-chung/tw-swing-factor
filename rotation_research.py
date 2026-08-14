@@ -26,6 +26,7 @@ import data
 import evaluation_split
 import price_integrity
 import universe as uni
+from factor_engine import panel_density
 
 
 MIN_GROUP_SIZE = 5
@@ -61,7 +62,7 @@ THEME_CASES = {
 }
 
 
-def build_research_panel(
+def build_rotation_panel(
     symbols: Optional[list[str]] = None,
     *,
     universe_top_n: int = 100,
@@ -70,20 +71,37 @@ def build_research_panel(
 
     ⚠ research-only:候選池是 legacy 單一日期排名(非 PIT),所以顯式宣告成
     static comparator。要做正式歷史證據請走 `universes.historical_pit_universe()`。
+
+    2026-08-15 修的 bug(不變式 3 / AGENTS.md 陷阱 1):
+    這裡以前用 `backtest._prepare_panel(...)` 的**預設值**,拿到的是「只留動態
+    universe 成員日」的稀疏 panel,然後立刻在上面做 `groupby("stock_id")` 的
+    `shift(1).rolling(20)` 算 `breakout_20` / `breakout_volume_ratio` /
+    `positive_day_share_20`。long panel 的 rolling 算的是「20 列」,一檔間歇進出
+    universe 的股票,那 20 列會橫跨 60+ 個日曆日 —— 突破價位拿的是幾個月前的高點。
+    獨立模擬重現:突破訊號翻轉約 3%、命中率相對灌水約 +9.6%。而這三個欄位直接
+    決定 `rotation_breakout` 的 eligible 條件與 `signal_score`。
+
+    修法就是不變式 3 的分工:因子在**稠密** panel(完整個股序列)上算完,再把
+    成員資格過濾套下去。回傳的仍然只有成員列(下游 `theme_case_audit` 的
+    `first_dynamic_member` 依賴這個語意),但每一列的因子值已經與「當天是不是
+    成員」無關。
     """
     if symbols is None:
         symbols = uni.get_universe(top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL)
-    panel = backtest._prepare_panel(
+    panel = backtest.build_research_panel(
         symbols,
-        config.MIN_COMPOSITE,
-        None,
-        None,
         dynamic_enabled=True,
         universe_top_n=universe_top_n,
         static_universe_comparator=True,
     )
     if panel.empty:
         return panel
+    # 萬一未來有人把上面改回稀疏 panel,在算之前就炸掉,而不是靜默產生失真因子。
+    panel_density.require_dense(
+        panel,
+        who="rotation_research.build_rotation_panel",
+        what="breakout_20 / breakout_volume_ratio / positive_day_share_20",
+    )
 
     industry_map = uni.get_industry_map()
     out = panel.copy()
@@ -102,7 +120,16 @@ def build_research_panel(
     out["positive_day_share_20"] = grouped["close"].transform(
         lambda s: s.pct_change().gt(0).rolling(20, min_periods=20).mean()
     )
-    return attach_group_scores(out)
+
+    # ── 因子算完才套成員資格(選股階段)──────────────────────────────────
+    # 族群 breadth / 當日橫斷面 rank 只能在成員之間算(非成員不是可選標的),
+    # 所以過濾要放在 attach_group_scores 之前、rolling 之後。
+    if "in_dynamic_universe" in out.columns:
+        members = out["in_dynamic_universe"].fillna(False).astype(bool)
+        out = out[members].reset_index(drop=True)
+    scored = attach_group_scores(out)
+    # merge 會丟掉 attrs;明確重貼標籤 —— 這份回傳值是成員列,不可再拿去算 ts_。
+    return panel_density.tag(scored, panel_density.MEMBERS_ONLY)
 
 
 def _pct_rank(s: pd.Series) -> pd.Series:
@@ -232,7 +259,12 @@ def run_portfolio(
     max_positions: int = 5,
     price_frames: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> dict:
-    """Daily-fill, long-only portfolio with T+1 entry and T+1 MA exits."""
+    """Daily-fill, long-only portfolio with T+1 entry and T+1 MA exits.
+
+    ⚠ research-only 的第二套事件迴圈:沒有漲停鎖買不到、沒有處置期禁新倉、沒有
+    整張/零股與券商成本模型。要出正式投組績效請把 picks 餵進
+    `backtest.backtest_portfolio(picks_by_date=...)`,不要把這裡的數字當正式證據。
+    """
     ma_windows = [exit_spec.ma_window] if exit_spec.ma_window else []
     prices = price_frames if price_frames is not None else _price_cache(symbols, ma_windows)
     lookup = {
@@ -543,7 +575,7 @@ def evaluate(
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     symbols = symbols or uni.get_universe(top_n=candidate_pool)
     if panel is None:
-        panel = build_research_panel(symbols, universe_top_n=universe_top_n)
+        panel = build_rotation_panel(symbols, universe_top_n=universe_top_n)
     split = split_dates(panel)
     price_frames = _price_cache(
         symbols,
@@ -630,7 +662,7 @@ def main():
             "Do not estimate adjustment factors; rerun with an audited adjusted price "
             "dataset and survivorship-free PIT data."
         )
-    panel = build_research_panel(
+    panel = build_rotation_panel(
         symbols,
         universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
     )

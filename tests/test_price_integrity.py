@@ -149,9 +149,13 @@ class PriceIntegrityTest(unittest.TestCase):
                     "_price_cache",
                     return_value={"2327": raw_frame},
                 ),
+                # 2026-08-15 更名:rotation_research.build_research_panel →
+                # build_rotation_panel(公開的稠密 panel 入口叫
+                # backtest.build_research_panel,同名兩份會讓人誤以為是同一個)。
+                # patch 目標必須跟著改,否則這個 assert_not_called 會變成空包彈。
                 mock.patch.object(
                     rotation_research,
-                    "build_research_panel",
+                    "build_rotation_panel",
                 ) as build_panel,
                 mock.patch.object(rotation_research, "evaluate") as evaluate,
                 mock.patch.object(rotation_research.config, "OUTPUT_DIR", output_dir),

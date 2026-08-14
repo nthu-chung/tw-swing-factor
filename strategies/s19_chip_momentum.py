@@ -68,6 +68,7 @@ import backtest
 import config
 from evaluation import build_evaluation_split
 from factor_engine import operators as op
+from factor_engine import panel_density
 from strategies.spec import StrategySpec
 
 # ── 凍結參數(由 IS 五相位 Sharpe 中位數選出;OS 未參與選擇)──────────────
@@ -159,9 +160,10 @@ def build_signal(panel: pd.DataFrame, *,
                  spec: StrategySpec = SPEC) -> pd.Series:
     """回傳與 panel 同 index 的訊號分數。
 
-    ⚠ panel 必須是 `keep_non_members=True` 的**稠密** panel。ts_ 類算子是對
-    「相鄰列」做 rolling,若 panel 只留動態 universe 成員日,20 列會橫跨遠超過
-    20 個交易日 → 因子失真。成員過濾要留到選股時才做(見 build_picks)。
+    ⚠ panel 必須是**稠密** panel(`backtest.build_research_panel()` 的預設)。
+    ts_ 類算子是對「相鄰列」做 rolling,若 panel 只留動態 universe 成員日,20 列
+    會橫跨遠超過 20 個交易日 → 因子失真。成員過濾要留到選股時才做(見 build_picks)。
+    稀疏 panel(標成 `members_only`)進來時 `PanelOps` 的 ts_ 算子會 fail-closed。
 
     視窗與權重一律讀 `spec`(forward 會傳凍結的那份),不要改回讀模組常數 ——
     那等於 forward 用「今天的參數」驗證「當時凍結的規則」。
@@ -331,8 +333,8 @@ def build_panel(symbols: Optional[List[str]] = None,
     """回傳 (稠密 panel, 乾淨 symbols)。
 
     三件事非做不可:
-      1. `keep_non_members=True` —— ts_ 算子需要連續個股序列。
-      2. 排除價格完整性名單 —— 否則 _prepare_panel 的 fail-closed 閘門會擋下。
+      1. 走 `backtest.build_research_panel()`(預設稠密)—— ts_ 算子需要連續個股序列。
+      2. 排除價格完整性名單 —— 否則引擎的未還原價 fail-closed 閘門會擋下。
       3. `use_pit_pool=True`(預設)—— M 月候選池只用完整 M-1 曆月重建。
 
     為什麼預設走 PIT:靜態池是**單一日期**的成交值 top-N 套用整段歷史,等於用
@@ -357,11 +359,12 @@ def build_panel(symbols: Optional[List[str]] = None,
 
     # static_universe_comparator=True:這條是 legacy 單日靜態池對照組(偏誤案例),
     # 必須顯式宣告,引擎才會放行並在 summary 標 formal_evidence_eligible=False。
-    panel = backtest._prepare_panel(
-        symbols, config.MIN_COMPOSITE, None, None,
+    # 一律走公開入口 build_research_panel(預設稠密);策略模組不碰引擎私有的
+    # _prepare_panel,免得哪天又拿到「只留成員日」的稀疏 panel 去算 ts_。
+    panel = backtest.build_research_panel(
+        symbols,
         dynamic_enabled=True,
         universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
-        keep_non_members=True,
         static_universe_comparator=True,
     )
     return attach_chip_fields(panel), symbols
@@ -429,9 +432,13 @@ def attach_chip_fields(panel: pd.DataFrame) -> pd.DataFrame:
             panel[c] = 0.0
         return panel
     chip = pd.concat(frames, ignore_index=True)
+    density = panel_density.density_of(panel)
     out = panel.merge(chip, on=["date", "stock_id"], how="left")
     for c in ["foreign_net", "trust_net", "dealer_net"]:
         out[c] = out[c].fillna(0.0)
+    # merge 會把 attrs 丟掉,稠密度標籤要接回去 —— 標籤掉了 ts_ 的閘門就形同不存在。
+    if density is not None:
+        panel_density.tag(out, density)
     return out
 
 

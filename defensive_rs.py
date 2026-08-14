@@ -73,11 +73,14 @@ def get_panel(rebuild: bool, top_n: int = 100) -> pd.DataFrame:
         symbols = uni.get_research_candidates(universe_top_n=top_n)
         print(f"[def-rs] 建 panel：{len(symbols)} 檔 …")
         # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
-        panel = backtest._prepare_panel(
-            symbols, 0.0, None, None,
+        # members_only=True:本檔只做當日橫斷面統計(因子已在引擎內部於完整個股
+        # 序列上算好),留成員日不影響結果;標籤會擋掉將來誤加的 ts_ 運算。
+        panel = backtest.build_research_panel(
+            symbols,
             dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
             universe_top_n=top_n,
             static_universe_comparator=True,
+            members_only=True,
         )
         panel["industry"] = panel["stock_id"].map(uni.get_industry_map()).fillna("")
         pickle.dump(panel, open(PANEL_PATH, "wb"))

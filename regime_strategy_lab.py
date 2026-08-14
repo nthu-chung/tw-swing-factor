@@ -154,10 +154,13 @@ def run(pool=300, pick=5, reb=5, vol_th=0.25):
                                           candidate_pool_n=pool)
     print(f"[lab] 候選池 {len(symbols)} 檔｜snapshot {config.SNAPSHOT_END_DATE}｜建 panel …")
     # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
-    panel = backtest._prepare_panel(symbols, 0.0, None, None,
-                                    dynamic_enabled=True,
-                                    universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
-                                    static_universe_comparator=True)
+    # members_only=True:本檔的 picks 只用當日橫斷面欄位(score_*/trend_ok),
+    # 沒有自己算 ts_/rolling,所以留成員日不改變結果;標籤會擋掉將來誤加的 ts_。
+    panel = backtest.build_research_panel(symbols,
+                                          dynamic_enabled=True,
+                                          universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
+                                          static_universe_comparator=True,
+                                          members_only=True)
     if panel.empty:
         print("[lab] panel 為空,結束。"); return
     print(f"[lab] panel {len(panel)} 列、{panel['date'].nunique()} 交易日、"

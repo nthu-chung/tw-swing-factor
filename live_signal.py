@@ -27,6 +27,7 @@ import pandas as pd
 import config
 import data
 import dynamic_universe
+from factor_engine import panel_density
 
 
 def build_light_panel(symbols: List[str], verbose: bool = False,
@@ -72,7 +73,10 @@ def build_light_panel(symbols: List[str], verbose: bool = False,
     if not apply_membership:
         # 呼叫端要先套 PIT 候選池成員資格,再自行算動態 universe
         # (順序不能顛倒:動態 top-N 必須在當日候選池「之內」排名)
-        return panel.sort_values(["date", "stock_id"]).reset_index(drop=True)
+        return panel_density.tag(
+            panel.sort_values(["date", "stock_id"]).reset_index(drop=True),
+            panel_density.DENSE,
+        )
 
     panel = dynamic_universe.add_membership(
         panel,
@@ -82,14 +86,19 @@ def build_light_panel(symbols: List[str], verbose: bool = False,
         min_avg_volume_lots=config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
         min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
     )
-    return panel.sort_values(["date", "stock_id"]).reset_index(drop=True)
+    # add_membership 只加旗標、不刪列 → 兩條路回傳的都是稠密 panel(可安全算 ts_)。
+    # 明確標記,S19 的正式 PIT 路徑不經過 _prepare_panel,標籤要在這裡補上。
+    return panel_density.tag(
+        panel.sort_values(["date", "stock_id"]).reset_index(drop=True),
+        panel_density.DENSE,
+    )
 
 
 def verify_equivalence(reference_panel: pd.DataFrame,
                        symbols: Optional[List[str]] = None) -> Tuple[bool, str]:
     """比對精簡路徑與 `_prepare_panel` 的 trend_ok / in_dynamic_universe。
 
-    reference_panel 必須是同一快照、`keep_non_members=True` 的完整 panel。
+    reference_panel 必須是同一快照、`backtest.build_research_panel()` 產生的稠密 panel。
     回傳 (是否一致, 說明)。不一致時說明會指出差異筆數。
     """
     syms = symbols or sorted(reference_panel["stock_id"].unique())

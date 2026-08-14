@@ -59,11 +59,15 @@ def build_panel(top_n: int, reuse: bool) -> pd.DataFrame:
     print(f"[audit] universe = {len(symbols)} 檔，建立 panel（會抓資料/算因子，請稍候）...")
     # research-only:候選池來自單一日期的 top-N 排名(非 PIT),所以顯式宣告成
     # static comparator;這裡的 IC 只能當發掘層線索,不可當正式證據。
-    panel = backtest._prepare_panel(
-        symbols, 0.0, None, None,
+    # members_only=True:本檔全部是「當日橫斷面」統計(IC、分位、產業中性化),
+    # 因子本身已在引擎內部於完整個股序列上算好,所以只留成員日不影響結果 ——
+    # 但 panel 會被標成 members_only,將來有人在它上面加 ts_ 會 fail-closed。
+    panel = backtest.build_research_panel(
+        symbols,
         dynamic_enabled=config.DYNAMIC_UNIVERSE_ENABLED,
         universe_top_n=top_n,
         static_universe_comparator=True,
+        members_only=True,
     )
 
     # 補上產業別（產業中性化要用）

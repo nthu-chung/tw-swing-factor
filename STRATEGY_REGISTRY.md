@@ -128,7 +128,7 @@
 | 資料與 universe | dynamic membership 後的 current top300 bootstrap；目前只有當前粗產業分類，不能替代 PIT 題材分類。 |
 | 進出場 | `rotation_research.py` 可比較 MA10、MA20、hold20、hold40；訊號收盤確認，T+1 開盤。 |
 | 證據等級 | `active hypothesis`；族群掃描曾見正向延續 IC，但歷史 static 候選池報告已降級。 |
-| 已知失效／偏誤 | 產業標籤過粗，記憶體／被動元件等細題材不可乾淨回推；原始價、候選池 survivorship、已知 2026 贏家造成研究者污染。 |
+| 已知失效／偏誤 | 產業標籤過粗，記憶體／被動元件等細題材不可乾淨回推；原始價、候選池 survivorship、已知 2026 贏家造成研究者污染。**（2026-08-15 追加）**S07 與 S08 共用 `rotation_research` 的 panel，同樣受上述稀疏 panel rolling 缺陷影響（見 S08 欄）；證據等級維持 `active hypothesis`，不因閘門修好而升級。 |
 | 下一個可證偽測試 | 使用 PIT 細產業／產品鏈分類與還原價，做「無族群 vs 族群」消融；檢驗不同年度、不同 top-N 下族群訊號是否仍有增量。 |
 
 ### S08 — `rotation_breakout`（族群＋法人＋價量突破）
@@ -139,7 +139,7 @@
 | 資料與 universe | 同 S07；主張的研究池方向為 dynamic top200，以保留二線接棒股。 |
 | 進出場 | 收盤訊號、T+1 開盤買；-8% 硬停損；MA10／MA20 退出皆為收盤確認、下一開盤執行；hold20／hold40 為固定持有。 |
 | 證據等級 | 規則可表達使用者操作流程，但**績效 blocked**。原始資料中 IS 選出的 hold20 看似最佳，不可保留此選擇。 |
-| 已知失效／偏誤 | 國巨公司行動錯誤會污染停損與出場選擇；pseudo-OOS 已知 2026 題材；current top300 候選池有 survivorship；20 日持有未必能抱住長趨勢。 |
+| 已知失效／偏誤 | 國巨公司行動錯誤會污染停損與出場選擇；pseudo-OOS 已知 2026 題材；current top300 候選池有 survivorship；20 日持有未必能抱住長趨勢。**（2026-08-15 追加）**修正前 `rotation_research` 在「只留動態 universe 成員日」的稀疏 panel 上算 `breakout_20`／`breakout_volume_ratio`／`positive_day_share_20`，20 列視窗會橫跨 60+ 個日曆日（獨立模擬:訊號翻轉約 3%、命中率相對灌水約 +9.6%）→ 修正前的任何 rotation 數字一律不可引用；另外該檔的投組迴圈是 research-only 的第二套引擎（無漲停鎖／處置／整張／成本模型），正式績效必須把 picks 餵進 `backtest.backtest_portfolio`。修好閘門不等於重新證明策略，證據等級維持 `blocked`。 |
 | 下一個可證偽測試 | 先通過 price-integrity gate，再預註冊 breakout／量比／exit 候選與 selection procedure；在未見期間做 rolling walk-forward，並與 S03、S07 做成本後比較。 |
 
 ### S09 — 即時 hybrid watchlist

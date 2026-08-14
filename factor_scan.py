@@ -126,12 +126,13 @@ def _quintile_spread(panel: pd.DataFrame, fac: pd.Series) -> float:
 def run(pool=300):
     symbols = uni.get_research_candidates(candidate_pool_n=pool)
     print(f"[scan] 候選池 {len(symbols)} 檔｜snapshot {config.SNAPSHOT_END_DATE}｜建 panel …")
-    # keep_non_members=True:保留全 panel(連續個股序列)→ ts_ 算子不在稀疏成員日 rolling
-    # (避免『20日窗其實跨非連續成員日』的失真);IC 再過濾到 in_dynamic_universe 成員。
+    # build_research_panel 預設稠密:保留全 panel(連續個股序列)→ ts_ 算子不在稀疏
+    # 成員日 rolling(避免『20日窗其實跨非連續成員日』的失真);IC 再過濾到
+    # in_dynamic_universe 成員。
     # research-only:候選池是單一日期排名(非 PIT)→ 顯式 static comparator。
-    panel = backtest._prepare_panel(symbols, 0.0, None, None,
-                                    dynamic_enabled=True, keep_non_members=True,
-                                    static_universe_comparator=True)
+    panel = backtest.build_research_panel(symbols,
+                                          dynamic_enabled=True,
+                                          static_universe_comparator=True)
     if panel.empty:
         print("[scan] panel 為空。"); return
     panel = panel.dropna(subset=["fwd_ret"]).reset_index(drop=True)
