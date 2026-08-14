@@ -17,7 +17,7 @@
 限制是什麼」，不會連券商 API，也不會替使用者送出訂單。每日人工流程可以引用同一
 套規則產生警示，例如漲停、處置、全額交割，但輸出仍只是候選資料。
 
-## 六個不可協商的管線不變式
+## 七個不可協商的管線不變式
 
 這些不是風格偏好，每一條都對應一個實際發生過、會產生假結果的缺陷。改動任何一層
 之前先確認沒有破壞它們。
@@ -30,6 +30,7 @@
 | 4 | **field / operator 分界：有視窗才是 operator** | `factor_engine/data_fields.py` vs `factor_engine/operators.py` | 視窗長度被寫死，搜尋空間只涵蓋教科書版本 |
 | 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
+| 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op |
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
@@ -96,7 +97,10 @@ owner decision 而非失敗，稽核腳本不代替決定。
 1. 驗證並快取官方逐日 `reference_price / limit_up / limit_down`，取代一般日的
    `derived_prev_close`；新上市與轉板例外要接 PIT lifecycle。
 2. 將其餘資料來源與快照搬到 `market_data/`；月頻 PIT provider 已先搬到
-   `universes/`，舊的抓取／解析函式暫留 `pit_universe.py` 作相容層。
+   `universes/`，舊的抓取／解析函式暫留 `pit_universe.py` 作相容層。搬遷時
+   `data.CacheScope` 是快取檔名的唯一推導點——研究腳本要路徑請用
+   `data.cache_scope()` / `data.cache_glob()`，不要自己拼字串（自己拼就是
+   不變式 7 的下一次破口；舊快取加範圍戳用 `migrate_cache_range.py --apply`）。
 3. 把 `backtest.py` 拆成 `backtesting/engine.py`、`portfolio/` 與 `execution/`。
    在成交紀錄 parity 測試通過前，根目錄引擎仍是唯一正式入口。
 4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略台帳，不因整理資料夾而

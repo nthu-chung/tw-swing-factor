@@ -15,7 +15,8 @@ Universe 倖存者/前視偏誤量化（上界）
       - 池是用「窗尾成交值」排名,等於用未來人氣挑池 → 窗頭就把「後來才爆量」的股
         放進池。可計算:窗頭 vs 窗尾 的池內成交值排名遷移（rank migration）。
 
-本腳本純離線讀 _cache/price__*__<snapshot>.pkl，不打 API、不改資料。
+本腳本純離線讀 _cache 的價格快取（路徑一律由 data.cache_scope() 給，含快照戳與
+範圍戳），不打 API、不改資料。
 輸出 outputs/UNIVERSE_BIAS_REPORT.md + outputs/universe_bias_audit.csv。
 
 用法:.venv/bin/python universe_bias_audit.py
@@ -29,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import data
 import universe as uni
 
 
@@ -37,11 +39,11 @@ WIN = 20  # 排名用的滾動視窗（交易日），對齊 DYNAMIC_UNIVERSE_LO
 
 def _load_survivor_prices() -> dict[str, pd.DataFrame]:
     """讀目前候選池 stock_id 的快取價格（含快照戳）。"""
-    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
     pool = uni.get_research_candidates()  # 現行候選池
     frames = {}
     for sid in pool:
-        p = config.CACHE_DIR / f"price__{sid}__{snap}.pkl"
+        # 2026-08-15:檔名多了範圍維度,改問資料層要路徑(不再自己拼字串)。
+        p = data.cache_scope("price", sid).path
         if not p.exists():
             continue
         try:

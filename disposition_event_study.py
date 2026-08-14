@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import data
 import evaluation_split
 
 HORIZONS = (1, 5, 20)
@@ -36,7 +37,9 @@ HORIZONS = (1, 5, 20)
 def _load_prices():
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
     prices = {}
-    for p in glob.glob(str(config.CACHE_DIR / f"price__*__{snap}.pkl")):
+    # 2026-08-15:檔名多了範圍維度（`__d<history_days>`）,不能再自己拼字串,
+    # 否則會靜默掃到 0 檔。一律問資料層要 glob（檔名規則只有一份）。
+    for p in glob.glob(data.cache_glob("price")):
         sid = os.path.basename(p).split("__")[1]
         try:
             df = pd.read_pickle(p)
@@ -49,7 +52,8 @@ def _load_prices():
 
 
 def _taiex():
-    df = pd.read_pickle(config.CACHE_DIR / f"market__TAIEX__{config.SNAPSHOT_END_DATE}.pkl")
+    df = pd.read_pickle(data.cache_scope(
+        "market", "TAIEX", default_attr="MARKET_HISTORY_DAYS").path)
     return df.sort_values("date").reset_index(drop=True)
 
 

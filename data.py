@@ -10,7 +10,9 @@
 
 設計重點
 --------
-- 每檔股票每類資料 -> 一個 pickle 快取檔（_cache/<dataset>__<stock>.pkl）。
+- 每檔股票每類資料 -> 一個 pickle 快取檔
+  （`_cache/<dataset>__<stock>__<snapshot>__d<history_days>.pkl`）。
+  檔名帶「所有會影響內容的輸入」：快照結束日 + 查詢範圍，換任一個就是 cache miss。
   快取當天有效，避免重複打 API（FinMind 免費版有流量限制）。
 - 全部回傳 pandas.DataFrame，欄位統一小寫、date 轉成 datetime。
 - 服務明確回「沒有資料」才回空 DataFrame；連線、額度或認證失敗會有界重試後
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import time
 import pickle
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -37,27 +40,176 @@ class FinMindAPIError(RuntimeError):
     """FinMind 資料無法可靠取得；不得用空表冒充真實的無資料。"""
 
 
+# ── 抓取視窗 ────────────────────────────────────────────────────────────
+def _resolve_history_days(history_days: Optional[int] = None,
+                          default_attr: str = "HISTORY_DAYS") -> int:
+    """把 None／0 解析成設定檔預設值並正規化成 int。
+
+    範圍解析**只有這一個入口**:cache key 與 API 查詢視窗都從它推導,才不會再出現
+    「檔名用預設、查詢用參數」的分裂（那正是 2026-08-15 這個 bug 的根因）。
+    """
+    default = getattr(config, default_attr, None) or config.HISTORY_DAYS
+    days = int(history_days or default)
+    if days <= 0:
+        raise ValueError(f"history_days 必須為正整數,得到 {history_days!r}")
+    return days
+
+
+def _date_range(history_days: int = None):
+    """
+    抓取視窗 [start, end]。
+    - 若 config.SNAPSHOT_END_DATE 有值（推薦），end 鎖在那天，回測視窗不會
+      隨日曆漂移；換快照才更新（可避免 IS Sharpe 因邊界漂移而改變）。
+    - 若 SNAPSHOT_END_DATE 為空，退回 datetime.now()（探索 / debug 用）。
+    """
+    history_days = _resolve_history_days(history_days)
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
+    if snap:
+        try:
+            end = datetime.strptime(snap, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                f"SNAPSHOT_END_DATE={snap!r} 格式錯誤；拒絕退回 now() 以免讀到未來資料"
+            ) from exc
+    else:
+        end = datetime.now()
+    start = end - timedelta(days=history_days)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
 # ── 快取工具 ────────────────────────────────────────────────────────────
 def _snapshot_tag() -> str:
     """快取檔名的快照戳記。鎖快照時用日期,live 時用 'live'（維持 TTL 過期）。"""
     return getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
 
 
-def _cache_path(dataset: str, stock_id: str) -> Path:
-    # 2026-07-24 修:把 snapshot 編進檔名。舊版 key 不含 snapshot,改 cutoff 卻靜默
-    # 回傳舊快取（look-ahead）。現在 snapshot 一改 → 檔名 miss → 真重抓;舊快照檔留存
-    # 供 bit-identical 重現。
-    return config.CACHE_DIR / f"{dataset}__{stock_id}__{_snapshot_tag()}.pkl"
+# 沒有查詢範圍的資料集(一次抓完整表,不吃 history_days)。這份白名單刻意寫成
+# opt-out:除此之外一律視為歷史型 → 新增資料集時「忘記做事」的結果是 fail-closed
+# 報錯,而不是靜默退回無範圍的 key。
+_RANGELESS_DATASETS = frozenset({"info"})
+
+_legacy_cache_warned: set[str] = set()
 
 
-def _load_cache(dataset: str, stock_id: str, max_age_hours: int = 12) -> Optional[pd.DataFrame]:
+@dataclass(frozen=True)
+class CacheScope:
+    """一次抓取請求的「快取身分 + 查詢視窗」。
+
+    2026-08-15 修的 bug:舊 key 只有 dataset／stock_id／snapshot,history_days 根本
+    沒進檔名。實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)`
+    命中同一個檔案,回傳完全相同的 482 列（2024-06-24~2026-06-18）、`equals()` 為
+    True、零警告 —— protocol 列為最優先的「取得 >3 年含空頭資料」因此變成靜默 no-op。
+
+    根因不是某個函式寫錯,而是每個 `fetch_*` 自己手寫 dataset 字串、範圍只流向 API
+    參數,沒有任何結構強迫兩者一致。因此改成:查詢視窗與 key 由同一個物件推導,
+    「會影響內容的輸入」必定同時出現在檔名裡。
+
+    同一個道理的前一次事故（2026-07-24）:key 原本連 snapshot 都沒有,改 cutoff 卻
+    靜默回傳舊快取（look-ahead）。所以 snapshot 也在 key 裡,一改就 miss → 真重抓,
+    舊快照檔留存供 bit-identical 重現。
+    """
+
+    dataset: str
+    stock_id: str
+    snapshot: str
+    range_tag: str
+    start: str = ""
+    end: str = ""
+    days: int = 0
+
+    def __post_init__(self) -> None:
+        if self.dataset in _RANGELESS_DATASETS:
+            if self.range_tag:
+                raise ValueError(
+                    f"{self.dataset} 沒有查詢範圍,不該帶 range_tag={self.range_tag!r}"
+                )
+        elif not self.range_tag:
+            raise ValueError(
+                f"{self.dataset} 是歷史型資料集:cache key 必須含範圍維度,"
+                "否則不同 history_days 會互相命中(2026-08-15 的 bug)"
+            )
+
+    @property
+    def path(self) -> Path:
+        parts = [self.dataset, self.stock_id, self.snapshot]
+        if self.range_tag:
+            parts.append(self.range_tag)
+        return config.CACHE_DIR / ("__".join(parts) + ".pkl")
+
+    @property
+    def legacy_path(self) -> Path:
+        """修正前的檔名（不含範圍維度）。只用來提示需要遷移,不會被當成命中。"""
+        return config.CACHE_DIR / f"{self.dataset}__{self.stock_id}__{self.snapshot}.pkl"
+
+
+def range_tag(history_days: Optional[int] = None, *,
+              default_attr: str = "HISTORY_DAYS") -> str:
+    """範圍戳的唯一格式來源（遷移腳本也用它,避免第二份字串格式）。
+
+    用「正規化天數」而不是 start 日期當戳:live 模式（SNAPSHOT_END_DATE 為空）下
+    start 每天都會漂,寫進檔名會天天 miss、把 FinMind 免費額度燒光;而
+    (snapshot, days) 已足以唯一決定 [start, end]。
+    """
+    return f"d{_resolve_history_days(history_days, default_attr)}"
+
+
+def cache_scope(dataset: str, stock_id: str, history_days: Optional[int] = None, *,
+                default_attr: str = "HISTORY_DAYS") -> CacheScope:
+    """歷史型資料集的 scope（同時給出 API 查詢視窗與含範圍的快取檔名）。"""
+    days = _resolve_history_days(history_days, default_attr)
+    start, end = _date_range(days)
+    return CacheScope(
+        dataset=dataset, stock_id=str(stock_id), snapshot=_snapshot_tag(),
+        range_tag=range_tag(days), start=start, end=end, days=days,
+    )
+
+
+def rangeless_cache_scope(dataset: str, stock_id: str) -> CacheScope:
+    """無查詢範圍資料集的 scope（見 `_RANGELESS_DATASETS`）。"""
+    if dataset not in _RANGELESS_DATASETS:
+        raise ValueError(
+            f"{dataset} 有查詢範圍,請改用 cache_scope() 帶入 history_days"
+        )
+    return CacheScope(dataset=dataset, stock_id=str(stock_id),
+                      snapshot=_snapshot_tag(), range_tag="")
+
+
+def cache_glob(dataset: str, history_days: Optional[int] = None, *,
+               default_attr: str = "HISTORY_DAYS") -> str:
+    """掃某個 dataset 全部個股快取的 glob 字串（給直接讀 `_cache/` 的稽核腳本）。
+
+    檔名規則只能有一份 —— 稽核腳本自己拼字串,就是下一次「範圍沒進 key」的來源。
+    """
+    return str(cache_scope(dataset, "*", history_days, default_attr=default_attr).path)
+
+
+def _warn_legacy_cache_once(scope: CacheScope) -> None:
+    """舊格式（不含範圍）檔案存在但新 key miss 時提醒一次。
+
+    不得靜默使用範圍不符的檔案,但也不能讓使用者以為「快取憑空消失」:
+    真要 bit-identical 重現舊數字,跑 `migrate_cache_range.py --apply`。
+    """
+    if not scope.range_tag or scope.dataset in _legacy_cache_warned:
+        return
+    if scope.legacy_path.exists():
+        _legacy_cache_warned.add(scope.dataset)
+        print(f"[data] {scope.dataset} 有舊格式快取（檔名不含範圍維度）:"
+              f"{scope.legacy_path.name} —— 視為 miss,不當成任意範圍的有效命中。"
+              f"要沿用舊檔請先跑 migrate_cache_range.py --apply")
+
+
+def _load_cache(scope: CacheScope, max_age_hours: int = 12) -> Optional[pd.DataFrame]:
     """
     讀快取。當 config.SNAPSHOT_END_DATE 有值時：快取永久有效（鎖住資料快照，
-    避免邊界漂移），且快照戳已進檔名 → 不同快照不會互相命中。
-    SNAPSHOT_END_DATE 為空字串時退回原本的 max_age_hours 過期邏輯。
+    避免邊界漂移），且快照戳與範圍戳都已進檔名 → 不同快照／不同 history_days
+    不會互相命中。SNAPSHOT_END_DATE 為空字串時退回原本的 max_age_hours 過期邏輯。
+
+    注意：更長範圍的既有快取**不會**被切片重用。寧可多抓一次,也不要讓「檔名」
+    與「內容範圍」脫鉤 —— 一旦脫鉤就無法從檔名判斷手上的資料是什麼範圍。
     """
-    p = _cache_path(dataset, stock_id)
+    p = scope.path
     if not p.exists():
+        _warn_legacy_cache_once(scope)
         return None
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
     if not snap:
@@ -81,9 +233,9 @@ def _load_cache(dataset: str, stock_id: str, max_age_hours: int = 12) -> Optiona
     return df
 
 
-def _save_cache(dataset: str, stock_id: str, df: pd.DataFrame) -> None:
+def _save_cache(scope: CacheScope, df: pd.DataFrame) -> None:
     try:
-        with open(_cache_path(dataset, stock_id), "wb") as f:
+        with open(scope.path, "wb") as f:
             pickle.dump(df, f)
     except Exception:
         pass
@@ -144,32 +296,11 @@ def fetch_finmind_dataset(dataset: str, data_id: str,
 _finmind_get = fetch_finmind_dataset
 
 
-def _date_range(history_days: int = None):
-    """
-    抓取視窗 [start, end]。
-    - 若 config.SNAPSHOT_END_DATE 有值（推薦），end 鎖在那天，回測視窗不會
-      隨日曆漂移；換快照才更新（可避免 IS Sharpe 因邊界漂移而改變）。
-    - 若 SNAPSHOT_END_DATE 為空，退回 datetime.now()（探索 / debug 用）。
-    """
-    history_days = history_days or config.HISTORY_DAYS
-    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip()
-    if snap:
-        try:
-            end = datetime.strptime(snap, "%Y-%m-%d")
-        except ValueError as exc:
-            raise ValueError(
-                f"SNAPSHOT_END_DATE={snap!r} 格式錯誤；拒絕退回 now() 以免讀到未來資料"
-            ) from exc
-    else:
-        end = datetime.now()
-    start = end - timedelta(days=history_days)
-    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-
-
 # ── 1. 股票清單 / 產業別 ────────────────────────────────────────────────
 def fetch_stock_info() -> pd.DataFrame:
     """全市場股票基本資料（代號、名稱、產業別、類型）。"""
-    cached = _load_cache("info", "ALL", max_age_hours=24 * 7)
+    scope = rangeless_cache_scope("info", "ALL")
+    cached = _load_cache(scope, max_age_hours=24 * 7)
     if cached is not None:
         return cached
     df = _finmind_get("TaiwanStockInfo", "", "", "")
@@ -184,7 +315,7 @@ def fetch_stock_info() -> pd.DataFrame:
     })
     # 去重（同一股票可能多筆）
     df = df.drop_duplicates(subset=["stock_id"], keep="last").reset_index(drop=True)
-    _save_cache("info", "ALL", df)
+    _save_cache(scope, df)
     return df
 
 
@@ -242,13 +373,13 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
     """
     dataset = getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
     cache_key = "price_adj" if dataset == "TaiwanStockPriceAdj" else "price"
-    cached = _load_cache(cache_key, stock_id)
+    scope = cache_scope(cache_key, stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         out = _clean_price_frame(cached)
         out.attrs["price_dataset"] = dataset
         return _maybe_self_adjust(stock_id, out, dataset)
-    start, end = _date_range(history_days)
-    df = _finmind_get(dataset, stock_id, start, end)
+    df = _finmind_get(dataset, stock_id, scope.start, scope.end)
     if df.empty:
         return df
     rename = {
@@ -269,7 +400,7 @@ def fetch_price(stock_id: str, history_days: int = None) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = _clean_price_frame(df)
     df.attrs["price_dataset"] = dataset
-    _save_cache(cache_key, stock_id, df)   # 快取存**原始**價,還原在讀取後套用
+    _save_cache(scope, df)   # 快取存**原始**價,還原在讀取後套用
     return _maybe_self_adjust(stock_id, df, dataset)
 
 
@@ -280,11 +411,11 @@ def fetch_price_limits(stock_id: str, history_days: int = None) -> pd.DataFrame:
     還把來源標成 official。新上市無漲跌幅列的實際空值語意尚未完成真實 API 驗證，
     因此目前也不自行把空值解讀為豁免。
     """
-    cached = _load_cache("price_limit", stock_id)
+    scope = cache_scope("price_limit", stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    start, end = _date_range(history_days)
-    df = _finmind_get("TaiwanStockPriceLimit", stock_id, start, end)
+    df = _finmind_get("TaiwanStockPriceLimit", stock_id, scope.start, scope.end)
     if df.empty:
         return df
     required = {"date", "reference_price", "limit_up", "limit_down"}
@@ -299,7 +430,7 @@ def fetch_price_limits(stock_id: str, history_days: int = None) -> pd.DataFrame:
         out[col] = pd.to_numeric(out[col], errors="coerce")
     out = out.dropna(subset=["date"]).sort_values("date").drop_duplicates(
         "date", keep="last").reset_index(drop=True)
-    _save_cache("price_limit", stock_id, out)
+    _save_cache(scope, out)
     return out
 
 
@@ -310,11 +441,12 @@ def fetch_institutional(stock_id: str, history_days: int = None) -> pd.DataFrame
       date, foreign_net, trust_net, dealer_net, inst_net (=foreign+trust，主力)
     單位：股（FinMind 原始為股數 buy/sell，net = buy - sell）。
     """
-    cached = _load_cache("inst", stock_id)
+    scope = cache_scope("inst", stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    start, end = _date_range(history_days)
-    raw = _finmind_get("TaiwanStockInstitutionalInvestorsBuySell", stock_id, start, end)
+    raw = _finmind_get("TaiwanStockInstitutionalInvestorsBuySell",
+                       stock_id, scope.start, scope.end)
     if raw.empty:
         return raw
 
@@ -350,7 +482,7 @@ def fetch_institutional(stock_id: str, history_days: int = None) -> pd.DataFrame
     # 主力 = 外資 + 投信（排除自營商避險雜訊）
     out["inst_net"] = out["foreign_net"] + out["trust_net"]
     out = out.sort_values("date").reset_index(drop=True)
-    _save_cache("inst", stock_id, out)
+    _save_cache(scope, out)
     return out
 
 
@@ -361,11 +493,12 @@ def fetch_margin(stock_id: str, history_days: int = None) -> pd.DataFrame:
       date, margin_balance(融資餘額,張), short_balance(融券餘額,張),
       margin_limit(融資限額), margin_change, short_change
     """
-    cached = _load_cache("margin", stock_id)
+    scope = cache_scope("margin", stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    start, end = _date_range(history_days)
-    df = _finmind_get("TaiwanStockMarginPurchaseShortSale", stock_id, start, end)
+    df = _finmind_get("TaiwanStockMarginPurchaseShortSale",
+                      stock_id, scope.start, scope.end)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
@@ -387,7 +520,7 @@ def fetch_margin(stock_id: str, history_days: int = None) -> pd.DataFrame:
     keep = [c for c in ["date", "margin_balance", "short_balance", "margin_limit",
                         "margin_change", "short_change"] if c in df.columns]
     df = df[keep].sort_values("date").reset_index(drop=True)
-    _save_cache("margin", stock_id, df)
+    _save_cache(scope, df)
     return df
 
 
@@ -403,11 +536,11 @@ def fetch_lending(stock_id: str, history_days: int = None) -> pd.DataFrame:
     註：FinMind 免費版此 dataset 給的是「當日借券交易量」而非「借券賣出餘額」。
         我們用「借券量的變化/水準」當空方壓力代理，仍能捕捉放空意圖的增減。
     """
-    cached = _load_cache("lending", stock_id)
+    scope = cache_scope("lending", stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    start, end = _date_range(history_days)
-    raw = _finmind_get("TaiwanStockSecuritiesLending", stock_id, start, end)
+    raw = _finmind_get("TaiwanStockSecuritiesLending", stock_id, scope.start, scope.end)
     if raw.empty:
         return raw
     raw["date"] = pd.to_datetime(raw["date"])
@@ -416,7 +549,7 @@ def fetch_lending(stock_id: str, history_days: int = None) -> pd.DataFrame:
     daily = raw.groupby("date", as_index=False)["volume"].sum()
     daily = daily.rename(columns={"volume": "lending_vol"}).sort_values("date").reset_index(drop=True)
     daily["lending_vol_5d"] = daily["lending_vol"].rolling(5, min_periods=1).sum()
-    _save_cache("lending", stock_id, daily)
+    _save_cache(scope, daily)
     return daily
 
 
@@ -430,11 +563,11 @@ def fetch_foreign_holding(stock_id: str, history_days: int = None) -> pd.DataFra
     整理成：date, foreign_ratio(外資持股比例%), foreign_remain_ratio(距上限剩餘%)
     註：此資料約每日申報但偶有缺漏，上層用 merge_asof(backward) 對齊即可。
     """
-    cached = _load_cache("fholding", stock_id)
+    scope = cache_scope("fholding", stock_id, history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    start, end = _date_range(history_days)
-    df = _finmind_get("TaiwanStockShareholding", stock_id, start, end)
+    df = _finmind_get("TaiwanStockShareholding", stock_id, scope.start, scope.end)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
@@ -448,12 +581,12 @@ def fetch_foreign_holding(stock_id: str, history_days: int = None) -> pd.DataFra
             df[c] = pd.to_numeric(df[c], errors="coerce")
     keep = [c for c in ["date", "foreign_ratio", "foreign_remain_ratio"] if c in df.columns]
     df = df[keep].dropna(subset=["foreign_ratio"]).sort_values("date").reset_index(drop=True)
-    _save_cache("fholding", stock_id, df)
+    _save_cache(scope, df)
     return df
 
 
 # ── 市場層級：VIX 恐慌指數 ──────────────────────────────────────────────
-# VIX 不是個股資料，獨立歸類為 "market"（快取檔 market__VIX.pkl），
+# VIX 不是個股資料，獨立歸類為 "market"（快取檔 market__VIX__<snapshot>__d<days>.pkl），
 # 與個股的 price/inst/margin 分開，避免混在同一命名空間。
 # 台灣無穩定免費 VIX 來源 → 用美國 ^VIX 當市場恐慌的代理（台股高度跟隨美股情緒）。
 def fetch_vix(history_days: int = None) -> pd.DataFrame:
@@ -461,13 +594,14 @@ def fetch_vix(history_days: int = None) -> pd.DataFrame:
     回傳 VIX 日資料：date, vix_close, vix_high, vix_low。
     來源 yfinance ^VIX。失敗回空 DataFrame。
     """
-    cached = _load_cache("market", "VIX")
+    # history_days 會經 period 影響內容（2y vs 5y）→ 必須進 key。
+    scope = cache_scope("market", "VIX", history_days)
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
     try:
         import yfinance as yf
-        days = history_days or config.HISTORY_DAYS
-        period = "2y" if days <= 730 else "5y"
+        period = "2y" if scope.days <= 730 else "5y"
         hist = yf.Ticker("^VIX").history(period=period)
         if hist.empty:
             return pd.DataFrame()
@@ -478,7 +612,7 @@ def fetch_vix(history_days: int = None) -> pd.DataFrame:
             "vix_low": pd.to_numeric(hist["Low"], errors="coerce").values,
         })
         out = out.dropna(subset=["vix_close"]).sort_values("date").reset_index(drop=True)
-        _save_cache("market", "VIX", out)
+        _save_cache(scope, out)
         return out
     except Exception as e:
         print(f"[data] VIX 抓取失敗：{e}")
@@ -488,19 +622,21 @@ def fetch_vix(history_days: int = None) -> pd.DataFrame:
 # ── 市場層級：大盤加權指數（RS / 抗跌因子的基準）─────────────────────────
 # 相對強勢 (relative strength)、下行 beta、抗跌度等因子都需要一條「大盤」序列
 # 當基準。用 FinMind 的 TAIEX（發行量加權股價指數），full OHLCV、純 FinMind
-# 來源（不引入 yfinance 個股）。快取檔 market__TAIEX.pkl，與個股命名空間分開。
+# 來源（不引入 yfinance 個股）。快取檔 market__TAIEX__<snapshot>__d<days>.pkl，
+# 與個股命名空間分開；範圍戳用 MARKET_HISTORY_DAYS（比個股長，MA200 暖身）。
 def fetch_market_index(history_days: int = None) -> pd.DataFrame:
     """
     回傳大盤加權指數（TAIEX）日資料：date, open, high, low, close, volume。
     來源 FinMind TaiwanStockPrice / data_id=TAIEX。服務明確無資料才回空；API 失敗 raise。
     """
-    cached = _load_cache("market", "TAIEX")
+    # 大盤抓更長歷史（市場濾網 MA200 暖身用），預設 MARKET_HISTORY_DAYS。
+    # 範圍先解析再查快取:TAIEX 與個股預設範圍不同,key 必須反映實際查詢視窗。
+    scope = cache_scope("market", "TAIEX", history_days,
+                        default_attr="MARKET_HISTORY_DAYS")
+    cached = _load_cache(scope)
     if cached is not None:
         return cached
-    # 大盤抓更長歷史（市場濾網 MA200 暖身用），預設 MARKET_HISTORY_DAYS。
-    history_days = history_days or getattr(config, "MARKET_HISTORY_DAYS", config.HISTORY_DAYS)
-    start, end = _date_range(history_days)
-    df = _finmind_get("TaiwanStockPrice", "TAIEX", start, end)
+    df = _finmind_get("TaiwanStockPrice", "TAIEX", scope.start, scope.end)
     if df.empty:
         return df
     rename = {
@@ -520,7 +656,7 @@ def fetch_market_index(history_days: int = None) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
-    _save_cache("market", "TAIEX", df)
+    _save_cache(scope, df)
     return df
 
 
