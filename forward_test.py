@@ -76,22 +76,44 @@ def _latest_manifest() -> Optional[str]:
     return files[-1] if files else None
 
 
-def _assert_forward_integrity(sweep: PhaseSweep) -> None:
+def _assert_forward_integrity(sweep: PhaseSweep, spec) -> None:
     """forward 是唯一能升級證據等級的路徑,所以它的偏誤閘門要最嚴。
 
-    三件事在**結果層面**驗證(不是相信自己傳對了參數):
-      1. 掃描必須是**全相位**的。單相位只能 debug:同一訊號換相位 Sharpe 實測
-         從 -0.09 擺到 +1.09,拿一條路徑宣稱 clean OOS 等於挑路徑。
+    四件事在**結果層面**驗證(不是相信自己傳對了參數):
+      1. 掃描必須是**全相位**的,而且相位數要等於**凍結的**再平衡天數。
+         單相位只能 debug:同一訊號換相位 Sharpe 實測從 -0.09 擺到 +1.09,
+         拿一條路徑宣稱 clean OOS 等於挑路徑。
       2. 每個相位的候選池都必須是 PIT(`candidate_pool_pit=True`)。
          舊版用 legacy 單日靜態池當候選池 = 用「凍結之後才知道誰熱門」決定
          forward 期能選誰,前視污染的正是這條路徑最不能污染的數字。
       3. 評估窗不得溢出最後一個訊號日(`days_beyond_last_pick=0`),
          否則 forward 會借用訊號用完後那段的走勢。
+
+    2026-08-15 補的洞(第 1 項原本只驗 `single_phase_debug`):
+    `PhaseSweep.full_sweep` 的註解寫著「正式證據的必要條件」,但 forward 一次都
+    沒引用它 —— 相位數完全靠策略模組自律。實測:manifest 凍 `rebalance_days=20`,
+    把 `evaluate_sweep` 換成只掃 3 個相位(且 `single_phase_debug=False`),
+    forward 完整跑完並寫出 payload,`phase_stats` 只有 3 個相位,沒有任何 raise。
+    `STRATEGY_PROTOCOL` 只檢查「有沒有 evaluate_sweep 這個名字」,所以換一個
+    註冊策略就能繞過 —— 閘門必須長在 forward 這一側,不是長在策略的自律上。
     """
     if sweep.single_phase_debug:
         raise RuntimeError(
             "[fail-closed] forward 收到 single_phase_debug 掃描:"
             "單相位只能 debug,不得作為 forward OOS 證據"
+        )
+    frozen_phases = int(spec.port("rebalance_days"))
+    if int(sweep.n_phases_full) != frozen_phases:
+        raise RuntimeError(
+            f"[fail-closed] forward 掃描的相位數 {sweep.n_phases_full} 與凍結的"
+            f"再平衡天數 {frozen_phases} 不符:「每 N 日再平衡」有 N 個等價執行"
+            "相位,少掃就是在挑路徑(而且挑的是策略模組自己決定的那幾條)"
+        )
+    if not sweep.full_sweep:
+        raise RuntimeError(
+            f"[fail-closed] forward 掃描沒有跑滿所有等價相位"
+            f"(實跑 {len(sweep.phases_run)}/{sweep.n_phases_full}):"
+            "不完整的相位掃描不得作為 forward OOS 證據"
         )
     df = sweep.rows
     if df.empty:
@@ -176,11 +198,13 @@ def run(manifest_path: Optional[str] = None, *,
     # `single_phase_debug`,是拿結果當意圖)。
     sweep = mod.evaluate_sweep(panel, symbols, start, end,
                                universe_provider=provider, spec=spec)
+    # 結構性閘門(相位數/全相位)先驗:它不看有沒有列,所以「掃太少 + 剛好都沒
+    # 結果」不該從空掃描的出口靜靜溜走。
+    _assert_forward_integrity(sweep, spec)
     phases = sweep.rows
     if sweep.empty:
         print("[forward] forward 窗內沒有任何相位產出結果(可能訊號尚未出現)。")
         return None
-    _assert_forward_integrity(sweep)
     stats = sweep.stats()
 
     # 基準:動態 universe 等權買進持有(無成本,樂觀上界)。沒有基準的 forward

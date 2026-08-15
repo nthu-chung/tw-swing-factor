@@ -382,6 +382,46 @@ class ForwardTestPathTest(unittest.TestCase):
         for k in ("sharpe_median", "sharpe_min", "worst_max_drawdown"):
             self.assertIn(k, payload["phase_stats"])
 
+    def test_forward_rejects_a_sweep_that_skips_phases(self):
+        """策略只回傳 3 個相位、manifest 凍的是 20 → forward 必須 raise。
+
+        原 bug(2026-08-15 修):`_assert_forward_integrity` 的 docstring 說相位
+        是「在結果層面驗證」,但它只看 `single_phase_debug`,從沒比對過相位數;
+        `PhaseSweep.full_sweep` 註明是「正式證據的必要條件」,forward 卻一次都
+        沒引用。實測把 `evaluate_sweep` 換成只掃 3 個相位(旗標仍是 False),
+        forward 完整跑完並寫出 payload,零警告 —— 等於相位數靠策略模組自律,
+        而 `STRATEGY_PROTOCOL` 只檢查有沒有 `evaluate_sweep` 這個名字。
+        """
+        from evaluation.phases import sweep_phases
+
+        def _row(ph: int) -> dict:
+            return {"phase": ph, "sharpe": 1.0, "ann_ret": 0.1, "ann_vol": 0.1,
+                    "max_drawdown": -0.1, "n_trades": 40, "win_rate": 0.5,
+                    "payoff": 2.0, "days_beyond_last_pick": 0,
+                    "candidate_pool_pit": True}
+
+        def short_sweep(*_a, **_kw):
+            return sweep_phases(_row, n_phases=3)   # 凍結的是 20
+
+        manifest = self._write_manifest()
+        with mock.patch.object(s19, "evaluate_sweep", side_effect=short_sweep):
+            with self.assertRaisesRegex(RuntimeError, "相位數"):
+                self._run(manifest)
+        # 被擋下來的 forward 不得留下任何輸出(否則等於挑路徑挑到好看再留)
+        self.assertEqual(list(self.out.glob("forward_test_*.json")), [])
+
+    def test_forward_rejects_a_partial_sweep_even_with_right_phase_count(self):
+        """宣稱 20 相位但只實跑 2 個 → `full_sweep` 為 False,一樣要 raise。"""
+        from evaluation.phases import PhaseSweep
+
+        rows = pd.DataFrame([{"phase": p, "sharpe": 1.0, "max_drawdown": -0.1,
+                              "n_trades": 40, "days_beyond_last_pick": 0,
+                              "candidate_pool_pit": True} for p in (0, 1)])
+        partial = PhaseSweep(rows=rows, n_phases_full=20, phases_run=(0, 1))
+        with mock.patch.object(s19, "evaluate_sweep", return_value=partial):
+            with self.assertRaisesRegex(RuntimeError, "跑滿"):
+                self._run(self._write_manifest())
+
     # 4.3 PIT provider
     def test_forward_passes_pit_provider_to_engine(self):
         payload = self._run(self._write_manifest())

@@ -214,13 +214,30 @@ def fetch_attention_history(start_date: str, end_date: str) -> pd.DataFrame:
 
 
 # ── 快取包裝(與 twse_disposition.load_disposition 對稱)────────────────────
+DATASET = "disposition_tpex"
+ATTENTION_DATASET = "attention_tpex"
+
+
+def cache_path(start_date: str, end_date: str):
+    """這份快取涵蓋 [start_date, end_date];範圍進檔名(與 TWSE 對稱)。"""
+    import data
+
+    return data.window_cache_scope(DATASET, "ALL", start_date, end_date).path
+
+
 def load_disposition(start_date: str, end_date: str, refresh: bool = False) -> pd.DataFrame:
-    """抓上櫃真實處置期間,快取(含快照戳)。
+    """抓上櫃真實處置期間,快取(含快照戳**與查詢範圍**)。
 
     不需要 trading_days:官方直接給起訖日,無需像 TWSE 那樣對齊交易日曆推導。
+
+    原 bug 與 `twse_disposition.load_disposition` 相同(2026-08-15 一起修):
+    舊檔名 `disposition_tpex__ALL__{snapshot}.pkl` 不含查詢範圍,短範圍快取會
+    靜默回應長範圍請求,而回測用它決定處置期間禁新倉。
     """
+    import data
+
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
-    cache = config.CACHE_DIR / f"disposition_tpex__ALL__{snap}.pkl"
+    cache = cache_path(start_date, end_date)
     if cache.exists() and not refresh:
         try:
             return pd.read_pickle(cache)
@@ -233,7 +250,8 @@ def load_disposition(start_date: str, end_date: str, refresh: bool = False) -> p
     disp.to_pickle(cache)
     att = fetch_attention_history(start_date, end_date)
     if not att.empty:
-        att.to_pickle(config.CACHE_DIR / f"attention_tpex__ALL__{snap}.pkl")
+        att.to_pickle(data.window_cache_scope(
+            ATTENTION_DATASET, "ALL", start_date, end_date, snapshot=snap).path)
     print(f"[tpex] 真實處置期間 {len(disp)} 段 / {disp['stock_id'].nunique()} 檔"
           f"(存 {cache.name});注意事件 {len(att)} 筆")
     return disp

@@ -174,6 +174,66 @@ def rangeless_cache_scope(dataset: str, stock_id: str) -> CacheScope:
                       snapshot=_snapshot_tag(), range_tag="")
 
 
+def window_range_tag(start: str, end: str) -> str:
+    """呼叫端自己指定 [start, end] 的資料集用的範圍戳(`w{start}_{end}`)。
+
+    為什麼不共用 `range_tag()` 的「正規化天數」:那個戳只在「end = 快照日」時
+    唯一決定視窗;處置/注意這類全市場表是呼叫端直接給起訖日的(而且常常從
+    2021 年開始抓),天數戳無法表達。
+    """
+    s = str(pd.Timestamp(start).date())
+    e = str(pd.Timestamp(end).date())
+    if s > e:
+        raise ValueError(f"快取視窗顛倒:start={s} > end={e}")
+    return f"w{s}_{e}"
+
+
+def window_cache_scope(dataset: str, stock_id: str, start: str, end: str, *,
+                       snapshot: Optional[str] = None) -> CacheScope:
+    """視窗由呼叫端指定的全市場表(處置/注意…)的 scope。
+
+    2026-08-15 補的洞:P0-2 只把範圍推進 `data.fetch_*` 那一層,但
+    `twse_disposition` / `tpex_disposition` 自己拼 `disposition__ALL__{snap}.pkl`,
+    查詢範圍完全不進檔名。實測:先放一份只涵蓋 2026-05-01~05-10 的快取,再以
+    `load_disposition('2021-01-01', '2026-06-22', [])` 請求 5 年半 → 一次都沒有
+    重抓,直接回傳那 1 列,零警告。而這層資料決定回測的「處置期間禁新倉」,
+    拿到只涵蓋近期的表 = 更早的期間全部被當成沒被處置而放行進場。
+
+    檔名格式共用 `CacheScope`,不再讓每個模組自己拼字串 —— 這正是同一個 bug
+    能在 data.py 之外重演的結構原因。
+    """
+    return CacheScope(
+        dataset=dataset, stock_id=str(stock_id),
+        snapshot=(snapshot or _snapshot_tag()),
+        range_tag=window_range_tag(start, end),
+        start=str(pd.Timestamp(start).date()), end=str(pd.Timestamp(end).date()),
+    )
+
+
+def parse_window_scope(path) -> Optional[dict]:
+    """從 `window_cache_scope` 產生的檔名讀回 (dataset, stock_id, snapshot,
+    start, end);不是這個格式就回 None。
+
+    讀取端(例如 `execution.tradability`)必須能判斷「這份快取涵蓋哪一段」,
+    否則又會退回「有檔案就用」的舊行為。
+    """
+    name = Path(path).name
+    if not name.endswith(".pkl"):
+        return None
+    parts = name[:-4].split("__")
+    if len(parts) != 4 or not parts[3].startswith("w"):
+        return None
+    window = parts[3][1:].split("_")
+    if len(window) != 2:
+        return None
+    try:
+        start, end = (str(pd.Timestamp(w).date()) for w in window)
+    except Exception:
+        return None
+    return {"dataset": parts[0], "stock_id": parts[1], "snapshot": parts[2],
+            "start": start, "end": end, "path": Path(path)}
+
+
 def cache_glob(dataset: str, history_days: Optional[int] = None, *,
                default_attr: str = "HISTORY_DAYS") -> str:
     """掃某個 dataset 全部個股快取的 glob 字串（給直接讀 `_cache/` 的稽核腳本）。

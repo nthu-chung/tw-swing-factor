@@ -295,7 +295,8 @@ def formal_portfolio(signals: pd.DataFrame,
                      rebalance_phase: int = 0,
                      universe_provider=None,
                      evaluation_split_info=None,
-                     segment: Optional[str] = None) -> Dict[str, Any]:
+                     segment: Optional[str] = None,
+                     strategy_spec=None) -> Dict[str, Any]:
     """用**正式**事件驅動引擎跑這份 picks(取代自製 `run_portfolio` 出正式數字)。
 
     `start_date` / `end_date` 一律往下傳:只限制 picks 的日期範圍不夠,引擎的
@@ -306,6 +307,14 @@ def formal_portfolio(signals: pd.DataFrame,
     `_resolve_universe_source` 會把結果標成 `formal_evidence_eligible=False` 並附
     理由 —— 那是正確的標籤,不要為了讓它變 True 而亂傳 provider。要作正式證據請
     先改走 `universes.historical_pit_universe()` 建 panel。
+
+    `strategy_spec`:訊號規則(視窗/權重)的 provenance。external picks 路徑下
+    引擎不算 composite(`factor_weights_applied=False`),所以不傳這個參數時,
+    summary 裡**沒有任何欄位**描述產生這份 picks 的規則。實測過的後果:
+    `formal_portfolio(..., universe_provider=provider)` 會得到
+    `formal_evidence_eligible=True` 但 `params.strategy=None` —— 一份自稱可作正式
+    證據、卻不知道規則是什麼的績效。引擎現在會把這種結果降級,這個參數是把規則
+    補回去的地方(rotation 本身仍是 exploratory research,見模組 docstring)。
     """
     picks = formal_picks_by_date(signals)
     if not picks:
@@ -322,6 +331,7 @@ def formal_portfolio(signals: pd.DataFrame,
         universe_provider=universe_provider,
         evaluation_split_info=evaluation_split_info,
         segment=segment,
+        strategy_spec=strategy_spec,
     )
 
 
@@ -334,6 +344,7 @@ def formal_portfolio_sweep(signals: pd.DataFrame,
                            universe_provider=None,
                            evaluation_split_info=None,
                            segment: Optional[str] = None,
+                           strategy_spec=None,
                            single_phase_debug: bool = False) -> PhaseSweep:
     """跑滿所有等價再平衡相位的正式引擎版本(走 `evaluation.phases.sweep_phases`)。
 
@@ -350,6 +361,7 @@ def formal_portfolio_sweep(signals: pd.DataFrame,
             universe_provider=universe_provider,
             evaluation_split_info=evaluation_split_info,
             segment=segment,
+            strategy_spec=strategy_spec,
         )
         summary = result.get("summary") if isinstance(result, dict) else None
         if not summary:

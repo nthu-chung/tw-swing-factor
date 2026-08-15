@@ -278,5 +278,118 @@ class MigrateCacheRangeTest(unittest.TestCase):
         self.assertEqual(new.read_bytes(), b"placeholder")
 
 
+# ── 處置/注意快取:同一個 bug 的第二個現場 ────────────────────────────────
+class DispositionCacheRangeTest(unittest.TestCase):
+    """處置快取的 key 也必須含查詢範圍(P0-2 第二輪補)。
+
+    原 bug:P0-2 只修了 `data.py` 那一層,但 `twse_disposition` /
+    `tpex_disposition` 自己拼 `disposition__ALL__{snapshot}.pkl`,查詢範圍不進
+    檔名。實測:先放一份只涵蓋 2026-05-01~05-10 的快取,再以
+    `load_disposition('2021-01-01','2026-06-22', [])` 請求 5 年半 →
+    `fetch_notice_history` 一次都沒被呼叫(calls=[]),直接回傳那 1 列,零警告。
+    這層資料直接決定回測的「處置期間禁新倉」,拿到只涵蓋近期的表 = 更早的
+    期間全部被當成「沒被處置」而放行進場。
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cache = Path(tmp.name)
+        for p in (
+            mock.patch.object(config, "CACHE_DIR", self.cache),
+            mock.patch.object(config, "SNAPSHOT_END_DATE", SNAP),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
+    @staticmethod
+    def _disp(sid: str = "1234") -> pd.DataFrame:
+        return pd.DataFrame([{
+            "stock_id": sid,
+            "disp_start": pd.Timestamp("2026-05-04"),
+            "disp_end": pd.Timestamp("2026-05-08"),
+            "measure": "人工", "reason": "test", "source": "unit-test",
+        }])
+
+    def test_wider_request_does_not_hit_a_narrow_cache(self):
+        import twse_disposition
+
+        self._disp().to_pickle(
+            twse_disposition.cache_path("2026-05-01", "2026-05-10"))
+        calls = []
+
+        def _fetch(start, end):
+            calls.append((start, end))
+            return pd.DataFrame()          # 離線:當作抓不到,不打網路
+
+        with mock.patch.object(twse_disposition, "fetch_notice_history",
+                               side_effect=_fetch):
+            out = twse_disposition.load_disposition("2021-01-01", SNAP, [])
+        self.assertEqual(calls, [("2021-01-01", SNAP)],
+                         "更寬的請求必須 miss 並重抓,不得靜默回傳短範圍快取")
+        self.assertTrue(out.empty)
+
+    def test_same_range_hits_without_refetching(self):
+        import twse_disposition
+
+        self._disp().to_pickle(twse_disposition.cache_path("2021-01-01", SNAP))
+        with mock.patch.object(twse_disposition, "fetch_notice_history",
+                               side_effect=AssertionError("不該重抓")):
+            out = twse_disposition.load_disposition("2021-01-01", SNAP, [])
+        self.assertEqual(len(out), 1)
+
+    def test_tpex_cache_key_carries_the_range_too(self):
+        import tpex_disposition
+
+        self._disp().to_pickle(
+            tpex_disposition.cache_path("2026-05-01", "2026-05-10"))
+        calls = []
+        with mock.patch.object(tpex_disposition, "fetch_disposal_history",
+                               side_effect=lambda s, e: (calls.append((s, e))
+                                                         or pd.DataFrame())):
+            tpex_disposition.load_disposition("2021-01-01", SNAP)
+        self.assertEqual(calls, [("2021-01-01", SNAP)])
+
+    def test_backtest_consumer_refuses_a_cache_that_does_not_cover_the_window(self):
+        """回測讀處置快取時也要驗涵蓋範圍,不能「有檔案就用」。"""
+        import tpex_disposition
+        import twse_disposition
+        from execution import tradability
+
+        self._disp().to_pickle(
+            twse_disposition.cache_path("2026-05-01", "2026-05-10"))
+        self._disp().to_pickle(
+            tpex_disposition.cache_path("2026-05-01", "2026-05-10"))
+        days = pd.bdate_range("2021-01-04", "2026-05-10")
+        with mock.patch.object(config, "BT_MODEL_DISPOSITION", True):
+            with self.assertRaisesRegex(RuntimeError, "未涵蓋"):
+                tradability.load_disposition_days(days)
+
+    def test_backtest_consumer_uses_a_covering_cache(self):
+        import tpex_disposition
+        import twse_disposition
+        from execution import tradability
+
+        self._disp("1111").to_pickle(
+            twse_disposition.cache_path("2021-01-01", SNAP))
+        self._disp("2222").to_pickle(
+            tpex_disposition.cache_path("2021-01-01", SNAP))
+        days = pd.bdate_range("2026-05-01", "2026-05-12")
+        with mock.patch.object(config, "BT_MODEL_DISPOSITION", True):
+            out = tradability.load_disposition_days(days)
+        self.assertEqual(set(out), {"1111", "2222"})
+
+    def test_legacy_rangeless_disposition_cache_is_not_a_hit(self):
+        """舊格式(檔名不含範圍)不得被當成任意範圍的有效命中。"""
+        from execution import tradability
+
+        self._disp().to_pickle(self.cache / f"disposition__ALL__{SNAP}.pkl")
+        self._disp().to_pickle(self.cache / f"disposition_tpex__ALL__{SNAP}.pkl")
+        days = pd.bdate_range("2026-05-01", "2026-05-12")
+        with mock.patch.object(config, "BT_MODEL_DISPOSITION", True):
+            with self.assertRaisesRegex(RuntimeError, "舊格式"):
+                tradability.load_disposition_days(days)
+
+
 if __name__ == "__main__":
     unittest.main()

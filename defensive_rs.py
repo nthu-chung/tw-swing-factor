@@ -48,10 +48,23 @@ import backtest
 import evaluation_split
 
 
-PANEL_PATH = config.CACHE_DIR / (
-    f"audit_panel_dynamic_top100_candidate{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}.pkl"
-    if config.DYNAMIC_UNIVERSE_ENABLED else "audit_panel_static_top100.pkl"
-)
+def panel_path(top_n: int = 100):
+    """稽核 panel 的快取路徑(**含快照與歷史長度**)。
+
+    原 bug(2026-08-15 修):檔名是
+    `audit_panel_dynamic_top100_candidate{N}.pkl`,既沒有快照戳也沒有歷史長度
+    —— 而這份快取「不加 --rebuild 就預設重用」。換 `SNAPSHOT_END_DATE` 或
+    `HISTORY_DAYS` 之後重跑,拿到的是**上一個快照/上一個範圍**建出來的 panel,
+    數字看起來更新了但底層資料沒變。P0-2 在 `data.py` 立的規則(會影響內容的
+    查詢範圍必須進 key)對這種自己拼字串的衍生快取原本完全管不到。
+    """
+    mode = (f"dynamic_top{top_n}_candidate{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}"
+            if config.DYNAMIC_UNIVERSE_ENABLED else f"static_top{top_n}")
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    return config.CACHE_DIR / (
+        f"audit_panel_{mode}__{snap}__d{config.HISTORY_DAYS}.pkl")
+
+
 H = config.BT_IC_HORIZON
 MIN_CROSS = 5
 
@@ -66,9 +79,10 @@ FACTORS = {
 
 # ── Panel ───────────────────────────────────────────────────────────────
 def get_panel(rebuild: bool, top_n: int = 100) -> pd.DataFrame:
-    if not rebuild and PANEL_PATH.exists():
-        print(f"[def-rs] 重用 panel：{PANEL_PATH}")
-        panel = pickle.load(open(PANEL_PATH, "rb"))
+    path = panel_path(top_n)
+    if not rebuild and path.exists():
+        print(f"[def-rs] 重用 panel：{path}")
+        panel = pickle.load(open(path, "rb"))
     else:
         symbols = uni.get_research_candidates(universe_top_n=top_n)
         print(f"[def-rs] 建 panel：{len(symbols)} 檔 …")
@@ -83,7 +97,7 @@ def get_panel(rebuild: bool, top_n: int = 100) -> pd.DataFrame:
             members_only=True,
         )
         panel["industry"] = panel["stock_id"].map(uni.get_industry_map()).fillna("")
-        pickle.dump(panel, open(PANEL_PATH, "wb"))
+        pickle.dump(panel, open(path, "wb"))
     return panel.dropna(subset=["fwd_ret"]).reset_index(drop=True)
 
 

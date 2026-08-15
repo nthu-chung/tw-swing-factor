@@ -211,11 +211,32 @@ def disposition_day_set(disp_df: pd.DataFrame, trading_days) -> dict:
 
 
 # ── 快取包裝 ────────────────────────────────────────────────────────────
+DATASET = "disposition"
+NOTICE_DATASET = "notice"
+
+
+def cache_path(start_date: str, end_date: str):
+    """這份快取涵蓋 [start_date, end_date];範圍進檔名(見下方 bug 說明)。"""
+    import data
+
+    return data.window_cache_scope(DATASET, "ALL", start_date, end_date).path
+
+
 def load_disposition(start_date: str, end_date: str, trading_days,
                      refresh: bool = False) -> pd.DataFrame:
-    """抓注意→推導處置期間,快取(含快照戳)。回傳處置期間表。"""
+    """抓注意→推導處置期間,快取(含快照戳**與查詢範圍**)。回傳處置期間表。
+
+    原 bug(2026-08-15 修):快取檔名是 `disposition__ALL__{snapshot}.pkl`,
+    查詢範圍完全不在 key 裡。實測:先放一份只涵蓋 2026-05-01~05-10 的快取,
+    再以 `load_disposition('2021-01-01', '2026-06-22', [])` 請求 5 年半 →
+    `fetch_notice_history` 一次都沒被呼叫,直接回傳那 1 列,零警告。
+    這層資料決定回測的「處置期間禁新倉」(`execution.tradability`),
+    範圍不符的表 = 更早的期間全部被當成「沒被處置」而放行進場。
+    """
+    import data
+
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
-    cache = config.CACHE_DIR / f"disposition__ALL__{snap}.pkl"
+    cache = cache_path(start_date, end_date)
     if cache.exists() and not refresh:
         try:
             return pd.read_pickle(cache)
@@ -227,7 +248,8 @@ def load_disposition(start_date: str, end_date: str, trading_days,
         return pd.DataFrame()
     disp = build_disposition_periods(notice, trading_days)
     disp.to_pickle(cache)
-    notice.to_pickle(config.CACHE_DIR / f"notice__ALL__{snap}.pkl")
+    notice.to_pickle(data.window_cache_scope(
+        NOTICE_DATASET, "ALL", start_date, end_date, snapshot=snap).path)
     print(f"[disp] 注意事件 {len(notice)} 筆 → 推導處置期間 {len(disp)} 段(存 {cache.name})")
     return disp
 

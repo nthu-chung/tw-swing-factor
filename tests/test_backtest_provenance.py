@@ -170,6 +170,75 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         self.assertEqual(prov["candidate_pool_asof"], pools.pool_asof)
         self.assertEqual(prov["candidate_pool_top_n"], pools.pool_n)
 
+    def test_subset_of_two_pools_never_resolves_to_the_smaller_older_one(self):
+        """symbols 同時是小池與大池的子集時,不可回傳小池的 as_of。
+
+        原 bug(2026-08-15 修):比對迴圈由小到大找第一個 superset,理由寫成
+        「最小的 superset 就是實際用的那一份」—— 那只在 symbols 等於整份池
+        (頂多扣黑名單)時成立。實測 daily top3(as_of 2026-01-05)+ 真候選池
+        top5(as_of 2026-08-03)+ 快照 2026-03-31,傳兩者的共同子集會解析到
+        top3,summary 因此戳上一個看起來合規的日期,`future_pool_bypassed`
+        也跟著變成 False —— 未來池冒充乾淨池,只是換了觸發條件。
+        """
+        with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools:
+            prov = backtest._legacy_pool_provenance(
+                pools.ids[:2], dynamic_enabled=True,
+                universe_top_n=pools.daily_n)
+        self.assertEqual(prov["candidate_pool_resolved_by"],
+                         "expected_candidate_pool")
+        self.assertEqual(prov["candidate_pool_top_n"], pools.pool_n)
+        self.assertEqual(prov["candidate_pool_asof"], "2026-08-03")
+        self.assertNotEqual(prov["candidate_pool_asof"], pools.daily_asof)
+
+    def test_subset_still_triggers_future_pool_detection(self):
+        """接續上一條:戳對池之後,未來池偵測必須跟著成立。"""
+        with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools, \
+                _PanelEnv():
+            res = backtest.backtest_portfolio(
+                symbols=pools.ids[:2], sample=False, dynamic_enabled=True,
+                universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
+                static_universe_comparator=True)
+        u = res["summary"]["universe"]
+        self.assertTrue(u["future_pool_bypassed"])
+        self.assertFalse(u["formal_evidence_eligible"])
+
+    def test_expected_pool_asof_is_checked_even_when_unresolved(self):
+        """解析不到實際用的池,也不能讓未來池偵測整條失效。
+
+        `_future_pool_provenance` 原本只比對「解析出來的那份池」的 as_of ——
+        解析一歪(或解析不到)就等於沒有偵測。config 宣告的 expected 池永遠要
+        比對一次。
+        """
+        with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools, \
+                _PanelEnv():
+            res = backtest.backtest_portfolio(
+                symbols=["NOT_IN_ANY_POOL"], sample=False, dynamic_enabled=True,
+                universe_top_n=pools.daily_n, rebalance_every=5, top_n=1,
+                static_universe_comparator=True)
+        u = res["summary"]["universe"]
+        self.assertIsNone(u["candidate_pool_asof"])
+        self.assertTrue(u["future_pool_bypassed"])
+        self.assertEqual(u["future_pool_bypass_events"][0]["pool_asof"],
+                         "2026-08-03")
+
+    def test_ambiguous_resolution_reports_no_asof_and_downgrades(self):
+        """expected 池不涵蓋 symbols 時,別份池的 as_of 只是猜的 → 不給戳。"""
+        with _PoolFiles() as pools:
+            # config 宣告的候選池檔根本不存在 → 只能往其他池猜
+            with mock.patch.object(config, "DYNAMIC_UNIVERSE_CANDIDATE_POOL",
+                                   pools.pool_n + 4):
+                prov = backtest._legacy_pool_provenance(
+                    pools.ids[:2], dynamic_enabled=True,
+                    universe_top_n=pools.daily_n)
+        self.assertTrue(prov["candidate_pool_asof_ambiguous"])
+        self.assertIsNone(prov["candidate_pool_asof"])
+        self.assertEqual(prov["candidate_pool_asof_source"],
+                         "ambiguous_not_expected_pool")
+        meta = dict(prov, formal_evidence_eligible=True)
+        backtest._apply_pool_asof_downgrade(meta)
+        self.assertFalse(meta["formal_evidence_eligible"])
+        self.assertIn("無法確定", meta["evidence_note"])
+
     def test_unresolvable_pool_reports_none_not_a_plausible_date(self):
         """比對不到池檔時必須回 None,不可拿快照日或別份池頂替。
 

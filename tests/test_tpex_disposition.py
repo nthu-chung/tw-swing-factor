@@ -127,23 +127,56 @@ class BacktestMergeTest(unittest.TestCase):
         }])
 
     def test_merges_twse_and_tpex(self):
+        """兩市場的處置期間都要進禁倉集合。
+
+        2026-08-15 改寫過:舊版把 `Path.exists` 整個 patch 成 True、再用
+        `read_pickle` 的 side_effect 餵兩份資料 —— 那正好釘住了「有檔案就用」的
+        舊行為(讀取端不驗這份快取涵蓋哪一段)。處置快取的檔名改成帶查詢範圍
+        之後,那個 fixture 會讓載入端讀到「舊格式 → fail-closed」。這裡改成寫
+        兩份真的帶範圍戳的快取檔,斷言的行為(合併兩市場)完全沒有放鬆。
+        """
+        import tempfile
+        from pathlib import Path
+
         import backtest
+        import tpex_disposition
+        import twse_disposition
+
         days = pd.date_range("2026-04-13", "2026-05-01", freq="B")
-        tw = self._disp_frame("2330", "2026-04-15", "2026-04-20")
-        tpx = self._disp_frame("6182", "2026-04-22", "2026-04-28")
-
-        def fake_exists(self):
-            return True
-
-        with (
-            mock.patch.object(backtest.config, "BT_MODEL_DISPOSITION", True),
-            mock.patch.object(type(backtest.config.CACHE_DIR / "x"), "exists", fake_exists),
-            mock.patch.object(backtest.pd, "read_pickle", side_effect=[tw, tpx]),
-        ):
-            out = backtest._load_disposition_days(days)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(backtest.config, "CACHE_DIR", Path(tmp)),
+                mock.patch.object(backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
+                mock.patch.object(backtest.config, "BT_MODEL_DISPOSITION", True),
+            ):
+                self._disp_frame("2330", "2026-04-15", "2026-04-20").to_pickle(
+                    twse_disposition.cache_path("2026-01-01", "2026-06-22"))
+                self._disp_frame("6182", "2026-04-22", "2026-04-28").to_pickle(
+                    tpex_disposition.cache_path("2026-01-01", "2026-06-22"))
+                out = backtest._load_disposition_days(days)
         self.assertIn("2330", out)
         self.assertIn("6182", out)
         self.assertIn(pd.Timestamp("2026-04-24"), out["6182"])
+
+    def test_single_market_cache_still_fails_closed(self):
+        """單邊缺檔仍要出聲(舊版註解宣稱的行為,補上實際斷言)。"""
+        import tempfile
+        from pathlib import Path
+
+        import backtest
+        import twse_disposition
+
+        days = pd.date_range("2026-04-13", "2026-05-01", freq="B")
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(backtest.config, "CACHE_DIR", Path(tmp)),
+                mock.patch.object(backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
+                mock.patch.object(backtest.config, "BT_MODEL_DISPOSITION", True),
+            ):
+                self._disp_frame("2330", "2026-04-15", "2026-04-20").to_pickle(
+                    twse_disposition.cache_path("2026-01-01", "2026-06-22"))
+                with self.assertRaisesRegex(RuntimeError, "半套市場"):
+                    backtest._load_disposition_days(days)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Mapping, Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -207,9 +207,12 @@ def _resolve_universe_source(symbols: Optional[List[str]], *,
     回傳 `(symbols, universe_provider, provenance)`;`provenance` 會併進
     `summary["universe"]`,讓「這段績效能不能當正式證據」寫在結果裡而不是靠記憶。
 
-    `external_picks=True`(呼叫端自帶 picks_by_date)時引擎不建候選池,無法驗證
-    PIT,所以不 raise,但一律標 `formal_evidence_eligible=False`(除非同時傳了
-    provider),避免外部 picks 冒充 PIT 正式證據。
+    `external_picks=True`(呼叫端自帶 picks_by_date)時引擎不建候選池,所以不
+    raise,但一律標 `formal_evidence_eligible=False`。同時傳了 provider 時,這裡
+    給的 PIT 標籤只是**待驗**的:真正的驗證在 `backtest_portfolio` 的
+    `_verify_external_picks_are_pit`(逐日比對候選遮罩)與 `strategy_spec` 閘門,
+    兩者都可能把這組樂觀標籤蓋回 False。這裡不驗是因為此時還沒有 picks 與
+    評估窗;但**不可以**把「有 provider 物件」直接當成驗過了。
     """
     if universe_provider is not None and static_universe_comparator:
         raise ValueError(
@@ -290,6 +293,101 @@ def _resolve_universe_source(symbols: Optional[List[str]], *,
     }
 
 
+def _downgrade_formal_evidence(universe_meta: Dict[str, Any], reason: str) -> None:
+    """就地降級 `formal_evidence_eligible`,理由**累加**進 `evidence_note`。
+
+    降級理由只能加不能蓋:同一段績效可能同時踩到未來池、非 PIT picks、缺策略
+    規格,只留最後一條會讓 summary 讀起來像只有一個問題。
+    """
+    universe_meta["formal_evidence_eligible"] = False
+    note = str(universe_meta.get("evidence_note") or "").strip()
+    universe_meta["evidence_note"] = f"{note}｜{reason}" if note else reason
+
+
+def _verify_external_picks_are_pit(picks_by_date: Dict, universe_provider, *,
+                                   dates_in_scope, caller: str) -> Dict[str, Any]:
+    """external picks 必須逐日落在 provider 的候選遮罩內,才算 PIT 候選池。
+
+    原 bug(2026-08-15 修):`_resolve_universe_source` 只要「傳了 provider 物件」
+    就蓋上 `candidate_pool_pit=True` / `formal_evidence_eligible=True`,而
+    `candidate_mask()` 只在 `_prepare_panel` 裡被呼叫 —— external picks 分支
+    (S19 唯一實際走的路徑)一次都不驗。唯一的檢查是 `symbols ⊆ all_symbols`,
+    那是**跨全期的聯集**,不是逐月 PIT 成員。實測:provider 的 2 月池=[A]、
+    3 月池=[B],傳 `symbols=['A']` + 全部落在三月的 'A' picks(A 在三月池外),
+    summary 仍得到 `candidate_pool_pit=True`、`formal_evidence_eligible=True`、
+    `candidate_pool_asof='2026-03-31'`。P0-3 想根除的「閘門靠呼叫端記得傳對參數」
+    因此原封復發,只是從『傳 symbols 就退回靜態池』變成『傳 provider 就蓋 PIT 章』。
+
+    回傳要蓋在 `summary["universe"]` 上的欄位:
+      - 全部 picks 都在當日候選池內 → 空 dict(維持 provider 給的 PIT 標籤)。
+      - provider 對某些日期沒有池(例如早於 PIT 歷史起點)→ 不 raise,但把
+        `candidate_pool_pit` 降為 False 並寫理由(不知道就說不知道)。
+      - 有 pick 落在當日候選池外 → fail-closed raise。
+    """
+    scope = None if dates_in_scope is None else set(dates_in_scope)
+    rows = [(d, str(sid))
+            for d, picks in (picks_by_date or {}).items()
+            if scope is None or d in scope
+            for sid, *_rest in (picks or ())]
+    if not rows:
+        # 評估窗內一筆 picks 都沒用到 → 什麼都沒驗過,不能沿用樂觀標籤。
+        return {
+            "candidate_pool_pit": False,
+            "candidate_pool_pit_verified": False,
+            "formal_evidence_eligible": False,
+            "evidence_note": (
+                f"{caller}:評估窗內沒有任何 picks,候選池的 PIT 未被驗證"),
+        }
+
+    mask_fn = getattr(universe_provider, "candidate_mask", None)
+    if mask_fn is None:
+        return {
+            "candidate_pool_pit": False,
+            "candidate_pool_pit_verified": False,
+            "formal_evidence_eligible": False,
+            "evidence_note": (
+                f"{caller}:universe_provider 沒有 candidate_mask(),"
+                "無法逐日驗證 external picks 是否為 PIT 候選"),
+        }
+
+    frame = pd.DataFrame(rows, columns=["date", "stock_id"])
+    mask = np.asarray(mask_fn(frame)).astype(bool)
+
+    # 「當日根本沒有池」與「pick 不在池裡」在遮罩上都是 False,必須分開處理:
+    # 前者是引擎不知道(降級),後者是候選池被違反(raise)。
+    members_on = getattr(universe_provider, "members_on", None)
+    uncovered = set()
+    if members_on is not None:
+        for day in frame["date"].unique():
+            if not list(members_on(day)):
+                uncovered.add(day)
+    outside = frame[~mask]
+    violations = outside[~outside["date"].isin(uncovered)]
+    if not violations.empty:
+        sample_rows = [
+            f"{str(pd.Timestamp(d).date())}/{s}"
+            for d, s in violations.head(3).itertuples(index=False)
+        ]
+        raise ValueError(
+            f"[fail-closed] {caller}:picks_by_date 有 {len(violations)} 筆"
+            f"(共 {violations['stock_id'].nunique()} 檔)落在當日 PIT 候選池外"
+            f"(例:{sample_rows})→ 候選池已不是由 PIT 規則決定,"
+            "拒絕在 summary 蓋上 candidate_pool_pit=True。"
+        )
+    if uncovered:
+        days = sorted(str(pd.Timestamp(d).date()) for d in uncovered)
+        return {
+            "candidate_pool_pit": False,
+            "candidate_pool_pit_verified": False,
+            "formal_evidence_eligible": False,
+            "evidence_note": (
+                f"{caller}:有 {len(days)} 個訊號日(例 {days[:3]})落在 PIT "
+                "候選池的生效範圍外,引擎無法驗證這些日子的 picks 是否 PIT"),
+        }
+    return {"candidate_pool_pit_verified": True,
+            "candidate_pool_picks_checked": int(len(frame))}
+
+
 # ── 候選池 provenance:pool as-of 必須來自「真的被用到的那份池」────────────
 _POOL_FILE_RE = re.compile(r"^universe_top(\d+)\.json$")
 
@@ -325,44 +423,83 @@ def _legacy_pool_provenance(symbols: Optional[List[str]], *,
     只有當 symbols 是某份池的子集(子集是正當的:資料品質黑名單會扣掉幾檔)才
     採用該檔的 as_of。比對不到就誠實回報 `candidate_pool_asof=None`,不拿快照日
     或別份池的日期頂替 —— 頂替出來的戳只會讓人誤以為 PIT 已被驗證過。
+
+    第二個 bug(2026-08-15 同日修):第一版的比對迴圈是
+    `for n in sorted({expected, *_available_pool_sizes()})`,由**小到大**找第一個
+    superset,理由寫成「最小的 superset 就是實際用的那一份」。那個推論只在
+    `symbols == 整份池`(頂多扣黑名單)時成立;對手挑清單或縮小樣本一律不成立。
+    實測:daily top3(as_of 2026-01-05)、真候選池 top5(as_of 2026-08-03)、快照
+    2026-03-31,傳 `symbols=ids[:2]`(兩份池的共同子集)會解析到 top3,summary 戳
+    上一個 <= 快照的**看起來合規**的日期,`future_pool_bypassed` 連帶變成 False
+    —— 也就是同一類錯(未來池冒充乾淨池)只是換了觸發條件。
+
+    所以順序改成:**先試 `expected`**(config 宣告的候選池,唯一有理由相信的那
+    一份);只有 expected 不涵蓋時才往其他池找,而且此時解析結果本身就是猜的
+    → `candidate_pool_asof` 回 None、標 `candidate_pool_asof_ambiguous=True` 並
+    降級。所有被考慮過的池的 as_of 都記進 `candidate_pool_asof_candidates`,
+    未來池偵測會逐一比對(解析歪掉不該讓偵測整條失效)。
     """
     expected = int(
         getattr(config, "DYNAMIC_UNIVERSE_CANDIDATE_POOL", universe_top_n)
         if dynamic_enabled else universe_top_n
     )
     wanted = set(symbols or ())
+    import build_universe as _bu
+
+    def _ids(n: int) -> Optional[set]:
+        """某份池檔的成員;檔案壞掉/不存在就當作沒有(不放棄整個比對)。"""
+        try:
+            ids = set(_bu.load(n))
+        except Exception:
+            return None
+        return ids or None
+
+    def _asof_of(n: int) -> Optional[str]:
+        try:
+            return _bu.load_asof(n)
+        except Exception:
+            return None
+
     resolved: Optional[int] = None
     resolved_by = "unresolved"
-    import build_universe as _bu
+    ambiguous = False
+    # 被考慮過的池的 as_of:未來池偵測要用(即使解析失敗也要能比對到快照)。
+    candidates: Dict[str, Any] = {}
+    expected_ids = _ids(expected)
+    if expected_ids is not None:
+        candidates[str(expected)] = _asof_of(expected)
     if wanted:
-        # 由小到大找「第一個完全涵蓋 symbols 的池」:候選池只會被縮小
-        # (黑名單),不會被擴大,所以最小的 superset 就是實際用的那一份。
-        # 單一檔案壞掉(手改過、格式舊)只跳過那一份,不放棄整個比對。
-        for n in sorted({expected, *_available_pool_sizes()}):
-            try:
-                ids = set(_bu.load(n))
-            except Exception:
-                continue
-            if ids and wanted <= ids:
-                resolved = n
-                resolved_by = ("expected_candidate_pool" if n == expected
-                               else "symbol_set_match")
-                break
+        if expected_ids is not None and wanted <= expected_ids:
+            resolved, resolved_by = expected, "expected_candidate_pool"
+        else:
+            # expected 不涵蓋 → 只能猜。由小到大取第一個 superset,但這個結果
+            # 不足以支撐一個 as_of 戳(見上面第二個 bug)。
+            for n in sorted(set(_available_pool_sizes()) - {expected}):
+                ids = _ids(n)
+                if ids is None:
+                    continue
+                if wanted <= ids:
+                    candidates[str(n)] = _asof_of(n)
+                    if resolved is None:
+                        resolved, resolved_by = n, "symbol_subset_of_other_pool"
+                        ambiguous = True
 
-    asof: Optional[str] = None
-    if resolved is not None:
-        try:
-            asof = _bu.load_asof(resolved)
-        except Exception:
-            asof = None
+    asof = None if (resolved is None or ambiguous) else _asof_of(resolved)
+    if asof:
+        asof_source = f"universe_top{resolved}.json"
+    elif ambiguous:
+        asof_source = "ambiguous_not_expected_pool"
+    else:
+        asof_source = "unresolved"
     return {
         "candidate_pool_top_n": resolved,
         "candidate_pool_file": (None if resolved is None
                                 else f"outputs/universe_top{resolved}.json"),
         "candidate_pool_asof": asof,
-        "candidate_pool_asof_source": (
-            f"universe_top{resolved}.json" if asof else "unresolved"),
+        "candidate_pool_asof_source": asof_source,
         "candidate_pool_resolved_by": resolved_by,
+        "candidate_pool_asof_ambiguous": ambiguous,
+        "candidate_pool_asof_candidates": candidates,
         "candidate_pool_expected_top_n": expected,
         # 每日 dynamic universe 的 top-N 跟候選池是兩件事,分開記,不再混用。
         "dynamic_universe_top_n": int(universe_top_n),
@@ -370,28 +507,39 @@ def _legacy_pool_provenance(symbols: Optional[List[str]], *,
 
 
 def _future_pool_provenance(pool_asof: Optional[str], snapshot: str, *,
-                            pool_top_n: Optional[int] = None) -> Dict[str, Any]:
+                            pool_top_n: Optional[int] = None,
+                            other_pool_asofs: Optional[Mapping[str, Any]] = None
+                            ) -> Dict[str, Any]:
     """未來池逃生門(`SWING_ALLOW_FUTURE_POOL`)的 summary 欄位。
 
     原 bug:那道逃生門只 print 一行就放行,summary 沒有任何欄位 —— 對比價格
     逃生門至少有 `data.integrity_bypassed`。結果存進 `outputs/` 之後,含選股前視
     的績效跟乾淨績效長得一模一樣。
 
-    兩個來源都算數:
+    三個來源都算數:
       1. `universe._assert_universe_pit` 放行時記下的事件(呼叫端載入池時觸發);
       2. 引擎自己比對「實際用到的池檔 as_of」與資料快照 —— 有些路徑直接傳
-         `symbols=` 進來,根本沒經過 `get_universe`,那道檢查一次都不會跑。
+         `symbols=` 進來,根本沒經過 `get_universe`,那道檢查一次都不會跑;
+      3. `other_pool_asofs`:所有**可能**被用到的池檔(尤其 config 宣告的
+         expected 池)。2026-08-15 補:第 2 項綁在「解析出來的那份池」上,
+         所以解析一歪(symbols 剛好是另一份較舊的池的子集),整條未來池偵測
+         就跟著失效 —— 偵測不該依賴一個本來就可能猜錯的解析結果。
     """
     events = [dict(e) for e in uni.future_pool_bypass_log()]
-    if snapshot and pool_asof and str(pool_asof) > str(snapshot):
-        already = any(str(e.get("pool_asof")) == str(pool_asof) for e in events)
-        if not already:
-            events.append({
-                "pool_top_n": pool_top_n,
-                "pool_asof": str(pool_asof),
-                "snapshot_end": str(snapshot),
-                "detected_by": "backtest_summary",
-            })
+    checks = [(pool_top_n, pool_asof)]
+    for n, other in (other_pool_asofs or {}).items():
+        checks.append((n, other))
+    for n, asof in checks:
+        if not (snapshot and asof and str(asof) > str(snapshot)):
+            continue
+        if any(str(e.get("pool_asof")) == str(asof) for e in events):
+            continue
+        events.append({
+            "pool_top_n": (None if n is None else int(n)),
+            "pool_asof": str(asof),
+            "snapshot_end": str(snapshot),
+            "detected_by": "backtest_summary",
+        })
     return {
         "future_pool_bypass_allowed": bool(getattr(config, "ALLOW_FUTURE_POOL", False)),
         "future_pool_bypassed": bool(events),
@@ -403,11 +551,23 @@ def _apply_future_pool_downgrade(universe_meta: Dict[str, Any]) -> None:
     """用了未來池就不可能是正式證據 —— 就地降級,理由寫進 `evidence_note`。"""
     if not universe_meta.get("future_pool_bypassed"):
         return
-    universe_meta["formal_evidence_eligible"] = False
-    note = str(universe_meta.get("evidence_note") or "").strip()
-    extra = ("候選池建構日晚於資料快照(未來池 look-ahead),"
-             "含選股前視,不可作正式證據")
-    universe_meta["evidence_note"] = f"{note}｜{extra}" if note else extra
+    _downgrade_formal_evidence(
+        universe_meta,
+        "候選池建構日晚於資料快照(未來池 look-ahead),含選股前視,不可作正式證據")
+
+
+def _apply_pool_asof_downgrade(universe_meta: Dict[str, Any]) -> None:
+    """解析不出「實際用的是哪一份候選池」時降級。
+
+    不知道池是哪一份 = 不知道它的建構日 = 無法排除未來池 look-ahead。這種
+    情況下給正式證據等於用「猜對了」當前提。
+    """
+    if not universe_meta.get("candidate_pool_asof_ambiguous"):
+        return
+    _downgrade_formal_evidence(
+        universe_meta,
+        "symbols 同時是多份候選池檔的子集,無法確定實際用的是哪一份"
+        "(as_of 未知,無法排除未來池)")
 
 
 def _evaluation_provenance(split_info, segment: Optional[str]) -> Dict[str, Any]:
@@ -594,10 +754,13 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
             universe_top_n=universe_top_n))
     universe_meta.update(_future_pool_provenance(
         universe_meta.get("candidate_pool_asof"), _asof,
-        pool_top_n=universe_meta.get("candidate_pool_top_n")))
+        pool_top_n=universe_meta.get("candidate_pool_top_n"),
+        # 解析歪掉時仍要比對得到 expected 池的 as_of(見該函式第 3 點)。
+        other_pool_asofs=universe_meta.get("candidate_pool_asof_candidates")))
     # provenance 最後蓋上:誠實標籤不可被 provider metadata 或舊欄位覆寫。
     universe_meta.update(universe_provenance)
     _apply_future_pool_downgrade(universe_meta)
+    _apply_pool_asof_downgrade(universe_meta)
     if dynamic_enabled:
         ranked = dynamic_universe.add_membership(
             panel,
@@ -899,6 +1062,19 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             universe_info.get("candidate_pool_asof"), _asof,
             pool_top_n=universe_info.get("candidate_pool_top_n")))
         universe_info.update(universe_provenance)
+        # PIT 章不是「有 provider 物件」就能蓋:picks 必須逐日落在候選遮罩內。
+        # 這一步排在 `universe_provenance` 之後,因為它蓋掉的正是那組樂觀標籤。
+        if universe_provider is not None:
+            universe_info.update(_verify_external_picks_are_pit(
+                picks_by_date, universe_provider,
+                dates_in_scope=all_dates, caller="backtest_portfolio"))
+        # 候選池是 PIT 還不夠:picks 背後的訊號規則若沒有 provenance,這份績效
+        # 一樣無法被重現或被稽核(見下方 `strategy_spec` 的說明)。
+        if universe_info.get("formal_evidence_eligible") and strategy_spec is None:
+            _downgrade_formal_evidence(
+                universe_info,
+                "picks 由呼叫端產生但未附 StrategySpec:訊號規則(視窗/權重)"
+                "在 summary 裡沒有任何 provenance,不可作正式證據")
         _apply_future_pool_downgrade(universe_info)
     else:
         universe_info = panel.attrs.get("universe", {

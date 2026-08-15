@@ -45,12 +45,24 @@ MIN_CROSS = 5  # 每日橫斷面至少 N 檔才算一個有效的橫斷面 IC
 # ──────────────────────────────────────────────────────────────────────
 # Panel 建立 / 快取
 # ──────────────────────────────────────────────────────────────────────
-def build_panel(top_n: int, reuse: bool) -> pd.DataFrame:
+def panel_cache_path(top_n: int):
+    """稽核 panel 的快取路徑(**含快照與歷史長度**)。
+
+    原 bug(2026-08-15 修):檔名只有 `audit_panel_{mode}.pkl`,而 `--reuse` 就
+    直接吃它。換 `SNAPSHOT_END_DATE` 或 `HISTORY_DAYS` 後重跑會靜默重用上一個
+    範圍建出來的 panel —— 與 P0-2 在 `data.py` 立的規則相同的洞,只是發生在
+    自己拼字串的衍生快取上。
+    """
     mode = (
         f"dynamic_top{top_n}_candidate{config.DYNAMIC_UNIVERSE_CANDIDATE_POOL}"
         if config.DYNAMIC_UNIVERSE_ENABLED else f"static_top{top_n}"
     )
-    cache_path = config.CACHE_DIR / f"audit_panel_{mode}.pkl"
+    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    return config.CACHE_DIR / f"audit_panel_{mode}__{snap}__d{config.HISTORY_DAYS}.pkl"
+
+
+def build_panel(top_n: int, reuse: bool) -> pd.DataFrame:
+    cache_path = panel_cache_path(top_n)
     if reuse and cache_path.exists():
         print(f"[audit] 重用 panel：{cache_path}")
         return pickle.load(open(cache_path, "rb"))

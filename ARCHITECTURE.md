@@ -24,13 +24,13 @@
 
 | # | 不變式 | 強制點 | 沒有它會怎樣 |
 |---|---|---|---|
-| 1 | **候選池只用完整的上一曆月** | `universes/monthly_pit.py`（`candidate_rule=month_M_uses_only_calendar_month_M_minus_1`）；逐日快照缺任何平日即 fail-closed。入口為 `universes.historical_pit_universe()`，引擎邊界 `backtest._resolve_universe_source` 在 dynamic 正式歷史回測沒有 provider 時 raise（不再從 `symbols is None` 推測意圖）；legacy 單日池要顯式 `static_universe_comparator=True`，結果標 `formal_evidence_eligible=False` | 當月行情或今天的熱門名單回頭改寫歷史成員；實測舊條件因為每個入口都會傳 `symbols=` 而從未觸發，預設其實是單日排名池回套歷史 |
+| 1 | **候選池只用完整的上一曆月** | `universes/monthly_pit.py`（`candidate_rule=month_M_uses_only_calendar_month_M_minus_1`）；逐日快照缺任何平日即 fail-closed。入口為 `universes.historical_pit_universe()`，引擎邊界 `backtest._resolve_universe_source` 在 dynamic 正式歷史回測沒有 provider 時 raise（不再從 `symbols is None` 推測意圖）；legacy 單日池要顯式 `static_universe_comparator=True`，結果標 `formal_evidence_eligible=False`。**external picks（S19 實際走的路徑）另有兩道結果層驗證**：`_verify_external_picks_are_pit()` 把 `picks_by_date` 攤平後逐列比對 `provider.candidate_mask()`，有 pick 落在當日候選池外就 raise、provider 沒涵蓋該日就把 `candidate_pool_pit` 降為 False；沒附 `strategy_spec` 時強制 `formal_evidence_eligible=False`（訊號規則無 provenance） | 當月行情或今天的熱門名單回頭改寫歷史成員；實測舊條件因為每個入口都會傳 `symbols=` 而從未觸發，預設其實是單日排名池回套歷史。第二次破口同型：只要「傳了 provider 物件」就蓋 PIT 章，而唯一的檢查 `symbols ⊆ all_symbols` 是**跨全期聯集**——實測三月只買二月才在池裡的股票，summary 仍是 `candidate_pool_pit=True` 且 `formal_evidence_eligible=True` |
 | 2 | **每日 universe 只用截至訊號日的資料** | `dynamic_universe.add_membership`（ADV20 rolling 含當日、不含未來） | 成員資格偷看未來 |
 | 3 | **因子在稠密 panel 上算** | 公開入口 `backtest.build_research_panel()`（**預設稠密**；`members_only=True` 只給純橫斷面統計，要顯式指定）。`_prepare_panel` 降為引擎內部函式並在 `panel.attrs["panel_density"]` 戳稠密度；`factor_engine/panel_density.py` 提供 `require_dense()`，`PanelOps` 的 `ts_*` 在 `members_only` panel 上 fail-closed raise（`cs_*`／`group_*` 照常放行）。成員過濾延到選股階段套 `in_dynamic_universe`；`strategies/` 禁止直接用 `_prepare_panel`（`tests/test_dense_panel_factors.py` 以 AST 掃描釘住） | `ts_` 的「20 列」橫跨 60+ 個日曆日，算子全面失真。實測 `rotation_research` 用預設稀疏 panel 算 `breakout_20`／`breakout_volume_ratio`／`positive_day_share_20`：突破訊號翻轉約 3%、命中率相對灌水約 +9.6%，而這三欄直接決定 `rotation_breakout` 的 eligible 與 `signal_score` |
 | 4 | **field / operator 分界：有視窗才是 operator** | `factor_engine/data_fields.py` vs `factor_engine/operators.py` | 視窗長度被寫死，搜尋空間只涵蓋教科書版本 |
 | 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
-| 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op |
+| 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss。視窗由呼叫端指定的全市場表（處置／注意）用 `data.window_cache_scope()`（戳 `w{start}_{end}`）；讀取端 `execution.tradability` 必須自己確認快取涵蓋回測區間，涵蓋不到就當缺資料 fail-closed。衍生的稽核 panel 快取（`factor_audit.panel_cache_path` / `defensive_rs.panel_path`）檔名帶快照與 `HISTORY_DAYS` | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op。同一個洞在 `data.py` 之外重演過一次：處置快取只以快照為 key，先放一份只涵蓋 2026-05-01~05-10 的檔，再請求 2021-01-01~2026-06-22 會零重抓直接回傳那一列——而這層資料決定「處置期間禁新倉」，等於把更早期間全部當成沒被處置而放行進場 |
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
@@ -43,7 +43,10 @@
 慣例翻成正值時直接 raise，因為那會變成回報最好的相位。單相位只能 debug：
 `single_phase_debug` 由呼叫端的**意圖**決定並標進 summary（舊版 `forward_test`
 用 `len(df) == 1` 反推，把「20 相位只有 1 個有結果」誤標成 debug、也會把再平衡
-天數為 1 的正式全相位掃描誤標），forward 收到 debug 掃描一律 raise。引擎另有
+天數為 1 的正式全相位掃描誤標），forward 收到 debug 掃描一律 raise。forward 另外
+在**結果層面**比對相位數：`sweep.n_phases_full` 必須等於凍結的 `rebalance_days`
+且 `sweep.full_sweep` 為 True，否則 raise——否則「掃滿」只是策略模組的自律
+（實測把 `evaluate_sweep` 換成只掃 3 個相位，forward 會完整跑完並寫出 payload）。引擎另有
 `summary["eval_audit"]` 稽核評估窗上界，`days_beyond_last_pick` 必須為 0，
 否則 IS 會借用 OS 的績效。
 
@@ -206,8 +209,14 @@ owner decision 而非失敗，稽核腳本不代替決定。
 2. 將其餘資料來源與快照搬到 `market_data/`；月頻 PIT provider 已先搬到
    `universes/`，舊的抓取／解析函式暫留 `pit_universe.py` 作相容層。搬遷時
    `data.CacheScope` 是快取檔名的唯一推導點——研究腳本要路徑請用
-   `data.cache_scope()` / `data.cache_glob()`，不要自己拼字串（自己拼就是
-   不變式 7 的下一次破口；舊快取加範圍戳用 `migrate_cache_range.py --apply`）。
+   `data.cache_scope()` / `data.cache_glob()`，視窗自己指定的全市場表用
+   `data.window_cache_scope()` / `data.parse_window_scope()`，不要自己拼字串
+   （自己拼就是不變式 7 的下一次破口，處置快取已經因此重演過一次；舊快取加
+   範圍戳用 `migrate_cache_range.py --apply`，處置／注意快取不在遷移範圍內，
+   舊檔一律視為 miss，請重跑 `twse_disposition.py` / `tpex_disposition.py`）。
+   仍不帶範圍維度但**結構上安全**的兩處：`price_adjust.divresult__{sid}__{snap}`
+   （查詢窗固定 `2000-01-01`~snapshot，snapshot 已在 key 裡）與
+   `pit_universe.pitsnap__{YYYYMMDD}`（檔名本身就是那一天）。
 3. 把 `backtest.py` 拆成 `backtesting/engine.py`、`portfolio/` 與 `execution/`。
    在成交紀錄 parity 測試通過前，根目錄引擎仍是唯一正式入口。
 4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略台帳，不因整理資料夾而

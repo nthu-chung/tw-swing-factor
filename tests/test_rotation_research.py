@@ -158,6 +158,32 @@ class FormalPortfolioTest(unittest.TestCase):
                 start_date="2026-03-01", end_date="2026-04-30")
         legacy.assert_not_called()
 
+    def test_strategy_spec_is_forwarded_to_the_engine(self):
+        """訊號規則的 provenance 必須有路徑傳到 summary。
+
+        原 bug:`strategy_spec` 只存在於 `backtest_portfolio` 的簽章,rotation 的
+        正式入口根本沒有這個參數 —— 於是「傳了 PIT provider 的 rotation 正式
+        績效」在 summary 裡是 `formal_evidence_eligible=True` 配
+        `params.strategy=None`(引擎 external picks 路徑也不算 factor weights),
+        沒有任何欄位描述產生它的規則。
+        """
+        spec = {"name": "rotation_probe", "signal": {"window": 20}}
+        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+                               side_effect=_fake_summary) as engine:
+            rotation_research.formal_portfolio(
+                _signals(), ["1001"],
+                start_date="2026-03-01", end_date="2026-04-30",
+                strategy_spec=spec)
+        self.assertIs(engine.call_args.kwargs["strategy_spec"], spec)
+
+        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+                               side_effect=_fake_summary) as engine:
+            rotation_research.formal_portfolio_sweep(
+                _signals(), ["1001"],
+                start_date="2026-03-01", end_date="2026-04-30",
+                rebalance_every=1, strategy_spec=spec)
+        self.assertIs(engine.call_args.kwargs["strategy_spec"], spec)
+
     def test_no_picks_means_no_engine_call(self):
         empty = pd.DataFrame(columns=["date", "stock_id", "signal_score", "name"])
         with mock.patch.object(rotation_research.backtest, "backtest_portfolio",

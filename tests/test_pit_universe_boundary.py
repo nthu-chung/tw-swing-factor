@@ -21,7 +21,11 @@ import pandas as pd
 
 import backtest
 import config
+from strategies import s19_chip_momentum as _s19
 from universes import MonthlyPITUniverseProvider, historical_pit_universe
+
+# 只當「訊號規則 provenance 有沒有跟著績效走」的樣本,不代表任何策略績效。
+_SPEC = _s19.SPEC
 
 
 # ── 測試用的離線 PIT provider ──────────────────────────────────────────────
@@ -300,6 +304,97 @@ class ExternalPicksProvenanceTest(unittest.TestCase):
         u = res["summary"]["universe"]
         self.assertFalse(u["candidate_pool_pit"])
         self.assertFalse(u["formal_evidence_eligible"])
+
+
+class ExternalPicksMustRespectTheCandidateMaskTest(unittest.TestCase):
+    """external picks 的 PIT 章必須逐日驗過,不是「有 provider 物件」就蓋。
+
+    原 bug(2026-08-15 修):`candidate_mask()` 只在 `_prepare_panel` 被呼叫,
+    external picks 分支(S19 唯一實際走的路徑)一次都不驗;`_resolve_universe_source`
+    只要 provider 不是 None 就回傳 `candidate_pool_pit=True` /
+    `formal_evidence_eligible=True`。唯一的檢查是 `symbols ⊆ all_symbols`,而那是
+    **跨全期的聯集**,不是逐月 PIT 成員 —— 於是「三月只買二月才在池裡的股票」
+    也能拿到 PIT 章與 `candidate_pool_asof`。
+    """
+
+    def test_picks_outside_the_monthly_pool_fail_closed(self):
+        provider = _provider(top_n=1)          # 2 月池=[A]、3 月池=[B]
+        dates = pd.bdate_range("2026-03-02", "2026-03-20")
+        picks = {d: [("A", 80.0, "A")] for d in dates}   # A 在三月池外
+        with _PanelEnv():
+            with self.assertRaisesRegex(ValueError, "PIT 候選池外"):
+                backtest.backtest_portfolio(
+                    symbols=["A"], sample=False, dynamic_enabled=True,
+                    rebalance_every=5, top_n=1, picks_by_date=picks,
+                    universe_provider=provider,
+                )
+
+    def test_dates_outside_pool_coverage_cannot_claim_pit(self):
+        """provider 對該日期沒有池(早於 PIT 生效範圍)→ 不 raise,但降級。
+
+        「引擎不知道」和「候選池被違反」是兩件事,遮罩上都是 False,不能混為一談。
+        """
+        provider = _provider(top_n=2)
+        dates = pd.bdate_range("2026-01-05", "2026-01-20")   # 2 月才有第一份池
+        picks = {d: [("A", 80.0, "A")] for d in dates}
+        with _PanelEnv():
+            res = backtest.backtest_portfolio(
+                symbols=["A"], sample=False, dynamic_enabled=True,
+                rebalance_every=5, top_n=1, picks_by_date=picks,
+                universe_provider=provider,
+            )
+        u = res["summary"]["universe"]
+        self.assertFalse(u["candidate_pool_pit"])
+        self.assertFalse(u["formal_evidence_eligible"])
+        self.assertIn("生效範圍外", u["evidence_note"])
+
+    def test_compliant_picks_keep_the_pit_flag_and_record_the_check(self):
+        provider = _provider(top_n=2)          # A、B 每個月都在池裡
+        dates = pd.bdate_range("2026-03-02", "2026-03-20")
+        picks = {d: [("A", 80.0, "A")] for d in dates}
+        with _PanelEnv():
+            res = backtest.backtest_portfolio(
+                symbols=["A"], sample=False, dynamic_enabled=True,
+                rebalance_every=5, top_n=1, picks_by_date=picks,
+                universe_provider=provider, strategy_spec=_SPEC,
+            )
+        u = res["summary"]["universe"]
+        self.assertTrue(u["candidate_pool_pit"])
+        self.assertTrue(u["candidate_pool_pit_verified"])
+        self.assertTrue(u["formal_evidence_eligible"])
+
+
+class ExternalPicksNeedStrategyProvenanceTest(unittest.TestCase):
+    """PIT 候選池 + 沒有訊號規則 provenance ≠ 正式證據。
+
+    原 bug:`strategy_spec` 是「呼叫端要記得傳」的關鍵字參數,沒有任何閘門。
+    實測 `rotation_research.formal_portfolio(..., universe_provider=provider)`
+    得到 `formal_evidence_eligible=True` 但 `params.strategy=None`、
+    `factor_weights_applied=False` —— 一份自稱可作正式證據的績效,summary 裡
+    沒有任何欄位描述產生它的訊號規則。
+    """
+
+    def _run(self, **extra):
+        provider = _provider(top_n=2)
+        dates = pd.bdate_range("2026-03-02", "2026-03-20")
+        picks = {d: [("A", 80.0, "A")] for d in dates}
+        with _PanelEnv():
+            return backtest.backtest_portfolio(
+                symbols=["A"], sample=False, dynamic_enabled=True,
+                rebalance_every=5, top_n=1, picks_by_date=picks,
+                universe_provider=provider, **extra,
+            )
+
+    def test_formal_evidence_and_unknown_signal_rules_cannot_coexist(self):
+        summary = self._run()["summary"]
+        self.assertIsNone(summary["params"]["strategy"])
+        self.assertFalse(summary["universe"]["formal_evidence_eligible"])
+        self.assertIn("StrategySpec", summary["universe"]["evidence_note"])
+
+    def test_passing_the_spec_restores_eligibility_and_records_the_rules(self):
+        summary = self._run(strategy_spec=_SPEC)["summary"]
+        self.assertEqual(summary["params"]["strategy"]["name"], _SPEC.name)
+        self.assertTrue(summary["universe"]["formal_evidence_eligible"])
 
 
 class HistoricalPITEntryPointTest(unittest.TestCase):

@@ -89,7 +89,16 @@ def _taiex_ret(tx, d0, d1):
 
 def run():
     prices, snap = _load_prices()
-    disp = pd.read_pickle(config.CACHE_DIR / f"disposition__ALL__{snap}.pkl")
+    # 處置快取的檔名 2026-08-15 起帶查詢範圍(舊格式一律視為 miss,見
+    # `twse_disposition.load_disposition` 的 bug 說明)。這支是 research-only
+    # 事件研究,對範圍不挑,但仍不得讀到不知道涵蓋哪一段的舊檔。
+    candidates = sorted(config.CACHE_DIR.glob(f"disposition__ALL__{snap}__w*.pkl"))
+    if not candidates:
+        raise SystemExit(
+            f"找不到帶範圍的處置快取(disposition__ALL__{snap}__w*.pkl);"
+            "請先跑 twse_disposition.py 重抓。"
+        )
+    disp = pd.read_pickle(candidates[-1])
     tx = _taiex()
     data_end = max(df["date"].max() for df in prices.values())
 

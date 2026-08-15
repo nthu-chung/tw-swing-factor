@@ -15,19 +15,59 @@ import config
 from .taiwan_rules import stock_price_limits
 
 
+def _covering_disposition_cache(dataset: str, snapshot: str,
+                                need_start, need_end):
+    """找涵蓋 [need_start, need_end] 的處置快取(範圍在檔名裡)。
+
+    2026-08-15 修:舊版直接拼 `disposition__ALL__{snapshot}.pkl` 讀「有就用」,
+    而寫入端的檔名也不含查詢範圍 —— 於是一份只涵蓋近期的處置表會被套用到
+    整段歷史,更早的期間全部被當成「沒被處置」而放行進場。現在讀取端必須
+    自己確認涵蓋範圍;涵蓋不到就當作缺資料(fail-closed),不是靜默用半套。
+
+    回傳 (path, why_not):找到就 (path, None),否則 (None, 說明字串)。
+    """
+    import data
+
+    found = []
+    for p in sorted(config.CACHE_DIR.glob(f"{dataset}__ALL__{snapshot}__w*.pkl")):
+        meta = data.parse_window_scope(p)
+        if meta and meta["dataset"] == dataset:
+            found.append(meta)
+    covering = [m for m in found
+                if m["start"] <= str(pd.Timestamp(need_start).date())
+                and m["end"] >= str(pd.Timestamp(need_end).date())]
+    if covering:
+        # 多份都涵蓋時取範圍最窄的(重抓次數最少、內容最貼近需求)。
+        best = min(covering, key=lambda m: (m["end"], m["start"]))
+        return best["path"], None
+    legacy = config.CACHE_DIR / f"{dataset}__ALL__{snapshot}.pkl"
+    if legacy.exists():
+        return None, (f"{legacy.name}(舊格式,檔名不含查詢範圍 → 視為 miss,"
+                      "不當成任意範圍的有效命中)")
+    if found:
+        ranges = ", ".join(f"{m['start']}~{m['end']}" for m in found[:3])
+        return None, (f"{dataset} 快取只涵蓋 {ranges},未涵蓋回測需要的 "
+                      f"{pd.Timestamp(need_start).date()}~{pd.Timestamp(need_end).date()}")
+    return None, f"{dataset}__ALL__{snapshot}__w*.pkl 不存在"
+
+
 def load_disposition_days(all_dates) -> Dict[str, set]:
     """合併上市與上櫃處置期間；啟用後缺任一市場資料即拒絕回測。"""
     if not getattr(config, "BT_MODEL_DISPOSITION", False):
         return {}
     snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    days = pd.DatetimeIndex(sorted(pd.to_datetime(list(all_dates))))
+    if len(days) == 0:
+        raise RuntimeError("BT_MODEL_DISPOSITION 已開啟但沒有交易日可比對範圍")
     sources = {
-        "上市(TWSE,推導)": config.CACHE_DIR / f"disposition__ALL__{snap}.pkl",
-        "上櫃(TPEx,真實)": config.CACHE_DIR / f"disposition_tpex__ALL__{snap}.pkl",
+        "上市(TWSE,推導)": "disposition",
+        "上櫃(TPEx,真實)": "disposition_tpex",
     }
     frames, loaded, missing = [], [], []
-    for label, path in sources.items():
-        if not path.exists():
-            missing.append(f"{label}→{path.name}")
+    for label, dataset in sources.items():
+        path, why = _covering_disposition_cache(dataset, snap, days[0], days[-1])
+        if path is None:
+            missing.append(f"{label}→{why}")
             continue
         try:
             frames.append(pd.read_pickle(path))
