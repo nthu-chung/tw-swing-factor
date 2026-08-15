@@ -153,6 +153,53 @@ market-regime 的計算公式不屬於本功能；policy 只接受已帶 PIT pro
 - regime 必須有 hysteresis／來源時間戳；其分類演算法另立規格，本次不得用今天資料
   回寫歷史 regime。
 
+### 4.3a regime 的 provenance 物件（2026-08-15，**owner 驗收後補**）
+
+**原缺陷（重現）**：上面三條的執行方式從來沒有寫下來，實作上傳進
+`backtest_portfolio(regime_by_date=...)` 與 `policy.decide(regime=...)` 的都只是
+`"risk_on"` 這種**裸字串**，而 summary 的 `regime_pit_provenance` 是
+`bool(regime_by_date)` —— 「有傳東西」被當成「有 PIT provenance」。於是拿今天的
+大盤走勢回頭標歷史每一天的 regime，回測照跑、`formal_evidence_eligible` 照樣是
+`True`，結果還蓋上一個 regime 有 PIT 出處的章。
+
+**新語意**（不含 regime 判定演算法，那仍屬另一份規格）：
+
+```python
+from strategies.position_policy import RegimeProvenance, RegimeState
+
+regime = RegimeState(
+    label="caution",
+    provenance=RegimeProvenance(
+        source="regime.taiex_ma200_v1",   # 誰算的，事後要能找回同一份計算
+        as_of=pd.Timestamp("2026-03-06"),  # 這個標籤用到的資料截止時間
+        hysteresis="confirm_2_days",       # 遲滯設定；沒有遲滯的 regime 只是雜訊
+    ),
+)
+```
+
+- `policy.decide(regime=...)` 同時接受裸字串與 `RegimeState`。裸字串**不被拒絕**
+  （v1 還沒有 regime 判定規格，拒絕等於讓整條路徑不能用），但一定是
+  `decision.regime_verified=False`。
+- `provenance.as_of > as_of` → fail-closed raise：那是用未來資料回寫歷史 regime。
+- `RegimeProvenance` 的 `source` / `hysteresis` 為空白字串 → raise。空白來源等於
+  沒有來源。
+- regime 的出處進 `decision.fingerprint`：同一天同一個 label，一個有 PIT
+  provenance、一個沒有，是兩份不同可信度的決策，不該有相同指紋。
+
+引擎與 summary：
+
+| 情況 | `regime_evidence` | `regime_pit_provenance` | `formal_evidence_eligible` |
+|---|---|---|---|
+| 完全不給 `regime_by_date` | `none_constant_risk_on` | `False` | 不受影響 |
+| 每一天都帶 `RegimeState(provenance=...)` | `verified` | `True` | 不受影響 |
+| 任何一天是裸字串 | `unverified` | `False` | **降級** |
+
+「完全不給」不降級是刻意的：那是「不做 regime overlay」的宣告，沒有用到任何外部
+資料，也就沒有東西需要 PIT 出處。逐日 `decision_log` 另存 `regime_verified`，
+否則事後分不出「有依據的 risk_off」與「有人手打的 risk_off」。
+
+回歸測試在 `tests/test_strategy_position_policy_regime.py`。
+
 ## 5. 最小公共契約
 
 內部可以自由拆分，但為了讓策略、測試與 backtest 有穩定接點，至少提供：

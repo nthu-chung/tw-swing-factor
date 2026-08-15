@@ -27,9 +27,26 @@ import backtest
 import config
 from _offline_registry import common_stocks
 from strategies.position_policy import (
+    RegimeProvenance,
+    RegimeState,
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
 )
+
+
+def _verified_regime(label, as_of):
+    """帶 PIT provenance 的 regime(規格 §4.3)。
+
+    裸字串沒有來源、as-of 與 hysteresis 可查,只能標 unverified;要在測試裡
+    主張 `regime_pit_provenance` 為真,輸入就必須真的帶出處。
+    """
+    return RegimeState(
+        label=label,
+        provenance=RegimeProvenance(
+            source="tests.fake_regime_rule",
+            as_of=pd.Timestamp(as_of),
+            hysteresis="confirm_2_days"),
+    )
 
 
 def _flat(dates, price=100.0, overrides=None):
@@ -205,10 +222,19 @@ class RiskStopTest(unittest.TestCase):
         self.assertAlmostEqual(float(stop.iloc[0]["exit_price"]), 85.0)
 
     def test_regime_risk_off_creates_exit_intent_for_every_holding(self):
+        """regime 的測試資料於 2026-08-15 改成帶 provenance 的 `RegimeState`。
+
+        原本傳的是裸字串,而 `regime_pit_provenance` 舊版只是
+        `bool(regime_by_date)` —— 「有傳東西」就等於「有 PIT provenance」。
+        這條測試因此在斷言一件輸入根本沒有提供的事。斷言沒改;改的是輸入,
+        讓它真的帶來源/as-of/hysteresis(規格 §4.3)。裸字串的降級行為另由
+        `RegimeProvenanceTest` 正面釘住。
+        """
         dates = list(pd.bdate_range("2026-01-05", periods=8))
         prices = {"1101": _flat(dates)}
         signals = _signals({dates[0]: {"1101": 1}})
-        regimes = {d: ("risk_off" if d >= dates[3] else "risk_on") for d in dates}
+        regimes = {d: _verified_regime(
+            "risk_off" if d >= dates[3] else "risk_on", d) for d in dates}
         result = _run(prices, signals, _one_slot_policy(), regime_by_date=regimes)
         trades = result["trades"]
         self.assertEqual(list(trades["exit_reason"]), ["regime_reduce"])

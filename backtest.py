@@ -48,6 +48,9 @@ from universes import MonthlyPITUniverseProvider, historical_pit_universe  # noq
 from execution.tradability import detect_limit_lock as _limit_lock
 from execution.tradability import load_disposition_days as _load_disposition_days
 from execution.costs import OrderSizeMode, TaiwanStockCostModel, size_long_order
+# regime 的 PIT provenance 型別(規格 §4.3)。policy 物件由呼叫端注入,但
+# `regime_by_date` 的正規化在引擎這一側,所以型別要在這裡拿得到。
+from strategies import position_policy
 
 
 # ── 未還原價 fail-closed 閘門（下沉到所有績效/因子路徑的共同咽喉點）─────────
@@ -993,6 +996,24 @@ def _prepare_signal_snapshots(signal_frame):
     return snapshots, sorted(snapshots)
 
 
+def _unique_regime_provenance(regime_map: Mapping) -> Optional[List[Dict]]:
+    """`{date -> RegimeState}` 裡出現過的 provenance(去重、依 source/as_of 排序)。
+
+    沒有任何一天帶 provenance 時回 `None` —— 空 list 與 None 在 summary 裡讀起來
+    不一樣:`None` 是「這份結果沒有 regime 出處」,不是「有出處但內容是空的」。
+    """
+    seen: Dict[tuple, Dict] = {}
+    for state in regime_map.values():
+        prov = getattr(state, "provenance", None)
+        if prov is None:
+            continue
+        rules = prov.rules()
+        seen[tuple(sorted(rules.items()))] = rules
+    if not seen:
+        return None
+    return [seen[k] for k in sorted(seen)]
+
+
 # ── 市場濾網 / 擇時 overlay：大盤(TAIEX) risk-off 判定（全因果）──────────
 def market_riskoff_map(rule: Optional[str] = None) -> Dict:
     """
@@ -1461,14 +1482,34 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
                 for k, v in after.items()}
     # regime 由外部(帶 PIT provenance)決定;給了就必須逐日給滿。缺哪天就當
     # risk_on 放行,等於在資料缺口上偷偷恢復滿曝險 —— 那正是最該擋的方向。
-    _regime_map: Dict[Any, str] = {}
+    #
+    # 值可以是裸字串或 `RegimeState`(帶 `RegimeProvenance`)。裸字串沒有來源、
+    # as-of 與 hysteresis 可查,依規格 §4.3 只能標 unverified —— 舊版把
+    # `regime_pit_provenance` 寫成 `bool(regime_by_date)`,「有傳東西」就等於
+    # 「有 provenance」,那是這次要修的謊。
+    _regime_map: Dict[Any, Any] = {}
+    _regime_unverified_days: List[Any] = []
     if policy_enabled and regime_by_date:
-        _regime_map = {pd.Timestamp(k): str(v) for k, v in regime_by_date.items()}
+        _regime_map = {pd.Timestamp(k): position_policy.normalize_regime(v)
+                       for k, v in regime_by_date.items()}
         gaps = [d for d in all_dates if d not in _regime_map]
         if gaps:
             raise ValueError(
                 f"[fail-closed] regime_by_date 缺 {len(gaps)} 個交易日"
                 f"(例:{[str(x)[:10] for x in gaps[:3]]});缺值不得當成 risk_on")
+        _regime_unverified_days = [d for d in all_dates
+                                   if not _regime_map[d].verified]
+        if _regime_unverified_days:
+            _downgrade_formal_evidence(
+                universe_info,
+                f"regime 有 {len(_regime_unverified_days)} 個交易日沒有 PIT "
+                "provenance(來源/as-of/hysteresis),只能標 unverified:"
+                "無從證明它不是用今天的資料回寫歷史(規格 §4.3)")
+    # 完全沒給 regime 時引擎用固定 risk_on:那是「不做 regime overlay」的宣告,
+    # 沒有用到任何外部資料,所以不需要 provenance,也不降級。
+    _regime_default = position_policy.RegimeState(label="risk_on")
+    # 出現過的 provenance(去重後照原樣留在 summary,同一份 regime 事後要能重算)。
+    _regime_provenance_records = _unique_regime_provenance(_regime_map)
 
     def _order(d, sid, side, status, reason, *, shares=0.0, price=float("nan"),
                intended_notional=float("nan"), action="", reason_code=""):
@@ -1774,12 +1815,13 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
         holdings_frame = pd.DataFrame(rows, columns=[
             "stock_id", "weight", "entry_price", "close", "holding_days",
             "exit_pending"])
-        regime = _regime_map.get(d, "risk_on")
+        regime_state = _regime_map.get(d, _regime_default)
+        regime = regime_state.label
         next_exec = (all_dates[di + 1] if di + 1 < len(all_dates)
                      else pd.Timestamp(d) + pd.Timedelta(days=1))
         decision = strategy_position_policy.decide(
             as_of=d, signals=signal_snapshots[asof_snapshot],
-            holdings=holdings_frame, equity=float(equity), regime=regime,
+            holdings=holdings_frame, equity=float(equity), regime=regime_state,
             is_decision_day=is_decision_day, next_execution=next_exec)
 
         policy_audit["n_policy_snapshots"] += 1
@@ -1790,6 +1832,9 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
         for row in decision.actions.to_dict(orient="records"):
             decision_log.append({
                 "date": d, "regime": regime,
+                # 這一天的 regime 有沒有 PIT 出處。只記 label 的話,事後無法
+                # 分辨「有依據的 risk_off」與「有人手打的 risk_off」。
+                "regime_verified": bool(decision.regime_verified),
                 "is_decision_day": bool(is_decision_day),
                 "snapshot_asof": asof_snapshot,
                 "snapshot_complete": bool(decision.snapshot_complete),
@@ -2222,7 +2267,17 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
         "n_policy_snapshots": int(policy_audit["n_policy_snapshots"]),
         "regime_source": ("caller_regime_by_date" if regime_by_date
                           else "default_risk_on_no_external_regime"),
-        "regime_pit_provenance": bool(regime_by_date),
+        # 舊版這一格是 `bool(regime_by_date)` —— 「有傳東西」被當成「有 PIT
+        # provenance」,而傳進來的其實是裸字串。現在只有每一天都帶
+        # `RegimeState(provenance=RegimeProvenance(...))` 才算已驗證。
+        "regime_pit_provenance": bool(regime_by_date
+                                      and not _regime_unverified_days),
+        "regime_evidence": (
+            "none_constant_risk_on" if not regime_by_date
+            else "unverified" if _regime_unverified_days else "verified"),
+        "n_regime_days_unverified": int(len(_regime_unverified_days)),
+        # 已驗證時把出處原樣留在結果裡(同一份 regime 事後要能重算)。
+        "regime_provenance": _regime_provenance_records,
         "desired_realized_audit": dict(policy_audit),
         # policy 自己的執行期計數(這一次 request 的**增量**,不是 policy 物件
         # 的累計)。像 `n_stop_repeated_unknown_exit_pending`(呼叫端沒給

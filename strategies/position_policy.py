@@ -172,6 +172,92 @@ class StrategyPositionPolicySpec:
 
 
 @dataclass(frozen=True)
+class RegimeProvenance:
+    """外部 market-regime 的 PIT 出處(規格 §4.3)。
+
+    為什麼 policy 需要這個物件
+    --------------------------
+    §4.3 明文:「policy 只接受**已帶 PIT provenance** 的 regime」、「regime 必須有
+    hysteresis／來源時間戳」、「不得用今天資料回寫歷史 regime」。但介面上傳進來的
+    只是 `"risk_on"` 這種裸字串,而字串沒有辦法自證任何一條。實測後果:拿今天的
+    大盤走勢去標歷史每一天的 regime(risk_off 那幾週剛好避開崩盤),回測會照跑,
+    summary 還會寫 `regime_pit_provenance: True` —— 因為舊版那一格只是
+    `bool(regime_by_date)`,「有傳東西」被當成「有 provenance」。
+
+    這一層**不**做 regime 的判定演算法(§8 明文那是另一份規格)。它只要求:
+    沒有 provenance 就不能假裝有。缺這個物件時結果標 `unverified`,
+    且不得標成 formal-evidence-eligible。
+
+    欄位:
+      `source`     — 誰算的(模組/規則名),事後要能找回同一份計算。
+      `as_of`      — 這個 regime 標籤所用資料的截止時間。必須 <= 決策日,
+                     否則就是用未來資料回寫歷史。
+      `hysteresis` — 遲滯設定的描述或指紋。沒有遲滯的 regime 會在門檻附近
+                     每天翻面,那種「regime」只是雜訊的另一個名字。
+    """
+
+    source: str
+    as_of: pd.Timestamp
+    hysteresis: str
+
+    def __post_init__(self) -> None:
+        for name in ("source", "hysteresis"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"RegimeProvenance.{name} 必須是非空字串;"
+                    "空白的來源等於沒有 provenance,不得放行")
+        object.__setattr__(self, "source", str(self.source).strip())
+        object.__setattr__(self, "hysteresis", str(self.hysteresis).strip())
+        stamp = pd.Timestamp(self.as_of)
+        if pd.isna(stamp):
+            raise ValueError("RegimeProvenance.as_of 必須是可解析的時間戳")
+        object.__setattr__(self, "as_of", stamp)
+
+    def rules(self) -> Dict[str, Any]:
+        return {"source": self.source, "as_of": str(self.as_of),
+                "hysteresis": self.hysteresis}
+
+
+@dataclass(frozen=True)
+class RegimeState:
+    """一個 regime 標籤 + 它的出處(可能沒有)。
+
+    `provenance is None` = 裸字串 = **unverified**:policy 照樣照它調整 slots
+    (擋掉整條路徑不是本次的任務),但結果必須標記,且不得作為正式證據。
+    """
+
+    label: str
+    provenance: Optional[RegimeProvenance] = None
+
+    @property
+    def verified(self) -> bool:
+        return self.provenance is not None
+
+    def rules(self) -> Dict[str, Any]:
+        return {
+            "label": self.label,
+            "verified": self.verified,
+            "provenance": (self.provenance.rules()
+                           if self.provenance is not None else None),
+        }
+
+
+def normalize_regime(regime) -> RegimeState:
+    """把 `str` 或 `RegimeState` 正規化成 `RegimeState`。
+
+    裸字串**不會**被拒絕(v1 還沒有 regime 判定規格,拒絕等於讓 policy 無法使用),
+    但它一定是 `verified=False`。要 verified 就得自己帶 `RegimeProvenance`。
+    """
+    if isinstance(regime, RegimeState):
+        return regime
+    if isinstance(regime, RegimeProvenance):
+        raise TypeError("regime 需要 RegimeState(label + provenance),不是單獨的 "
+                        "RegimeProvenance")
+    return RegimeState(label=str(regime), provenance=None)
+
+
+@dataclass(frozen=True)
 class StrategyPositionDecision:
     """一次 policy snapshot 的完整 desired state。
 
@@ -191,6 +277,10 @@ class StrategyPositionDecision:
     available_slots: int
     earliest_execution: pd.Timestamp
     fingerprint: str
+    # regime 的出處(規格 §4.3)。`regime_verified=False` = 呼叫端給的是裸字串,
+    # 沒有來源/as-of/hysteresis 可查 —— 結果只能標 unverified,不得作正式證據。
+    regime_verified: bool = False
+    regime_provenance: Optional[Dict[str, Any]] = None
 
     def exits(self) -> Dict[str, str]:
         """`{stock_id -> 主要 reason_code}`,供引擎排退出順序。"""
@@ -455,9 +545,19 @@ class StrategyPositionPolicy:
         equity = float(equity)
         if not math.isfinite(equity) or equity < 0:
             raise ValueError(f"equity 必須是非負有限數,目前為 {equity!r}")
-        regime = str(regime)
+        # regime 可以是裸字串(→ unverified)或帶 provenance 的 RegimeState。
+        # 規格 §4.3:policy 只接受帶 PIT provenance 的 regime;v1 不拒絕裸字串
+        # (還沒有 regime 判定規格),但一定要標記,不得讓它冒充已驗證。
+        regime_state = normalize_regime(regime)
+        regime = regime_state.label
         slots = spec.slots_for_regime(regime)
         is_decision_day = bool(is_decision_day)
+        if regime_state.provenance is not None:
+            prov_asof = pd.Timestamp(regime_state.provenance.as_of)
+            if prov_asof > as_of:
+                raise ValueError(
+                    f"[fail-closed] regime provenance 的 as_of({prov_asof}) 晚於決策日"
+                    f"({as_of}):那是用未來資料回寫歷史 regime(規格 §4.3)")
 
         # T 日收盤決策最早 T+1 執行。呼叫端(引擎)知道真正的下一個交易日;
         # 沒給就退回「隔一個日曆日」——只用來標記「不是今天」,不假裝知道日曆。
@@ -663,12 +763,18 @@ class StrategyPositionPolicy:
         self._state["n_stop_repeated_unknown_exit_pending"] = int(
             self._state.get("n_stop_repeated_unknown_exit_pending", 0)
         ) + len(unknown_exit_pending)
+        if not regime_state.verified:
+            # 裸字串 regime 的次數:summary 要靠它決定能不能標正式證據。
+            self._state["n_unverified_regime_decisions"] = int(
+                self._state.get("n_unverified_regime_decisions", 0)) + 1
 
         rules = self._spec.rules()
         fingerprint = rules_fingerprint({
             "rules": rules,
             "as_of": str(as_of),
-            "regime": regime,
+            # regime 的出處進指紋:同一天同一個 label,一個有 PIT provenance、
+            # 一個沒有,那是兩份不同可信度的決策,不該有相同指紋。
+            "regime": regime_state.rules(),
             "is_decision_day": is_decision_day,
             "snapshot_complete": snapshot_complete,
             "targets": [(t["stock_id"], round(t["target_weight"], 10))
@@ -689,14 +795,20 @@ class StrategyPositionPolicy:
             available_slots=int(slots),
             earliest_execution=earliest,
             fingerprint=fingerprint,
+            regime_verified=bool(regime_state.verified),
+            regime_provenance=(regime_state.provenance.rules()
+                               if regime_state.provenance is not None else None),
         )
 
 
 __all__ = [
     "EXIT_PRIORITY",
     "REASON_STOP_BREACHED_EARLIER",
+    "RegimeProvenance",
+    "RegimeState",
     "StrategyPositionDecision",
     "StrategyPositionPolicy",
     "StrategyPositionPolicySpec",
     "VALID_REGIMES",
+    "normalize_regime",
 ]
