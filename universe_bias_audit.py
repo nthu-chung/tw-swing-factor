@@ -15,6 +15,10 @@ Universe 倖存者/前視偏誤量化（上界）
       - 池是用「窗尾成交值」排名,等於用未來人氣挑池 → 窗頭就把「後來才爆量」的股
         放進池。可計算:窗頭 vs 窗尾 的池內成交值排名遷移（rank migration）。
 
+⚠ **research-only（原始快取稽核）**：本腳本直讀 `_cache` 的原始價格，繞過
+`backtest` 的還原價與完整性 fail-closed 閘門，也不經過事件驅動引擎。它產出的是
+**偏誤上界的診斷**，不是策略績效，不得升格成正式策略入口。
+
 本腳本純離線讀 _cache 的價格快取（路徑一律由 data.cache_scope() 給，含快照戳與
 範圍戳），不打 API、不改資料。
 輸出 outputs/UNIVERSE_BIAS_REPORT.md + outputs/universe_bias_audit.csv。

@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """Causal long-only sector-rotation and breakout research.
 
+⚠ **research-only(exploratory)**。這個模組的定位是「族群輪動這條線值不值得再
+investigate」,不是產生可引用的投組績效。
+
 This module deliberately separates three decisions:
 
 1. point-in-time liquidity eligibility (handled by ``dynamic_universe``);
@@ -11,11 +14,23 @@ The current data only contains a coarse, current industry classification.
 Consequently this is an implementation pilot, not a clean historical test of
 fine-grained themes such as DRAM or passive components.  The report generated
 by this module states that limitation explicitly.
+
+兩套投組迴圈的分工(2026-08-15,P2)
+------------------------------------
+`run_portfolio()` 是這支腳本自己的 positions/cash/MTM 迴圈,它**缺**正式引擎有的
+執行真實性:一字漲停買不到、處置期間禁新倉、整張/零股與券商成本(它用的是小數股)。
+它保留下來只是為了讓探索迭代夠快,**不再作為正式證據來源,也不會再往上升格**。
+
+要出正式投組績效請走 `formal_portfolio()` / `formal_portfolio_sweep()`:它把
+`build_signal_table()` 的 picks 轉成 `picks_by_date` 餵進
+`backtest.backtest_portfolio()`(唯一正式事件驅動引擎)。候選池仍是 legacy 單日
+排名,所以除非呼叫端傳 PIT `universe_provider`,引擎會誠實把結果標成
+`formal_evidence_eligible=False`。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,6 +41,7 @@ import data
 import evaluation_split
 import price_integrity
 import universe as uni
+from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import panel_density
 
 
@@ -236,6 +252,127 @@ def build_signal_table(panel: pd.DataFrame, variant: str) -> pd.DataFrame:
     )
 
 
+# ── 正式引擎路徑:把 research picks 餵進 backtest.backtest_portfolio ──────────
+# 為什麼要有這一段(P2):這支腳本原本只有自製的 `run_portfolio()` 迴圈,而
+# 「族群輪動要不要升級成正式策略」需要的是**正式引擎**的數字。以前這條路只寫在
+# 註解裡,等於沒有 —— 想比較的人得自己重寫一次轉換,轉換寫錯就再產生一組不可比
+# 的數字。現在轉換與呼叫都在這裡,兩套引擎吃的是同一份 `build_signal_table()`。
+
+def formal_picks_by_date(signals: pd.DataFrame) -> Dict[pd.Timestamp, List[Tuple]]:
+    """把 signal table 轉成正式引擎吃的 `picks_by_date`。
+
+    格式與 `backtest.backtest_portfolio` 內部自建的一致:
+    `{訊號日: [(stock_id, score, name), ...]}`,同日**依分數由高到低**排序。
+
+    刻意不在這裡截斷成 N 檔:引擎會自己取 `[:top_n]`,而且它需要看到完整排序
+    佇列才能在「已持有/當日買不到」時往下遞補。這裡先截斷會讓遞補名單消失。
+    """
+    required = {"date", "stock_id", "signal_score"}
+    missing = required - set(signals.columns)
+    if missing:
+        raise ValueError(f"picks 轉換缺少欄位: {sorted(missing)}")
+    out: Dict[pd.Timestamp, List[Tuple]] = {}
+    if signals.empty:
+        return out
+    frame = signals.copy()
+    frame["date"] = pd.to_datetime(frame["date"])
+    if "name" not in frame.columns:
+        frame["name"] = ""
+    for day, group in frame.groupby("date"):
+        # 整組先排序再 zip;分開排會讓 stock_id 與 score/name 錯配(S19 踩過)。
+        group = group.sort_values(["signal_score", "stock_id"],
+                                  ascending=[False, True])
+        out[day] = list(zip(group["stock_id"], group["signal_score"], group["name"]))
+    return out
+
+
+def formal_portfolio(signals: pd.DataFrame,
+                     symbols: List[str], *,
+                     start_date: str,
+                     end_date: str,
+                     max_positions: int = 5,
+                     rebalance_every: int = 1,
+                     rebalance_phase: int = 0,
+                     universe_provider=None,
+                     evaluation_split_info=None,
+                     segment: Optional[str] = None) -> Dict[str, Any]:
+    """用**正式**事件驅動引擎跑這份 picks(取代自製 `run_portfolio` 出正式數字)。
+
+    `start_date` / `end_date` 一律往下傳:只限制 picks 的日期範圍不夠,引擎的
+    `all_dates` 取自價格快取,沒有上界會一路跑到資料末端,把 OS 段的績效算進 IS
+    (AGENTS.md 陷阱 5)。
+
+    `universe_provider`:rotation 的候選池是 legacy 單日排名(非 PIT),不傳的話
+    `_resolve_universe_source` 會把結果標成 `formal_evidence_eligible=False` 並附
+    理由 —— 那是正確的標籤,不要為了讓它變 True 而亂傳 provider。要作正式證據請
+    先改走 `universes.historical_pit_universe()` 建 panel。
+    """
+    picks = formal_picks_by_date(signals)
+    if not picks:
+        return {}
+    return backtest.backtest_portfolio(
+        symbols=symbols,
+        sample=False,
+        start_date=start_date,
+        end_date=end_date,
+        rebalance_every=rebalance_every,
+        rebalance_phase=rebalance_phase,
+        top_n=max_positions,
+        picks_by_date=picks,
+        universe_provider=universe_provider,
+        evaluation_split_info=evaluation_split_info,
+        segment=segment,
+    )
+
+
+def formal_portfolio_sweep(signals: pd.DataFrame,
+                           symbols: List[str], *,
+                           start_date: str,
+                           end_date: str,
+                           max_positions: int = 5,
+                           rebalance_every: int = 1,
+                           universe_provider=None,
+                           evaluation_split_info=None,
+                           segment: Optional[str] = None,
+                           single_phase_debug: bool = False) -> PhaseSweep:
+    """跑滿所有等價再平衡相位的正式引擎版本(走 `evaluation.phases.sweep_phases`)。
+
+    單相位是一條路徑不是分布(AGENTS.md 陷阱 2),所以正式比較一律用這個入口;
+    相位掃描與聚合共用 `evaluation/phases.py` 那一份,這裡不自己寫迴圈。
+    """
+    def _run_phase(index: int) -> Optional[Dict[str, Any]]:
+        result = formal_portfolio(
+            signals, symbols,
+            start_date=start_date, end_date=end_date,
+            max_positions=max_positions,
+            rebalance_every=rebalance_every,
+            rebalance_phase=index,
+            universe_provider=universe_provider,
+            evaluation_split_info=evaluation_split_info,
+            segment=segment,
+        )
+        summary = result.get("summary") if isinstance(result, dict) else None
+        if not summary:
+            return None
+        audit = summary.get("eval_audit") or {}
+        return {
+            "phase": index,
+            "sharpe": summary.get("sharpe"),
+            "ann_ret": summary.get("ann_ret"),
+            "max_drawdown": summary.get("max_drawdown"),
+            "n_trades": summary.get("n_trades"),
+            "win_rate": summary.get("win_rate"),
+            # 讓呼叫端在結果層面驗證,而不是只能相信自己傳對了參數。
+            "days_beyond_last_pick": audit.get("days_beyond_last_pick"),
+            "formal_evidence_eligible": (
+                (summary.get("universe") or {}).get("formal_evidence_eligible")
+            ),
+        }
+
+    return sweep_phases(_run_phase, n_phases=rebalance_every,
+                        single_phase_debug=single_phase_debug)
+
+
 def _price_cache(symbols: Iterable[str], ma_windows: Iterable[int]) -> Dict[str, pd.DataFrame]:
     cache: Dict[str, pd.DataFrame] = {}
     for sid in symbols:
@@ -262,8 +399,12 @@ def run_portfolio(
     """Daily-fill, long-only portfolio with T+1 entry and T+1 MA exits.
 
     ⚠ research-only 的第二套事件迴圈:沒有漲停鎖買不到、沒有處置期禁新倉、沒有
-    整張/零股與券商成本模型。要出正式投組績效請把 picks 餵進
-    `backtest.backtest_portfolio(picks_by_date=...)`,不要把這裡的數字當正式證據。
+    整張/零股與券商成本模型(下面 `shares = allocation * (1-fee) / entry` 是小數股)。
+    這套**不會**升格成正式引擎;它只服務探索迭代速度。
+
+    要出正式投組績效請改呼叫本模組的 `formal_portfolio()` /
+    `formal_portfolio_sweep()`(內部走 `backtest.backtest_portfolio`),不要把這裡
+    的數字當正式證據引用。
     """
     ma_windows = [exit_spec.ma_window] if exit_spec.ma_window else []
     prices = price_frames if price_frames is not None else _price_cache(symbols, ma_windows)
@@ -573,6 +714,13 @@ def evaluate(
     panel: Optional[pd.DataFrame] = None,
     symbols: Optional[list[str]] = None,
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """variant × exit × IS/OOS 的探索性掃描。
+
+    ⚠ research-only:走的是自製 `run_portfolio()` 迴圈(無漲停鎖/處置禁倉/整張與
+    成本模型),候選池又是 legacy 單日排名(非 PIT),而且每格只跑一個相位。
+    這張表用來排序「哪個 variant 值得再看」,**不是**可引用的績效。要正式數字請走
+    `formal_portfolio_sweep()`。
+    """
     symbols = symbols or uni.get_universe(top_n=candidate_pool)
     if panel is None:
         panel = build_rotation_panel(symbols, universe_top_n=universe_top_n)

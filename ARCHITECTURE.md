@@ -102,6 +102,32 @@ raise），套用凍結規格後跑滿所有相位、附等權基準，輸出不
 append-only 紀錄：執行紀錄 `forward_test_runs.jsonl` 與揭露紀錄
 `holdout_ledger.jsonl`。
 
+最後一條屬於**舊入口的邊界**：`screener.py`（每日人工流程的 live 入口）先從大盤
+（TAIEX）序列解出**市場參考交易日**，`--date` 落在非交易日就退到最近一個有效交易
+日；接著每檔股票必須在**那一天**有 bar 才算候選，只有更舊 bar 的（停牌／暫停交易／
+已下市）排除並標 `stale_bar`，寫進回傳值的 `attrs["screen_diagnostics"]`。沒有它會
+怎樣：舊版讓每檔各自取「自己最後一根 `<= as_of` 的 bar」，實測資料斷在 2026-04-01
+的股票會出現在 `screen(as_of='2026-05-20')` 的候選裡，`date` 欄誠實寫著 2026-04-01
+——停牌 7 週的股票用兩個月前的收盤價冒充當日候選，而同一份資料丟
+`dynamic_universe.add_membership` 只會回另一檔。同一條線上的 legacy 流動性
+pre-filter 也從 `price.tail(20)` 改成「截至參考日的 20 根」——回看模式下前者拿的是
+資料末端的量，等於用未來人氣決定當時能不能被選。輸出檔名也改戳參考交易日而不是
+`datetime.now()`（週末或盤前跑會產生以非交易日命名的檔案）。⚠ 技術債：「當日必須有
+一根 valid bar」這條成員規則目前有**三份**獨立實作（`screener.py`、
+`current_watchlist.build_screen`、`dynamic_universe.add_membership`），本次只補上
+screener 缺的那半，收斂成同一份仍未做；改動任何一份時三份一起看。
+
+`rotation_research.py` 維持 **exploratory research**：它自製的 positions／cash／MTM
+迴圈（無一字漲停鎖、無處置禁倉、無整張／零股與券商成本，用的是小數股）**不會**升格
+成正式引擎。要正式投組績效走同檔的 `formal_portfolio()`／`formal_portfolio_sweep()`
+——把 `build_signal_table()` 的 picks 轉成 `picks_by_date` 餵進
+`backtest.backtest_portfolio()`，`start_date`／`end_date` 一律往下傳（不然引擎會跑到
+資料末端），相位掃描共用 `evaluation/phases.py`。候選池仍是 legacy 單日排名，所以
+不傳 PIT `universe_provider` 時引擎會誠實標 `formal_evidence_eligible=False`。
+直讀 `_cache` 原始價的事件研究（`disposition_event_study.py`、
+`universe_bias_audit.py`）繞過還原價與完整性 fail-closed 閘門，維持 research-only
+標記，不得升格成正式策略入口。
+
 兩層之間唯一的介面是 `picks_by_date`，所以因子層可以整層抽換而不動執行層。
 
 ## 目標模組邊界
