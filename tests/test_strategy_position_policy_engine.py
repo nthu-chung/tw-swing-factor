@@ -315,6 +315,134 @@ class EngineFailClosedTest(unittest.TestCase):
                 _run(prices, signals, _one_slot_policy())
 
 
+class StaleDelistFailClosedTest(unittest.TestCase):
+    """持股斷 bar 超過門檻 → policy 路徑必須與 legacy 一樣 fail-closed。
+
+    這條路徑一度只在「已經有退出意圖」的部位上判定 stale,於是下市股(它在排名
+    快照裡本來就消失,常常一個退出意圖都沒有)永遠留在帳上、以凍結的最後收盤計價:
+    n_stale_exits=0、trades 空、order_log 一列都沒有,下市虧損整段被忽略。
+    """
+
+    def _prices(self):
+        dates = list(pd.bdate_range("2026-01-05", periods=40))
+        # A 第 5 天之後就沒有 bar(下市);B 提供 40 天市場日曆。
+        return dates, {"A": _flat(dates[:4]), "B": _flat(dates)}
+
+    def _run_policy(self, dates, prices):
+        signals = _signals({dates[0]: {"A": 1}})
+        return _run(prices, signals, _one_slot_policy())
+
+    def _run_legacy(self, dates, prices):
+        # picks 要鋪滿整段:legacy 的安全預設會把評估窗截到最後一個訊號日,
+        # 只給前三天的話根本跑不到 BT_STALE_EXIT_DAYS(AGENTS.md 陷阱 5)。
+        picks = {d: [("A", 1.0, "A")] for d in dates}
+        with (
+            mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
+            mock.patch.object(backtest, "_load_disposition_days", lambda *a, **k: {}),
+            mock.patch.object(backtest.data, "fetch_price",
+                              side_effect=lambda sid, *a, **k: prices[sid].copy()),
+            mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
+        ):
+            return backtest.backtest_portfolio(
+                symbols=["A", "B"], sample=False, rebalance_every=5, top_n=1,
+                start_date=str(dates[0])[:10], end_date=str(dates[-1])[:10],
+                picks_by_date=picks, static_universe_comparator=True)
+
+    def test_policy_path_refuses_to_assume_last_close_exit(self):
+        dates, prices = self._prices()
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_policy(dates, prices)
+        self.assertIn("疑似長停牌/下市", str(ctx.exception))
+
+    def test_legacy_path_refuses_the_same_way(self):
+        """同一組合成資料下,兩條路徑的 fail-closed 訊息必須一致。"""
+        dates, prices = self._prices()
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_legacy(dates, prices)
+        self.assertIn("疑似長停牌/下市", str(ctx.exception))
+
+    def test_explicit_recovery_settles_and_is_written_to_the_order_log(self):
+        """顯式敏感度假設下要真的結算,而且賣不掉的原因必須留在 order_log。"""
+        dates, prices = self._prices()
+        with mock.patch.object(config, "BT_DELIST_RECOVERY", 0.0):
+            result = self._run_policy(dates, prices)
+        self.assertEqual(result["summary"]["open_positions_end"], 0)
+        self.assertEqual(result["summary"]["delisting"]["n_stale_exits"], 1)
+        self.assertIn("stale_delisted", set(result["trades"]["exit_reason"]))
+        orders = pd.DataFrame(result["order_log"])
+        settle = orders[(orders["stock_id"] == "A") &
+                        (orders["reason"] == "stale_delisted_recovery")]
+        self.assertEqual(len(settle), 1)
+        self.assertEqual(settle.iloc[0]["status"], "filled")
+        audit = result["summary"]["strategy_position_policy"][
+            "desired_realized_audit"]
+        self.assertEqual(audit["stale_delist_forced_exits"], 1)
+        # 下市虧損必須真的落到淨值上,而不是停在凍結的最後收盤。
+        self.assertLess(float(result["equity_curve"]["equity"].iloc[-1]),
+                        900_000.0)
+
+
+class ExitPendingAssumptionTest(unittest.TestCase):
+    """`exit_pending` 缺欄位時的 hard stop 行為(規格 §9A.1a 的已知限制)。
+
+    這裡不是在慶祝現況,而是把缺口的邊界釘死:契約 test
+    `test_small_weight_drift_does_not_rebalance_or_average_down` 要求 -30% 且不帶
+    `exit_pending` 的部位維持 `hold`,所以預設值目前不能翻成 False;能做的是讓
+    「這是推定」在 reason_code 與 policy state 上留下痕跡。
+    """
+
+    def _decide(self, holding_extra):
+        policy = StrategyPositionPolicy(StrategyPositionPolicySpec())
+        row = {"stock_id": "A", "weight": 0.10, "entry_price": 100.0,
+               "close": 75.0, "holding_days": 20}
+        row.update(holding_extra)
+        return policy, policy.decide(
+            as_of=pd.Timestamp("2026-01-09"),
+            signals=pd.DataFrame([{"stock_id": "A", "rank": 1,
+                                   "raw_score": 1.0, "eligible": True}]),
+            holdings=pd.DataFrame([row]), equity=1_000_000.0,
+            regime="risk_on", is_decision_day=True)
+
+    def test_missing_column_holds_but_is_marked_as_an_assumption(self):
+        policy, d = self._decide({})
+        action = d.actions.set_index("stock_id").loc["A"]
+        self.assertEqual(action["action"], "hold")
+        self.assertEqual(action["reason_code"],
+                         "stop_breached_earlier_exit_pending_assumed")
+        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 1)
+
+    def test_engine_style_exit_pending_false_still_stops_after_a_gap(self):
+        """引擎顯式說「沒有待成交的退出意圖」→ -25% 一定要停損。"""
+        policy, d = self._decide({"exit_pending": False})
+        action = d.actions.set_index("stock_id").loc["A"]
+        self.assertEqual(action["action"], "exit")
+        self.assertEqual(action["reason_code"], "risk_stop")
+        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 0)
+
+    def test_known_exit_pending_true_does_not_duplicate_the_stop(self):
+        policy, d = self._decide({"exit_pending": True})
+        action = d.actions.set_index("stock_id").loc["A"]
+        self.assertEqual(action["action"], "hold")
+        self.assertEqual(action["reason_code"],
+                         "stop_breached_earlier_exit_pending")
+        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 0)
+
+    def test_engine_path_never_relies_on_the_assumption(self):
+        """事件引擎一律顯式帶欄位 → 正式回測的推定計數必須恆為 0。"""
+        dates = list(pd.bdate_range("2026-01-05", periods=10))
+        # dates[4] 直接跳空到 -25%(合成資料;現實會被漲跌停擋住,但引擎不得依賴
+        # 那個假設,長期停牌後重開就是這個形狀)。
+        gap = {d: (75.0, 76.0, 74.0, 75.0) for d in dates[4:]}
+        prices = {"A": _flat(dates, overrides=gap)}
+        signals = _signals({dates[0]: {"A": 1}})
+        with mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", False):
+            result = _run(prices, signals, _one_slot_policy())
+        self.assertIn("risk_stop", set(result["trades"]["exit_reason"]))
+        decisions = pd.DataFrame(result["decision_log"])
+        self.assertNotIn("stop_breached_earlier_exit_pending_assumed",
+                         set(decisions["reason_code"]))
+
+
 class PolicyProvenanceTest(unittest.TestCase):
     def test_changing_any_rule_changes_the_rules_hash(self):
         base = StrategyPositionPolicy(StrategyPositionPolicySpec())

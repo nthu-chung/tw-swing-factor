@@ -63,6 +63,11 @@ REASON_HOLD = "within_hold_buffer"
 REASON_HOLD_OFF_DAY = "off_decision_day"
 REASON_CAP = "concentration_cap"
 REASON_STOP_BREACHED_EARLIER = "stop_breached_earlier_exit_pending"
+# 同一件事,但 `exit_pending` 是**推定**而非引擎給的事實(呼叫端用了 §5 的最小
+# holdings 契約、沒帶那一欄)。分開一個 reason_code 是為了讓「這筆沒停損是因為
+# 我們假設退出意圖已經在路上」在 decision_log 裡看得見,而不是混進真實的
+# breached_earlier 裡再也分不出來。
+REASON_STOP_BREACHED_ASSUMED = "stop_breached_earlier_exit_pending_assumed"
 
 VALID_REGIMES: tuple = ("risk_on", "caution", "risk_off")
 
@@ -297,10 +302,19 @@ def _normalize_holdings(holdings) -> pd.DataFrame:
                      if flag in frame.columns else False)
     # `exit_pending` = 引擎手上「已經送出但還沒成交」的退出意圖(跌停賣不掉、
     # 停牌…)。缺這一欄時預設 **True**(unknown → 假設已被處理),與 §5 的
-    # snapshot_complete 同一套 fail-closed 哲學:資訊不足時不自動賣。
+    # snapshot_complete 同一套「資訊不足時不自動賣」哲學。
+    #
+    # 但這個預設值**只在 -(hard_stop_pct + 一根跌停) 以下的部位才會有影響**,而在
+    # 那個區間它關掉的是停損而不是自動賣出 —— 方向並不是保守的。§5 的最小 holdings
+    # 契約沒有這一欄,所以「不帶 exit_pending 的呼叫端」拿到的是一個**假設**,不是
+    # 事實。用 `exit_pending_known` 把兩者分開,決策才有辦法由結果重建(規格 §1.4);
+    # 這個限制與待辦見 STRATEGY_POSITION_POLICY_SPEC.md §9A.1。事件引擎一律顯式
+    # 提供這一欄,因此正式回測路徑永遠是 known=True。
+    has_exit_pending = "exit_pending" in frame.columns
     out["exit_pending"] = (
         frame["exit_pending"].fillna(True).astype(bool).values
-        if "exit_pending" in frame.columns else True)
+        if has_exit_pending else True)
+    out["exit_pending_known"] = bool(has_exit_pending)
     # `intraday_low` 之類的日內欄位刻意**不讀**:v1 的 hard stop 是收盤確認,
     # 用日內最低價觸發等於假設手動投資人剛好掛在理論停損價並成交(規格 §3.4)。
     return out
@@ -330,8 +344,13 @@ def _hard_stop_state(entry_price: float, close: float, hard_stop_pct: float,
          `exit_pending=False`,這時仍然要 fail-closed 地產生 risk_stop,
          不能因為「錯過跨越日」就永遠不停損。
 
-    `exit_pending` 缺值時預設 True(unknown 不自動賣),與 §5 的
-    snapshot_complete 同一套哲學。
+    `exit_pending` 缺值時預設 True(unknown 不自動賣),與 §5 的 snapshot_complete
+    同一套哲學。**已知限制**:這個預設在 -(hard_stop_pct + 10%) 以下的區間關掉的是
+    停損,方向並不保守;而 §5 的最小 holdings 契約又不含這一欄。目前 contract test
+    `test_small_weight_drift_does_not_rebalance_or_average_down`(entry 100 / close 70
+    = -30%,且不帶 exit_pending)明文要求那種部位維持 `hold`,所以預設值不能翻成
+    False。呼叫端沒帶欄位時改用 `REASON_STOP_BREACHED_ASSUMED` 標記,讓「這是假設」
+    留下痕跡;完整討論與待 owner 決定的事項見規格 §9A.1。
     """
     if not (math.isfinite(entry_price) and entry_price > 0
             and math.isfinite(close)):
@@ -407,6 +426,7 @@ class StrategyPositionPolicy:
         actions: List[Dict[str, Any]] = []
         exits: Dict[str, List[str]] = {}
         stale_stop_breaches: List[str] = []
+        assumed_stop_breaches: List[str] = []   # exit_pending 是推定的,不是事實
 
         def _add_exit(sid: str, reason: str) -> None:
             exits.setdefault(sid, []).append(reason)
@@ -424,6 +444,8 @@ class StrategyPositionPolicy:
                 _add_exit(sid, "risk_stop")
             elif stop_state == "breached_earlier":
                 stale_stop_breaches.append(sid)
+                if not bool(row.exit_pending_known):
+                    assumed_stop_breaches.append(sid)
             if slots <= 0:
                 # risk_off 是緊急降曝險,允許每日形成退出意圖(不保證成交)。
                 _add_exit(sid, "regime_reduce")
@@ -480,7 +502,11 @@ class StrategyPositionPolicy:
                 if sid in stale_stop_breaches:
                     # 早已跌破停損價、退出意圖仍卡在成交端(跌停/停牌)。誠實標記,
                     # 不要偽裝成一般續抱,也不要重複產生一次新的 risk_stop 事件。
-                    reason = REASON_STOP_BREACHED_EARLIER
+                    # 呼叫端沒給 exit_pending 時,「意圖已在路上」只是推定 → 另一個
+                    # reason_code,讓稽核分得出事實與假設。
+                    reason = (REASON_STOP_BREACHED_ASSUMED
+                              if sid in assumed_stop_breaches
+                              else REASON_STOP_BREACHED_EARLIER)
                 else:
                     reason = (REASON_HOLD if is_decision_day
                               else REASON_HOLD_OFF_DAY)
@@ -573,6 +599,12 @@ class StrategyPositionPolicy:
             self._state.get("n_entries_skipped_no_room", 0)) + n_skipped_no_room
         self._state["n_stop_breached_earlier"] = int(
             self._state.get("n_stop_breached_earlier", 0)) + len(stale_stop_breaches)
+        # 這一項若不是 0,代表有部位是靠「推定 exit_pending」才沒有觸發 hard stop。
+        # 正式回測路徑(事件引擎)一律顯式帶欄位,所以它應該恆為 0;不為 0 就是有人
+        # 用最小 holdings 契約直接呼叫 policy,那份結果的停損統計不可直接採信。
+        self._state["n_stop_breached_earlier_assumed"] = int(
+            self._state.get("n_stop_breached_earlier_assumed", 0)
+        ) + len(assumed_stop_breaches)
 
         rules = self._spec.rules()
         fingerprint = rules_fingerprint({
@@ -604,6 +636,8 @@ class StrategyPositionPolicy:
 
 __all__ = [
     "EXIT_PRIORITY",
+    "REASON_STOP_BREACHED_ASSUMED",
+    "REASON_STOP_BREACHED_EARLIER",
     "StrategyPositionDecision",
     "StrategyPositionPolicy",
     "StrategyPositionPolicySpec",

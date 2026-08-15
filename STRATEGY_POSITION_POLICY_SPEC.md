@@ -292,6 +292,40 @@ PYTHONPATH=. .venv/bin/python preflight.py
 `exit_pending` 缺值時預設 `True`，與 §5 的 `snapshot_complete` 同一套 fail-closed
 哲學：資訊不足時不自動賣。事件引擎一律顯式提供這一欄。
 
+#### 9A.1a 這個預設值的已知限制（2026-08-15 審查後補；待 owner 決定）
+
+審查指出：上面那個預設**方向不是 fail-closed**。它只在報酬低於
+`-(hard_stop_pct + 10%)` 的區間才有作用，而在那個區間它關掉的是**停損**，不是自動
+賣出。§5 的最小 `holdings` 契約（`stock_id / weight / entry_price / close /
+holding_days`）又不含 `exit_pending`，所以任何照最小契約呼叫 `policy.decide()` 的
+人，手上跌超過 18% 的部位一律得到 `hold`，一筆退出意圖都不會產生。
+
+實測（預設 spec、未帶 `exit_pending`）：`-9% / -15%` → `exit/risk_stop`；
+`-19% / -25% / -50%` → `hold/stop_breached_earlier_exit_pending`。
+
+**為什麼這次沒有把預設改成 `False`**：contract test
+`test_small_weight_drift_does_not_rebalance_or_average_down`（`tests/
+test_strategy_position_policy_contract.py:226-238`）用的 holdings 是
+`("LAGGARD", 0.07, entry 100.0, close 70.0, 20)`＝ **-30%**、且刻意不帶
+`exit_pending`，並直接斷言 `action == "hold"`。把預設翻成 `False` 或改成缺欄位就
+raise，這條測試（以及所有使用最小 holdings 的 contract 案例）會立刻紅。§9 明文
+「實作者不得刪除、skip、放寬測試來取得綠燈」，因此這次只能：
+
+1. 把「這是推定、不是事實」變成可稽核：缺欄位時 reason_code 改用
+   `stop_breached_earlier_exit_pending_assumed`，並累計
+   `policy._state["n_stop_breached_earlier_assumed"]`。事件引擎一律顯式帶欄位，
+   所以正式回測路徑上這個計數恆為 0；不為 0 的結果，其停損統計不可直接採信。
+2. 用 `tests/test_strategy_position_policy_engine.py::ExitPendingAssumptionTest`
+   把三種情形（缺欄位 / `False` / `True`）逐一釘住，讓下一個人看得到這個缺口的
+   邊界在哪，而不是靠讀程式碼推。
+
+**待 owner 決定**：若同意「缺 `exit_pending` 時寧可重複產生 `risk_stop`，也不要
+靜默不停損」，則需要**同步修改本規格與上述 contract test**（例如把 LAGGARD 的
+`close` 從 70 改成 95，讓它測的仍然是權重漂移、而不是順帶關掉停損），再把
+`_normalize_holdings` 的預設翻成 `False`。在那之前，policy 的 hard stop 只在
+**每天**被呼叫（事件引擎正是如此）時完整成立；每週才呼叫一次的外部呼叫端，可能
+在兩次呼叫之間直接跌穿 `-(hard_stop_pct + 10%)` 而錯過停損。
+
 ### 9A.2 policy 路徑的評估窗上界
 
 external `picks_by_date` 路徑的安全預設是「截到最後一個訊號日」（AGENTS.md 陷阱

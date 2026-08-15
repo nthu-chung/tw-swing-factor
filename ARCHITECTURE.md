@@ -255,7 +255,7 @@ Strategy.make_signals → StrategyPositionPolicy → Event Backtest Engine
 憑空多一份，而且從 summary 完全看不出來。賣不掉的部位留在 realized holdings
 繼續 MTM，退出意圖不清掉，下一個交易日再試。
 
-三個容易看漏的邊界：
+四個容易看漏的邊界：
 
 1. **決策日來自 `signal_frame` 的快照日期**，引擎不自己算「每 N 個交易日」或
    星期幾。舊的 `rebalance_every` / `rebalance_phase` 是交易日計數，一旦訊號那端
@@ -269,6 +269,12 @@ Strategy.make_signals → StrategyPositionPolicy → Event Backtest Engine
    `order_log`、`summary["strategy_position_policy"]` 只在 policy 開啟時出現。
    相位掃描（`evaluation/phases.py`）與 IS/embargo/OS、PIT、holdout、provenance
    閘門一律照舊套用。
+4. **斷 bar／下市的 fail-closed 對每一檔持股每天生效**，兩條路徑共用
+   `backtest._settle_stale_delisted`。這一條特別容易寫錯成「只檢查已經有退出意圖
+   的部位」——下市股在排名快照裡本來就會消失、常常一個退出意圖都沒有，漏掉的結果
+   是它永遠留在帳上、以凍結的最後收盤計價，下市虧損整段被忽略（方向是樂觀偏誤），
+   而且「拒絕假設可用最後收盤賣出」永遠不會觸發。判定必須在**當日 MTM 之前**，
+   否則 `last_bar_di` 已被更新，stale 會永遠少算一天。
 
 稽核輸出（規格 §7）：`decision_log`（每次 snapshot 的 actions 與 reason codes）、
 `order_log`（送進引擎的意圖與未成交原因）、`target_portfolio`（每個決策日的完整

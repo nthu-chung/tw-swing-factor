@@ -1264,6 +1264,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         "limit_down_exit_delays": 0,        # 一字跌停賣不掉,部位留在 realized
         "limit_up_entry_skips": 0,          # 一字漲停買不到
         "halted_or_missing_bar_delays": 0,  # 停牌/缺 bar 無法成交
+        "stale_delist_forced_exits": 0,     # 斷 bar 超過門檻 → 引擎強制結算(非 policy 意圖)
         "insufficient_cash_entry_skips": 0, # 現金不足(通常正是前一項的下游)
         "lot_rounding_entry_skips": 0,      # 資金不足一個合法交易單位
         "disposition_entry_blocks": 0,      # 處置期間禁新倉
@@ -1328,6 +1329,41 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         })
         return proceeds
 
+    def _settle_stale_delisted(di, d, sid, pos):
+        """持股連續斷 bar 太久(疑似長停牌/下市)的 fail-closed 結算。
+
+        回傳實際結算價;還沒到門檻就回傳 None(續抱)。
+
+        為什麼要抽成共用 helper
+        ------------------------
+        這段判定原本只有 legacy 迴圈有,policy 路徑另外抄了一份 —— 而且抄進了
+        「這檔已經有退出意圖」的分支裡。於是**沒有**退出意圖的下市股(下市股在排名
+        快照裡本來就會消失,只有 snapshot_complete 才會產生 not_ranked;非決策日
+        更是完全不看排名)永遠留在帳上、以凍結的最後收盤計價,下市虧損被整段忽略,
+        而且 legacy 那句「沒有正式清算資料,拒絕假設可用最後收盤賣出」在 policy
+        路徑上永遠不會觸發。方向剛好是樂觀偏誤,所以兩條路徑必須共用同一份實作。
+
+        呼叫點必須在**當日 mark-to-market 之前**(兩條路徑都是):`last_bar_di` 由
+        `_mark_to_market` 在收盤時更新,先 MTM 再判定會讓 stale 永遠少算一天。
+        """
+        nonlocal n_stale_exits
+        stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
+        if stale < config.BT_STALE_EXIT_DAYS:
+            return None
+        recovery = getattr(config, "BT_DELIST_RECOVERY", None)
+        if recovery is None:
+            raise RuntimeError(
+                f"{sid} 已連續 {stale} 個市場交易日無 bar（疑似長停牌/下市）；"
+                "沒有正式清算資料，拒絕假設可用最後收盤賣出。"
+                "可用 SWING_DELIST_RECOVERY=0~1 做明確敏感度測試"
+            )
+        exit_price = pos["last_close"] * float(recovery)
+        _record_exit_trade(sid, pos, d, exit_price, "stale_delisted",
+                           di - pos.get("entry_di", di))
+        del positions[sid]
+        n_stale_exits += 1
+        return exit_price
+
     def _policy_settle_desired(di, d):
         """T 日形成的 desired state,在 T+1(也就是今天)嘗試成交。
 
@@ -1337,6 +1373,36 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         """
         nonlocal cash, n_limit_skip, n_disp_skip, n_lot_skip, n_stale_exits
 
+        # (a0) 缺 bar 的持股:**每一檔每天**都要判定,不能只判「已經有退出意圖」
+        #      的那些。下市股通常一個退出意圖都沒有(它在排名快照裡直接消失),
+        #      漏掉就等於把下市虧損當成沒發生 —— 這是 policy 路徑一度真的存在的
+        #      樂觀偏誤,見 `_settle_stale_delisted` 的說明。
+        for sid in list(positions.keys()):
+            pos = positions[sid]
+            bar, _idx = _price_row(sid, d)
+            if bar is not None:
+                continue
+            reason = exit_intents.get(sid)
+            settled_price = _settle_stale_delisted(di, d, sid, pos)
+            if settled_price is not None:
+                # 強制結算沒有「意圖」可言時,reason_code 記 forced_exit
+                #(規格 §3.2 的第一種每日事件:失去合法交易資格)。
+                _order(d, sid, "sell", "filled", "stale_delisted_recovery",
+                       shares=pos["shares"], price=settled_price,
+                       action="exit", reason_code=reason or "forced_exit")
+                exit_intents.pop(sid, None)
+                resize_intents.pop(sid, None)
+                # 目標部位也要清掉,否則 (c) 會每天對一檔已下市的股票重下買單。
+                desired_targets.pop(sid, None)
+                desired_notional.pop(sid, None)
+                policy_audit["stale_delist_forced_exits"] += 1
+                if reason is not None:
+                    policy_audit["n_realized_exits"] += 1
+            elif reason is not None:
+                _order(d, sid, "sell", "unfilled", "halted_no_bar",
+                       action="exit", reason_code=reason)
+                policy_audit["halted_or_missing_bar_delays"] += 1
+
         # (a) 退出:賣不掉就留在 realized holdings 繼續 MTM,意圖不清掉。
         for sid in list(positions.keys()):
             reason = exit_intents.get(sid)
@@ -1345,29 +1411,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             pos = positions[sid]
             bar, idx = _price_row(sid, d)
             if bar is None:
-                stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
-                if stale >= config.BT_STALE_EXIT_DAYS:
-                    recovery = getattr(config, "BT_DELIST_RECOVERY", None)
-                    if recovery is None:
-                        raise RuntimeError(
-                            f"{sid} 已連續 {stale} 個市場交易日無 bar（疑似長停牌/下市）；"
-                            "沒有正式清算資料，拒絕假設可用最後收盤賣出。"
-                            "可用 SWING_DELIST_RECOVERY=0~1 做明確敏感度測試")
-                    exit_price = pos["last_close"] * float(recovery)
-                    _record_exit_trade(sid, pos, d, exit_price, "stale_delisted",
-                                       di - pos.get("entry_di", di))
-                    _order(d, sid, "sell", "filled", "stale_delisted_recovery",
-                           shares=pos["shares"], price=exit_price,
-                           action="exit", reason_code=reason)
-                    del positions[sid]
-                    exit_intents.pop(sid, None)
-                    n_stale_exits += 1
-                    policy_audit["n_realized_exits"] += 1
-                else:
-                    _order(d, sid, "sell", "unfilled", "halted_no_bar",
-                           action="exit", reason_code=reason)
-                    policy_audit["halted_or_missing_bar_delays"] += 1
-                continue
+                continue    # (a0) 已處理:不是已強制結算,就是已記 halted_no_bar
             if idx <= pos["entry_idx"]:
                 # 進場當天不出場(T 日收盤才形成的意圖不可能在同一天成交)。
                 _order(d, sid, "sell", "unfilled", "same_day_as_entry",
@@ -1640,37 +1684,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 # 永遠凍結在 last_close、佔住部位槽、逃過所有出場判定(_check_exit 只在
                 # 有 bar 時才呼叫)。超過 BT_STALE_EXIT_DAYS 個交易日沒 bar → 視為下市,
                 # 以最後已知收盤強制平倉(survivorship-free 重跑時才不會忽略下市虧損)。
-                stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
-                if stale >= config.BT_STALE_EXIT_DAYS:
-                    recovery = getattr(config, "BT_DELIST_RECOVERY", None)
-                    if recovery is None:
-                        raise RuntimeError(
-                            f"{sid} 已連續 {stale} 個市場交易日無 bar（疑似長停牌/下市）；"
-                            "沒有正式清算資料，拒絕假設可用最後收盤賣出。"
-                            "可用 SWING_DELIST_RECOVERY=0~1 做明確敏感度測試"
-                        )
-                    exit_price = pos["last_close"] * float(recovery)
-                    proceeds = float(cost_model.sell_proceeds(pos["shares"], exit_price))
-                    cash += proceeds
-                    gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
-                    net = proceeds / pos["cost"] - 1.0
-                    trades.append({
-                        "stock_id": sid, "name": pos["name"],
-                        "signal_date": pos["signal_date"],
-                        "entry_date": pos["entry_date"], "exit_date": d,
-                        "entry_price": round(pos["entry_price"], 2),
-                        "exit_price": round(exit_price, 2),
-                        "shares": pos["shares"],
-                        "entry_cost": round(pos["cost"], 2),
-                        "exit_proceeds": round(proceeds, 2),
-                        "hold_bars": di - pos.get("entry_di", di),
-                        "gross_ret": round(gross, 4),
-                        "ret": round(net, 4),
-                        "exit_reason": "stale_delisted",
-                        "composite": round(pos["composite"], 2),
-                    })
-                    del positions[sid]
-                    n_stale_exits += 1
+                # 判定與結算和 policy 路徑共用 `_settle_stale_delisted`(欄位逐項等價:
+                # 整筆賣出時 portion=1.0,cost_part 就是 pos["cost"])。
+                _settle_stale_delisted(di, d, sid, pos)
                 continue  # 當天該股沒資料(未達門檻)→ 續抱
             if idx <= pos["entry_idx"]:
                 continue  # 進場當天不在這裡出（出場判定從進場日的 _check_exit 已含）
