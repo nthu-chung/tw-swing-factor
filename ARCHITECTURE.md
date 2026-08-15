@@ -38,7 +38,12 @@
 擺到 +1.09，只報一條路徑等於挑路徑。強制點是 `evaluation/phases.py` 的
 `sweep_phases()`／`PhaseSweep.stats()`：正式 IS/OS（`backtest.run_full`）、策略單元
 （`s19.evaluate_sweep`）與 `forward_test.py` 共用**同一份**掃描與聚合，
-`tests/test_phase_sweep.py` 以 AST 掃描禁止任何模組再手寫 `for phase in range(...)`。
+`tests/test_phase_sweep.py` 以 AST 掃描禁止任何模組再手寫相位迴圈——掃的是**行為**
+不是寫法：迴圈變數叫 phase／ph／rebalance_phase，或**任何**會重複執行的 body
+（`for`／`while`／推導式）直接餵 `rebalance_phase=`，都算違規（巢狀 `def` 裡的
+單相位 callback 不算，`run_full` 的 `_run_phase` 就長在 `for segment` 迴圈裡）。
+舊版只認「迴圈變數名」與「`for ... in range(...)`」兩種形狀，
+`offsets = list(range(n))` + `for off in offsets:` 或改寫成 `while` 就整份繞過去。
 「最差 MaxDD」的定義是**所有相位裡最糟的那一個**（帶號取 min，不是中位或平均）；
 慣例翻成正值時直接 raise，因為那會變成回報最好的相位。單相位只能 debug：
 `single_phase_debug` 由呼叫端的**意圖**決定並標進 summary（舊版 `forward_test`
@@ -60,14 +65,26 @@ append-only 的揭露台帳（`outputs/holdout_ledger.jsonl`）。`backtest.run_
 `SNAPSHOT_END_DATE` 滑動（`start = end - HISTORY_DAYS`）——實測快照 2026-06-22
 的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 之後 OS 起點變成 2026-01-05，
 **2025-11-19~2026-01-04 從 OS 變成 IS**，同一段資料會被第二次當成 holdout 報成
-fresh OOS。三個設計點各對應一種會讓台帳失效的失敗模式：比對用**區間交集**
+fresh OOS。五個設計點各對應一種會讓台帳失效的失敗模式：比對用**區間交集**
 （滑動窗永遠不會日期字串相等）、每列帶 `prev_sha256` 形成雜湊鏈（既有列被靜默
 改寫或抽掉就讀不出來——這正是它存在的意義）、寫入時取排他檔案鎖（併發揭露不會
-雙方都讀到空台帳而各自宣稱 fresh）。台帳**刻意不放績效數字**：它回答「這段未來
-資料被誰看過幾次」，`outputs/forward_test_runs.jsonl` 才記「那次跑出什麼」，兩份
-用 `strategy_hash`／`output` 對照、語意不重疊。台帳上線前就已消耗的 holdout
-（S19 的 OS）寫在 `KNOWN_CONSUMED_HOLDOUTS` 常數而不是某台機器的 jsonl——
-`outputs/` 不進版控，狀態只存在檔案裡的話，換一台 clone 就變回 clean。
+雙方都讀到空台帳而各自宣稱 fresh）、另存一份**長度指紋**
+`holdout_ledger.jsonl.checkpoint.json`（列數＋末列 `record_sha256`；雜湊鏈只在
+檔案還在時有意義，實測 `os.remove(ledger)` 之後同 hash 同窗立刻回報 fresh、零
+警告——列數倒退或末列對不上一律 fail-closed），以及 `fresh_oos_claim_allowed`
+的**雙口徑**：`holdout_previously_seen` 只看同一個 `strategy_hash`（那是「這套
+規則重現過嗎」），另外報不分規則的
+`window_previously_revealed_any_rules`／`window_reveal_count_any_rules`，兩者**都**
+沒看過才允許宣稱 fresh OOS。沒有第二個口徑會怎樣：規則 hash 涵蓋 79 個 config
+參數，而參數研究迴圈正是消耗 holdout 的主要途徑——實測同一段 OS 用 H1 揭露後，
+只把 `config.BBANDS_K` 從 2.0 改成 2.5（S19 與 FACTOR_WEIGHTS 都不讀它）重算
+hash，同一段 OS 就回報 `fresh`、`fresh_oos_claim_allowed=True`。台帳**刻意不放
+績效數字**：它回答「這段未來資料被誰看過幾次」，`outputs/forward_test_runs.jsonl`
+才記「那次跑出什麼」，兩份用 `strategy_hash`／`output` 對照、語意不重疊。台帳
+上線前就已消耗的 holdout（S19 的 OS）寫在 `KNOWN_CONSUMED_HOLDOUTS` 常數而不是
+某台機器的 jsonl——狀態只存在檔案裡的話，換一台 clone 就變回 clean。同理，這兩份
+jsonl（與那份指紋）是**稽核紀錄不是資料產物**，已加進 `.gitignore` 例外與
+`preflight.OUTPUT_ALLOWLIST`，可以進版控、刪掉會在 git status 看得見。
 覆蓋範圍要誠實：目前只有上述三個入口入帳，`validate_oos.py`、`factor_scan.py`
 等 research-only 腳本仍未接（它們的 OS 本來就標成 pseudo-OOS）。
 
@@ -96,14 +113,24 @@ MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 3
 `BT_ORDER_SIZE_MODE`、漲跌停／處置模型、IS-OS／embargo 全部漏凍；S19 的 10 檔／
 20 日更是在 manifest 產生**之後**才被寫進 config，改成 3 檔／5 日 `rules_sha256_16`
 一個字都不會變。manifest 另外固定記錄 **holdout 邊界**（`manifest["holdout"]`：
-切割規則 + 有交易日曆時解出來的 IS／embargo／OS 日期）——只凍切割**參數**是不夠的，
-同一組參數在不同快照下解出不同的 OS。這段刻意**不進 `rules`／hash**：解出來的
-日期是資料的函數，進 hash 會讓同一套規則在推進快照後變成另一套規則（與
-`SNAPSHOT_END_DATE` 同理）。`forward_test.py` 只接受 `manifest_schema=3` 且通過
-`validate_manifest` 的 manifest（legacy／不完整／缺 holdout 邊界／被改過一律
-raise），套用凍結規格後跑滿所有相位、附等權基準，輸出不可覆寫並追加兩份
-append-only 紀錄：執行紀錄 `forward_test_runs.jsonl` 與揭露紀錄
-`holdout_ledger.jsonl`。
+切割規則 **加上解出來的** IS／embargo／OS 日期）——只凍切割**參數**是不夠的，
+同一組參數在不同快照下解出不同的 OS。「有欄位」也不等於「有釘住」：`calendar=`
+原本只是選用關鍵字而 CLI **沒有**對應選項，所以走正式路徑產出的 manifest 一律
+`resolved=False`（`is_window`／`os_window` 全是 null），`validate_manifest` 只給
+一個 warning、forward 印一行就照跑。現在 `freeze_manifest.run()`（CLI 的唯一路徑）
+自己用 `trading_calendar()` 解日曆（離線，只讀 TAIEX 一條序列並裁到個股資料視窗，
+不觸發全市場抓取），且 `resolved=False` 一律判 `ok=False`。這段刻意**不進
+`rules`／hash**：解出來的日期是資料的函數，進 hash 會讓同一套規則在推進快照後
+變成另一套規則（與 `SNAPSHOT_END_DATE` 同理）。`forward_test.py` 只接受
+`manifest_schema=3` 且通過 `validate_manifest` 的 manifest（legacy／不完整／缺
+holdout 邊界／邊界未解析成日期／被改過一律 raise），套用凍結規格後跑滿所有相位、
+附等權基準，輸出不可覆寫並追加兩份 append-only 紀錄：執行紀錄
+`forward_test_runs.jsonl` 與揭露紀錄 `holdout_ledger.jsonl`。凍結的策略參數是
+**六個 load-bearing 的值**（mom／flow／vol 視窗、訊號權重、停損），`build_signal`
+一律讀 `spec`、模組常數只是投影；`tests/test_freeze_forward.py` 正反兩面釘住
+（改 spec 必須改變分數、改模組常數不得改變分數），停損／MA 出場／持股數則在
+引擎呼叫的當下比對 `config` 實際值——那三個是 `_apply_portfolio_config()` 的
+副作用，只驗簽章參數完全驗不到。
 
 最後一條屬於**舊入口的邊界**：`screener.py`（每日人工流程的 live 入口）先從大盤
 （TAIEX）序列解出**市場參考交易日**，`--date` 落在非交易日就退到最近一個有效交易
@@ -171,7 +198,8 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 - `evaluation/phases.py`：統一相位掃描與聚合（`sweep_phases` / `PhaseSweep` /
   `phase_stats`）。正式 IS/OS、策略 `evaluate_sweep` 與 forward 共用這一份；
   呼叫端只提供「一個相位怎麼跑」，掃滿與中位／最小／最差 MaxDD 由它負責。
-- `evaluation/holdout.py`：append-only 的 holdout 揭露台帳（雜湊鏈 + 檔案鎖）與
+- `evaluation/holdout.py`：append-only 的 holdout 揭露台帳（雜湊鏈 + 檔案鎖 +
+  長度指紋 `*.checkpoint.json`，整檔刪除／截斷會 fail-closed）與
   `KNOWN_CONSUMED_HOLDOUTS`（台帳上線前就已消耗的 holdout，例如 S19 的 OS）。
   `rules_fingerprint()` 是規則雜湊的唯一實作，`freeze_manifest.rules_hash` 轉呼叫
   它——台帳的 `strategy_hash` 與 manifest 的 `rules_sha256_16` 必須是同一個東西。

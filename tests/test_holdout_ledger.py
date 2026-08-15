@@ -139,6 +139,60 @@ class RevealLedgerTest(_LedgerCase):
         self.assertFalse(mine["holdout_previously_seen"])
         self.assertEqual(mine["prior_reveals_other_rules"], 1)
 
+    def test_changing_an_unrelated_config_param_does_not_refresh_the_holdout(self):
+        """**這次要修的核心 bug**:換一個規則 hash 不會讓看過的資料變回沒看過。
+
+        `previously_seen` 綁在涵蓋 79 個 config 參數的 rules hash 上,而參數研究
+        迴圈正是消耗 holdout 的主要途徑。實測:同一段 OS 用 hash H1 揭露兩次會
+        正確標成 consumed;但只要把 `config.BBANDS_K` 從 2.0 改成 2.5(S19 的訊號
+        與 FACTOR_WEIGHTS 都不讀這個參數)重算 hash,同一段 OS 就回報
+        `holdout_status='fresh'`、`fresh_oos_claim_allowed=True`。
+
+        修法不是把不同規則也算成 `holdout_previously_seen`(那是另一套規則的樣本
+        外,語意不同),而是另外報一個**不分規則的窗口口徑**,並讓
+        `fresh_oos_claim_allowed` 同時要求兩者都沒看過。
+        """
+        h1 = freeze_manifest.rules_hash(freeze_manifest.rules_payload(s19.SPEC))
+        with mock.patch.object(config, "BBANDS_K", config.BBANDS_K + 0.5):
+            h2 = freeze_manifest.rules_hash(
+                freeze_manifest.rules_payload(s19.SPEC))
+        self.assertNotEqual(h1, h2, "改 config 參數本來就該換 hash")
+
+        self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                    strategy_hash=h1, strategy_name="s19_chip_momentum")
+        again = self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                            strategy_hash=h2, strategy_name="s19_chip_momentum",
+                            now=datetime(2026, 8, 16, 9, 0, 0))
+        # 同規則口徑仍然誠實:這套 hash 確實是第一次看
+        self.assertFalse(again["holdout_previously_seen"])
+        self.assertEqual(again["holdout_status"], "fresh")
+        # 但不分規則的口徑看得見,而且不得再宣稱 fresh OOS
+        self.assertTrue(again["window_previously_revealed_any_rules"])
+        self.assertEqual(again["window_reveal_count_any_rules"], 1)
+        self.assertEqual(again["window_distinct_rules_any"], 1)
+        self.assertFalse(again["fresh_oos_claim_allowed"])
+        self.assertIn("多重檢定", again["fresh_oos_blocked_reason"])
+
+    def test_untouched_window_is_still_claimable_as_fresh(self):
+        """反向:沒有任何規則看過的窗仍然可以宣稱 fresh —— 否則 forward 永遠
+        無法累積,新的多重檢定口徑就變成一個把系統鎖死的閘門。"""
+        self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                    strategy_hash="hash_other")
+        nxt = self.reveal(os_start="2026-11-01", os_end="2026-12-31",
+                          strategy_hash="hash_a",
+                          now=datetime(2026, 8, 16, 9, 0, 0))
+        self.assertTrue(nxt["fresh_oos_claim_allowed"])
+        self.assertFalse(nxt["window_previously_revealed_any_rules"])
+        self.assertIsNone(nxt["fresh_oos_blocked_reason"])
+
+    def test_same_rules_reveal_reports_the_same_rules_reason(self):
+        """兩個口徑的理由不可互相冒充:同規則重跑要說「同一套規則」。"""
+        self.reveal(os_start="2026-09-01", os_end="2026-10-31")
+        again = self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                            now=datetime(2026, 8, 16, 9, 0, 0))
+        self.assertIn("同一套規則", again["fresh_oos_blocked_reason"])
+        self.assertNotIn("多重檢定", again["fresh_oos_blocked_reason"])
+
     def test_reveal_without_strategy_hash_fails_closed(self):
         with self.assertRaisesRegex(holdout.HoldoutLedgerError, "strategy_hash"):
             self.reveal(os_start="2026-01-01", os_end="2026-02-01",
@@ -192,6 +246,65 @@ class LedgerImmutabilityTest(_LedgerCase):
         self.ledger.write_text("{ not json\n", encoding="utf-8")
         with self.assertRaises(holdout.HoldoutLedgerError):
             self.reveal(os_start="2026-06-19", os_end="2026-08-04")
+
+    def test_deleting_the_whole_ledger_is_not_a_clean_slate(self):
+        """**整檔刪除**必須看得見 —— 這是雜湊鏈唯一擋不到的形狀。
+
+        原 bug(2026-08-15 審查實測):鏈只擋改列/刪列/插列,`read_ledger` 對不
+        存在的檔直接 `return []`,所以 `os.remove(outputs/holdout_ledger.jsonl)`
+        之後,同 hash 同窗立刻回報 `fresh`、零警告 —— append-only 的紀錄被一個
+        `rm` 洗掉。而這兩份 ledger 又被 `.gitignore` 的 `outputs/*` 排除,連
+        「檔案不見了」都不會出現在 git status。
+        """
+        first = self.reveal(os_start="2026-09-01", os_end="2026-10-31")
+        self.assertTrue(holdout.checkpoint_path().exists())
+        self.ledger.unlink()
+
+        with self.assertRaisesRegex(holdout.HoldoutLedgerError, "刪除或截斷"):
+            holdout.read_ledger()
+        # 也不得靠 reveal_status「查一下」就繞過(那正是回報 fresh 的入口)
+        with self.assertRaises(holdout.HoldoutLedgerError):
+            holdout.reveal_status(strategy_hash=first["strategy_hash"],
+                                  strategy_name=None,
+                                  os_start="2026-09-01", os_end="2026-10-31")
+        # 更不得靠「再寫一列」重新開始(那會把台帳洗成 seq=1 的新鏈)
+        with self.assertRaises(holdout.HoldoutLedgerError):
+            self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                        now=datetime(2026, 8, 16, 9, 0, 0))
+
+    def test_truncating_the_ledger_is_detected(self):
+        """留著檔案但砍掉尾巴 = 鏈仍然自洽,只有列數指紋看得出來。"""
+        self.reveal(os_start="2026-09-01", os_end="2026-10-31")
+        self.reveal(os_start="2026-11-01", os_end="2026-12-31",
+                    now=datetime(2026, 8, 16, 9, 0, 0))
+        rows = self.lines()
+        self.ledger.write_text(rows[0] + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(holdout.HoldoutLedgerError, "刪除或截斷"):
+            holdout.read_ledger()
+
+    def test_checkpoint_tracks_row_count_and_last_hash(self):
+        """指紋內容就是「幾列 + 末列 record_sha256」,每次 append 同步更新。"""
+        self.assertIsNone(holdout.read_checkpoint())
+        for i in range(3):
+            rec = self.reveal(os_start="2026-09-01", os_end="2026-10-31",
+                              strategy_hash=f"hash_{i}",
+                              now=datetime(2026, 8, 15, 9, i, 0))
+            cp = holdout.read_checkpoint()
+            self.assertEqual(cp["rows"], i + 1)
+            self.assertEqual(cp["last_record_sha256"], rec["record_sha256"])
+        self.assertEqual(len(self.lines()), 3)
+
+    def test_corrupt_checkpoint_fails_closed(self):
+        """指紋壞掉不得當成「沒有指紋」放行 —— 否則刪台帳只要順手弄壞指紋。"""
+        self.reveal(os_start="2026-09-01", os_end="2026-10-31")
+        holdout.checkpoint_path().write_text("{ not json", encoding="utf-8")
+        with self.assertRaises(holdout.HoldoutLedgerError):
+            holdout.read_ledger()
+
+    def test_fresh_clone_without_ledger_or_checkpoint_starts_empty(self):
+        """兩份都不存在 = 從來沒揭露過(乾淨 clone),照常回空 list。"""
+        self.assertEqual(holdout.read_ledger(), [])
+        self.assertEqual(holdout.verify_ledger(), 0)
 
     def test_concurrent_reveals_do_not_overwrite_each_other(self):
         """併發揭露:每一次都要留下自己的一列,而且整條鏈仍然接得起來。
@@ -323,11 +436,78 @@ class ManifestHoldoutBoundaryTest(_LedgerCase):
         self.assertFalse(st.ok)
         self.assertTrue(any("holdout" in p for p in st.problems), st.problems)
 
-    def test_unresolved_boundaries_are_warned_not_silently_accepted(self):
+    def test_unresolved_boundaries_make_the_manifest_unreliable(self):
+        """邊界沒解析成日期 = 沒釘住 OS → 不是可靠的凍結版本(ok=False)。
+
+        原本這裡只斷言「有 warning、但 ok=True」。實測那條 warning 沒有任何
+        擋阻力:`freeze_manifest` 的 CLI 根本沒有傳日曆的選項,所以走正式路徑
+        產出的 manifest **一律** `resolved=False`(`is_window`/`os_window` 全是
+        null),而 `forward_test.run` 印一行警告就照跑 —— P1-3 的「manifest 固定
+        記錄 IS／embargo／OS 邊界」在唯一的正式路徑上等於沒做。
+        """
         m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15")
+        self.assertFalse(m["holdout"]["resolved"])
+        st = freeze_manifest.validate_manifest(m)
+        self.assertFalse(st.ok, st.describe())
+        self.assertEqual(st.reliability, "incomplete_or_legacy")
+        self.assertTrue(any("resolved=False" in p for p in st.problems),
+                        st.problems)
+
+    def test_cli_default_path_produces_resolved_boundaries(self):
+        """**CLI 的預設路徑**必須產出解得出日期的 holdout 邊界。
+
+        原 bug(2026-08-15 審查實測):`holdout_boundaries(calendar=...)` 是選用
+        關鍵字,而 `freeze_manifest.__main__` 沒有任何對應選項 —— 走 CLI **不可能**
+        解析出日期。`run("cli_default")` 產出 `holdout.resolved=false`、
+        `is_window=null`、`os_window=null`,`validate_manifest` 卻回 ok=True
+        (reliability='reliable_with_warnings'),`forward_test.run` 印一行警告
+        照跑。閘門又變回「呼叫端要記得傳的關鍵字參數」。
+
+        現在 `run()` 自己去解交易日曆(離線,只讀 TAIEX 一條序列的快取)。
+        """
+        import data
+
+        cal = pd.bdate_range("2023-01-01", "2026-12-31")
+        fake_taiex = pd.DataFrame({"date": cal, "close": 1.0})
+        with mock.patch.object(data, "fetch_market_index",
+                               return_value=fake_taiex) as fetch:
+            path = freeze_manifest.main(["--label", "cli_default"])
+        self.assertTrue(fetch.called, "CLI 沒有去解交易日曆")
+        self.assertIsNotNone(path)
+        m = json.loads(path.read_text(encoding="utf-8"))
+        h = m["holdout"]
+        self.assertTrue(h["resolved"], "CLI 預設路徑仍然產不出釘住日期的邊界")
+        self.assertIsNotNone(h["is_window"])
+        self.assertIsNotNone(h["os_window"])
+        self.assertEqual(len(h["os_window"]), 2)
+        self.assertLess(h["is_window"][1], h["os_window"][0])
         st = freeze_manifest.validate_manifest(m)
         self.assertTrue(st.ok, st.describe())
-        self.assertTrue(any("未解析" in w for w in st.warnings), st.warnings)
+        # 不斷言 reliability 字串:工作樹 dirty 時本來就會多一條 git 警告
+        # (那是環境狀態,不是這條測試要釘的東西)。要釘的是「沒有 holdout 警告」。
+        self.assertEqual([w for w in st.warnings if "holdout" in w], [])
+        self.assertEqual([p for p in st.problems if "holdout" in p], [])
+
+    def test_calendar_is_clipped_to_the_price_data_window(self):
+        """TAIEX 抓的歷史比個股長,不裁的話 IS 起點會落在回測看不到的日期。"""
+        import data
+
+        cal = pd.bdate_range("2015-01-01", "2026-12-31")
+        with mock.patch.object(data, "fetch_market_index",
+                               return_value=pd.DataFrame({"date": cal})):
+            days = freeze_manifest.trading_calendar()
+        scope = data.cache_scope("price", "CALENDAR")
+        self.assertGreaterEqual(str(pd.Timestamp(days[0]).date()), scope.start)
+        self.assertLessEqual(str(pd.Timestamp(days[-1]).date()), scope.end)
+
+    def test_calendar_fails_closed_when_market_series_is_empty(self):
+        """解不出日曆時 raise,而不是產出一份沒有邊界的 manifest。"""
+        import data
+
+        with mock.patch.object(data, "fetch_market_index",
+                               return_value=pd.DataFrame()):
+            with self.assertRaisesRegex(RuntimeError, "解不出交易日曆"):
+                freeze_manifest.trading_calendar()
 
     def test_previous_schema_is_now_legacy(self):
         """schema 2 沒有 holdout 邊界 → 不得冒充可靠凍結版本。"""
@@ -378,7 +558,8 @@ class ForwardHoldoutTest(_LedgerCase):
     """forward 窗也是 holdout:第二次跑同一段只是重現,不是新的樣本外。"""
 
     def _forward(self, *, freeze_date: str, panel_start: str, snapshot: str,
-                 now: datetime, spec=None):
+                 now: datetime, spec=None, label: str = "fwd",
+                 resolve_boundaries: bool = True):
         import backtest
         import forward_test
 
@@ -392,7 +573,13 @@ class ForwardHoldoutTest(_LedgerCase):
                     "trades": pd.DataFrame(), "equity_curve": pd.DataFrame()}
 
         with mock.patch.object(config, "SNAPSHOT_END_DATE", snapshot):
-            m = freeze_manifest.build_manifest("fwd", spec, freeze_date=freeze_date)
+            m = freeze_manifest.build_manifest(
+                label, spec, freeze_date=freeze_date,
+                # holdout 邊界是 manifest 的必要內容(見 P1-3):未解析的 manifest
+                # 不是可靠的凍結版本,forward 會拒用(resolve_boundaries=False
+                # 就是拿來釘那條拒用的)。
+                calendar=(pd.bdate_range("2024-06-24", periods=500)
+                          if resolve_boundaries else None))
             path = freeze_manifest.manifest_path(m)
             if not path.exists():
                 path.write_text(json.dumps(m, ensure_ascii=False, default=str),
@@ -442,6 +629,41 @@ class ForwardHoldoutTest(_LedgerCase):
         self.assertTrue(payload["holdout"]["holdout_previously_seen"])
         self.assertFalse(payload["fresh_oos"])
         self.assertTrue(payload["holdout"]["declared_consumed"])
+
+    def test_forward_with_another_rules_hash_over_the_same_window_is_not_fresh(self):
+        """同一段 forward 窗被**另一套規則**看過 → 不得再宣稱 fresh OOS。
+
+        這是 A3 的端到端版本:參數研究迴圈每改一個參數就換一個 hash,
+        `holdout_previously_seen` 綁在 hash 上,所以同一段未來資料可以被無限次
+        報成 fresh。現在 `fresh_oos` 另外要求「任何規則都沒看過」。
+        """
+        first = self._forward(freeze_date="2026-08-25", panel_start="2026-09-01",
+                              snapshot="2026-11-30", now=T0)
+        other_spec = s19.SPEC.replace(portfolio={"stop_loss": 0.12})
+        second = self._forward(freeze_date="2026-08-25", panel_start="2026-09-01",
+                               snapshot="2026-11-30", label="fwd2",
+                               spec=other_spec,
+                               now=datetime(2026, 8, 15, 11, 0, 0))
+        self.assertNotEqual(first["rules_sha256_16"], second["rules_sha256_16"])
+        rec = second["holdout"]
+        self.assertFalse(rec["holdout_previously_seen"], "這套 hash 確實第一次看")
+        self.assertTrue(rec["window_previously_revealed_any_rules"])
+        self.assertFalse(second["fresh_oos"])
+        self.assertIn("多重檢定", second["evidence_note"])
+
+    def test_forward_refuses_a_manifest_without_resolved_boundaries(self):
+        """holdout 邊界沒解析成日期的 manifest 不得被 forward 拿去宣稱 OOS。
+
+        原本只是一行警告:`forward_test.run` 照跑並寫出 payload,而 manifest 的
+        `holdout.is_window` / `os_window` 都是 null。
+        """
+        import forward_test  # noqa: F401  (確保 run 的 import 路徑一致)
+
+        with self.assertRaisesRegex(ValueError, "不是可靠的凍結版本"):
+            self._forward(freeze_date="2026-08-25", panel_start="2026-09-01",
+                          snapshot="2026-11-30", now=T0, label="unresolved",
+                          resolve_boundaries=False)
+        self.assertFalse(self.ledger.exists(), "被拒的 forward 不得留下揭露紀錄")
 
     def test_refused_duplicate_run_records_no_reveal(self):
         """被同名輸出擋下來的重跑什麼都沒揭露,不該在台帳留下一筆「看過」。"""

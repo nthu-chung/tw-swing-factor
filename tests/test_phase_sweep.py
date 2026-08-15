@@ -44,6 +44,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # 唯一允許出現手寫相位迴圈的檔案(共用實作本身)。
 PHASE_LOOP_ALLOWED = {REPO_ROOT / "evaluation" / "phases.py"}
 PHASE_LOOP_NAMES = {"phase", "ph", "rebalance_phase"}
+# 所有「會重複執行 body」的節點。舊版只認 `for`,所以 `while` 與推導式的
+# 手寫相位迴圈可以整份繞過去。
+LOOP_NODES = (ast.For, ast.AsyncFor, ast.While,
+              ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 
 def _repo_sources():
@@ -53,6 +57,26 @@ def _repo_sources():
         if parts & {".venv", "__pycache__", "tests", "outputs", "_cache"}:
             continue
         yield path
+
+
+def _calls_with_keyword(node: ast.AST, keyword: str):
+    """在 `node` 的子樹裡找帶 `keyword=` 的呼叫,**不進入巢狀的 def / lambda**。
+
+    巢狀函式是「一個相位怎麼跑」的 callback(`backtest.run_full` 的 `_run_phase`
+    就長在 `for segment ...` 迴圈裡),那是共用掃描的正確用法;真正要抓的是
+    「迴圈 body 直接餵 `rebalance_phase=`」,也就是自己掃相位。
+    """
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        for child in ast.iter_child_nodes(cur):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            if isinstance(child, ast.Call) and any(
+                    kw.arg == keyword for kw in child.keywords):
+                yield child
+            stack.append(child)
 
 
 # ── 1. 掃描本體 ───────────────────────────────────────────────────────────
@@ -128,9 +152,21 @@ class PhaseStatsTest(unittest.TestCase):
             phases.phase_stats(rows, single_phase_debug=False)
 
     def test_missing_drawdown_column_fails_closed(self):
+        """找不到 MaxDD 欄要由 `_resolve_drawdown_column` **明確**擋下。
+
+        原本只斷言 `assertRaises(KeyError)`,而 pandas 取不存在的欄位本來就會丟
+        KeyError —— 實測把 `_resolve_drawdown_column` 改成「找不到就靜默回
+        'max_drawdown'」,全套測試仍然全綠,fail-closed 訊息形同不存在。
+        """
         rows = self.ROWS.drop(columns=["max_drawdown"])
-        with self.assertRaises(KeyError):
+        with self.assertRaisesRegex(KeyError, "找不到 MaxDD 欄"):
             phases.phase_stats(rows, single_phase_debug=False)
+
+    def test_explicit_missing_drawdown_column_fails_closed(self):
+        """呼叫端指名一個不存在的欄位時同樣不得靜默改用別欄。"""
+        with self.assertRaisesRegex(KeyError, "沒有 MaxDD 欄"):
+            phases.phase_stats(self.ROWS, single_phase_debug=False,
+                               drawdown_col="dd_pct")
 
     def test_legacy_max_dd_column_is_still_readable(self):
         rows = self.ROWS.rename(columns={"max_drawdown": "max_dd"})
@@ -179,40 +215,89 @@ class SingleImplementationTest(unittest.TestCase):
         self.assertFalse(hasattr(forward_test, "_phase_stats"),
                          "forward 不該再有自己的相位聚合實作")
 
+    @staticmethod
+    def _phase_loop_offenders(tree: ast.AST, where: str):
+        """回傳這棵語法樹裡的手寫相位迴圈(兩種形狀)。
+
+        1. 迴圈變數叫 phase / ph / rebalance_phase(含 `for` 與推導式)。
+        2. **任何**會重複執行的 body(`for` / `while` / 推導式)直接餵引擎的
+           `rebalance_phase=`,不限迴圈變數名、不限 `range()`。
+
+        第 2 條原本只認「`for ... in range(...)`」,所以
+        `offsets = list(range(n))` + `for off in offsets:` 或改寫成 `while`
+        就整份繞過去 —— 閘門靠的是**形狀慣例**而不是行為。
+        """
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                target = node.target
+                if isinstance(target, ast.Name) and target.id in PHASE_LOOP_NAMES:
+                    offenders.append(f"{where}:{getattr(node, 'lineno', '?')} "
+                                     f"for {target.id}")
+                    continue
+            if not isinstance(node, LOOP_NODES):
+                continue
+            for call in _calls_with_keyword(node, "rebalance_phase"):
+                offenders.append(
+                    f"{where}:{getattr(node, 'lineno', '?')} "
+                    f"{type(node).__name__} body 直接餵 rebalance_phase")
+                break
+        return offenders
+
     def test_no_module_hand_writes_another_phase_loop(self):
         """禁止再長出第四份手寫相位迴圈(AST 掃描)。
 
-        兩種形狀都擋:迴圈變數叫 phase/ph/rebalance_phase,或在 `range()` 迴圈
-        裡直接餵引擎的 `rebalance_phase=`。要跑相位請用
-        `evaluation.phases.sweep_phases`。
+        要跑相位請用 `evaluation.phases.sweep_phases`。
         """
         offenders = []
         for path in _repo_sources():
             if path in PHASE_LOOP_ALLOWED:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.For, ast.comprehension)):
-                    continue
-                target = node.target
-                if isinstance(target, ast.Name) and target.id in PHASE_LOOP_NAMES:
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:"
-                                     f"{getattr(node, 'lineno', '?')} for {target.id}")
-                    continue
-                iter_node = node.iter
-                is_range = (isinstance(iter_node, ast.Call)
-                            and isinstance(iter_node.func, ast.Name)
-                            and iter_node.func.id == "range")
-                if not is_range or not isinstance(node, ast.For):
-                    continue
-                for sub in ast.walk(node):
-                    if isinstance(sub, ast.Call) and any(
-                            kw.arg == "rebalance_phase" for kw in sub.keywords):
-                        offenders.append(
-                            f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
-                            "range 迴圈直接餵 rebalance_phase")
-                        break
+            offenders += self._phase_loop_offenders(
+                tree, str(path.relative_to(REPO_ROOT)))
         self.assertEqual(offenders, [], f"出現手寫相位迴圈:{offenders}")
+
+    def test_scanner_catches_loops_that_are_not_for_x_in_range(self):
+        """掃描器本身的回歸測試:它擋的是**行為**,不是某一種寫法。
+
+        原 bug(2026-08-15 審查實測):偵測只認迴圈變數名在
+        {phase, ph, rebalance_phase} 或 `for ... in range(...)` 兩種形狀,
+        所以下面四種寫法都能把手寫相位迴圈原封搬回來而測試全綠。
+        """
+        evasions = {
+            "list_var": (
+                "offsets = list(range(n))\n"
+                "for off in offsets:\n"
+                "    backtest_portfolio(rebalance_phase=off)\n"),
+            "while_loop": (
+                "i = 0\n"
+                "while i < n:\n"
+                "    backtest_portfolio(rebalance_phase=i)\n"
+                "    i += 1\n"),
+            "listcomp": (
+                "rows = [backtest_portfolio(rebalance_phase=o) "
+                "for o in offsets]\n"),
+            "map_over_enumerate": (
+                "for idx, _ in enumerate(offsets):\n"
+                "    run(rebalance_phase=idx)\n"),
+        }
+        for name, src in evasions.items():
+            with self.subTest(shape=name):
+                found = self._phase_loop_offenders(ast.parse(src), name)
+                self.assertTrue(found, f"{name} 這種寫法沒被偵測到")
+
+    def test_scanner_allows_a_callback_defined_inside_an_unrelated_loop(self):
+        """反向:`for segment in ...:` 裡定義的單相位 callback 不是手寫相位迴圈。
+
+        `backtest.run_full` 就長這樣(掃描交給 `sweep_phases`,迴圈跑的是 IS/OS
+        兩段)。掃描器若把它判成違規,大家只會把它加進白名單,閘門就白做了。
+        """
+        src = ("for segment in ('IS', 'OS'):\n"
+               "    def _run_phase(phase):\n"
+               "        return backtest_portfolio(rebalance_phase=phase)\n"
+               "    sweep_phases(_run_phase, n_phases=20)\n")
+        self.assertEqual(self._phase_loop_offenders(ast.parse(src), "ok"), [])
 
 
 # ── 5. run_full(正式 IS/OS)走共用掃描 ───────────────────────────────────
@@ -327,8 +412,10 @@ class ForwardUsesSharedSweepTest(unittest.TestCase):
 
     def _manifest(self) -> Path:
         with mock.patch.object(config, "OUTPUT_DIR", self.out):
-            m = freeze_manifest.build_manifest("phase_sweep", self.spec,
-                                               freeze_date=self.FREEZE_DATE)
+            m = freeze_manifest.build_manifest(
+                "phase_sweep", self.spec, freeze_date=self.FREEZE_DATE,
+                # holdout 邊界是 manifest 的必要內容(未解析 = 不可靠的凍結版本)
+                calendar=pd.bdate_range("2024-06-24", periods=500))
             path = freeze_manifest.manifest_path(m)
             path.write_text(json.dumps(m, ensure_ascii=False, indent=2, default=str),
                             encoding="utf-8")

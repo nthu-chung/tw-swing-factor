@@ -33,6 +33,14 @@ S19:它的 OS 早已被評估窗洩漏污染)。
    raise。台帳被靜默重寫的話,它記的東西就一文不值。
 3. **reveal time 由呼叫端注入(`now=`)。** 需要時間戳,但不可引入不可重現的
    隨機性:測試必須能斷言同一份台帳的內容。時間戳不進任何策略 hash。
+4. **另存一份「長度指紋」擋整檔刪除。** 雜湊鏈只在檔案還在時有意義:實測
+   `os.remove(outputs/holdout_ledger.jsonl)` 之後,同 hash 同窗立刻回報
+   `fresh`、零警告 —— append-only 的紀錄被一個 `rm` 洗掉。所以每次 append 會
+   同時更新 `holdout_ledger.jsonl.checkpoint.json`(列數 + 末列 `record_sha256`),
+   讀取時列數倒退或末列對不上就 fail-closed。這兩份檔案(連同
+   `forward_test_runs.jsonl`)是**稽核紀錄不是資料產物**,所以刻意加進
+   `.gitignore` 例外與 `preflight.OUTPUT_ALLOWLIST`:進了版控,刪除才會在
+   `git status` 裡看得見,而且乾淨 clone 也帶著歷史。
 
 台帳裡**刻意不放績效數字**。它回答的是「這段未來資料被誰看過幾次」,不是
 「跑出多少 Sharpe」;把績效放進來只會讓人有動機挑好看的那一列來引用。
@@ -65,6 +73,13 @@ except ImportError:                      # pragma: no cover - 本 repo 只跑 ma
 
 LEDGER_NAME = "holdout_ledger.jsonl"
 LEDGER_SCHEMA = 1
+# 台帳的「長度指紋」。雜湊鏈擋得住改列/刪列/插列,擋不住**刪整個檔**:
+# `read_ledger` 對不存在的檔回 [],於是同一段 OS 又變回 fresh(實測:
+# `os.remove(ledger)` 之後同 hash 同窗回報 fresh,零警告)。指紋是獨立的一
+# 小份檔案,記「已經有幾列 + 最後一列的 record_sha256」,列數倒退或末列對不上
+# 就 fail-closed。它不重複雜湊鏈的工作,只回答「台帳有沒有整段消失」。
+CHECKPOINT_SUFFIX = ".checkpoint.json"
+CHECKPOINT_SCHEMA = 1
 
 # 第一列的 prev 指標。用字串而不是 None,是為了讓「鏈的起點」與「欄位漏寫」
 # 在驗證時區分得出來。
@@ -235,21 +250,94 @@ def _parse_and_verify(fh) -> List[Dict[str, Any]]:
     return records
 
 
+def checkpoint_path(path: Optional[Any] = None) -> Path:
+    """台帳指紋的位置(台帳檔名 + `.checkpoint.json`)。"""
+    p = ledger_path(path)
+    return p.with_name(p.name + CHECKPOINT_SUFFIX)
+
+
+def read_checkpoint(path: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+    """讀台帳指紋。不存在 = 從來沒有揭露過(乾淨 clone),回 None。"""
+    cp = checkpoint_path(path)
+    if not cp.exists():
+        return None
+    try:
+        data = json.loads(cp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HoldoutLedgerError(
+            f"[fail-closed] holdout 台帳指紋 {cp.name} 讀不出來({exc}):"
+            "指紋壞掉時不得當成「沒有指紋」放行,否則刪台帳只要順手弄壞指紋即可"
+        ) from exc
+    if not isinstance(data, dict) or "rows" not in data:
+        raise HoldoutLedgerError(f"[fail-closed] holdout 台帳指紋 {cp.name} 格式不對")
+    return data
+
+
+def _write_checkpoint(records: Sequence[Mapping[str, Any]],
+                      path: Optional[Any] = None) -> Dict[str, Any]:
+    cp = checkpoint_path(path)
+    data = {
+        "checkpoint_schema": CHECKPOINT_SCHEMA,
+        "ledger": ledger_path(path).name,
+        "rows": len(records),
+        "genesis": GENESIS,
+        "last_record_sha256": (records[-1]["record_sha256"] if records
+                               else GENESIS),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "note": ("台帳長度指紋:列數只能增加。列數倒退或末列 hash 對不上 = 台帳"
+                 "被整段刪除或截斷,`read_ledger` 會 fail-closed。"),
+    }
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                  encoding="utf-8")
+    return data
+
+
+def _verify_against_checkpoint(records: Sequence[Mapping[str, Any]],
+                               path: Optional[Any] = None) -> None:
+    """比對指紋:列數倒退或指紋那一列的 hash 對不上就 raise。
+
+    這是**刪整個檔**的擋點。雜湊鏈只在「檔案還在」時有意義:整份刪掉之後
+    `read_ledger` 會回空 list,所有已經被看過的 OS 全部靜靜變回 fresh。
+    """
+    cp = read_checkpoint(path)
+    if cp is None:
+        return
+    expected_rows = int(cp.get("rows") or 0)
+    if len(records) < expected_rows:
+        raise HoldoutLedgerError(
+            f"[fail-closed] holdout 台帳只剩 {len(records)} 列,指紋記的是 "
+            f"{expected_rows} 列({checkpoint_path(path).name}):台帳被刪除或"
+            "截斷了。已經揭露過的 holdout 不會因為紀錄消失而變回 fresh —— "
+            "請從版本控制/備份還原台帳,不要靠刪檔重來"
+        )
+    if expected_rows > 0:
+        seen = records[expected_rows - 1].get("record_sha256")
+        if seen != cp.get("last_record_sha256"):
+            raise HoldoutLedgerError(
+                f"[fail-closed] holdout 台帳第 {expected_rows} 列與指紋記錄的 "
+                "record_sha256 不符:台帳被換成另一條鏈(整份重建也算)"
+            )
+
+
 def read_ledger(path: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """讀台帳(順便驗鏈)。檔案不存在 = 還沒有任何揭露,回空 list。"""
+    """讀台帳(順便驗鏈與指紋)。檔案與指紋都不存在 = 還沒有任何揭露,回空 list。"""
     p = ledger_path(path)
     if not p.exists():
+        _verify_against_checkpoint([], path)     # 檔案被刪掉時在這裡 fail-closed
         return []
     with open(p, "r", encoding="utf-8") as fh:
         _lock(fh, exclusive=False)
         try:
-            return _parse_and_verify(fh)
+            records = _parse_and_verify(fh)
         finally:
             _unlock(fh)
+    _verify_against_checkpoint(records, path)
+    return records
 
 
 def verify_ledger(path: Optional[Any] = None) -> int:
-    """驗證整條鏈,回傳列數(壞掉會 raise)。稽核腳本用。"""
+    """驗證整條鏈與指紋,回傳列數(壞掉會 raise)。稽核腳本用。"""
     return len(read_ledger(path))
 
 
@@ -268,12 +356,24 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
     不同 `strategy_hash` 的揭露不會讓這次變成 previously_seen(那是另一套規則
     的樣本外),但會記進 `prior_reveals_other_rules` —— 同一段 holdout 被 30 套
     規則輪流看過是多重檢定問題,看得見比看不見好。
+
+    2026-08-15 補的洞:**「規則」的粒度是涵蓋 79 個 config 參數的完整 hash**,
+    所以參數研究迴圈(改一個門檻重跑)每一輪都是新 hash,同一段 OS 可以被無限
+    次宣告成 fresh。實測:同一段 OS 用 hash H1 揭露過,只把 `config.BBANDS_K`
+    從 2.0 改成 2.5(S19 與 FACTOR_WEIGHTS 都不讀這個參數)重算 hash,同一段
+    OS 立刻回報 `holdout_status='fresh'`、`fresh_oos_claim_allowed=True`。
+    而參數研究迴圈正是消耗 holdout 的**主要**途徑。因此另外報一個**不分規則**
+    的窗口口徑(`window_previously_revealed_any_rules` /
+    `window_reveal_count_any_rules`),並讓 `fresh_oos_claim_allowed` 同時要求
+    「同一套規則沒看過」**且**「任何規則都沒看過」。
+    `holdout_previously_seen` 維持同規則口徑(它回答的是「這套規則重現過嗎」),
+    兩個口徑分開報,不互相冒充。
     """
     lo, hi = _window(os_start, os_end)
     rows = list(records) if records is not None else read_ledger(path)
 
     same: List[Mapping[str, Any]] = []
-    other = 0
+    other_rows: List[Mapping[str, Any]] = []
     for r in rows:
         try:
             a, b = _window(r.get("os_start"), r.get("os_end"))
@@ -284,7 +384,8 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
         if r.get("strategy_hash") == strategy_hash:
             same.append(r)
         else:
-            other += 1
+            other_rows.append(r)
+    other = len(other_rows)
 
     declared = [c for c in KNOWN_CONSUMED_HOLDOUTS
                 if strategy_name and c.strategy == strategy_name
@@ -297,6 +398,16 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
     inside = _clip(covered, lo, hi)
     seen_days = _days(inside)
     total_days = int((hi - lo).days + 1)
+
+    # ── 不分規則的窗口口徑(多重檢定)────────────────────────────────────
+    covered_any = _merge(
+        [_window(r.get("os_start"), r.get("os_end")) for r in same + other_rows]
+        + [_window(c.seen_start, c.seen_end) for c in declared]
+    )
+    inside_any = _clip(covered_any, lo, hi)
+    seen_days_any = _days(inside_any)
+    distinct_rules = len({r.get("strategy_hash") for r in same + other_rows})
+    reveal_count_any = len(same) + other + len(declared)
 
     # 這次真正沒被看過的起點:第一個未被覆蓋的日子。
     fresh_start: Optional[pd.Timestamp]
@@ -313,6 +424,22 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
     else:
         status = "partially_consumed"
 
+    # fresh OOS 要同時過兩關:同一套規則沒看過、而且任何規則都沒看過。
+    blocked_reason: Optional[str] = None
+    if seen_days > 0:
+        blocked_reason = (
+            f"這段 OS 已被**同一套規則**看過 {seen_days}/{total_days} 天"
+            f"(status={status}):可以為重現目的再跑,但不得宣稱 fresh OOS。"
+        )
+    elif seen_days_any > 0:
+        blocked_reason = (
+            f"這段 OS 已被 {distinct_rules} 套**其他規則**看過 "
+            f"{seen_days_any}/{total_days} 天(共 {reveal_count_any} 次揭露):"
+            "同一段 holdout 被多套規則輪流檢視屬多重檢定,不得宣稱 fresh OOS。"
+            "參數研究迴圈每改一個參數就是一個新 hash —— 換 hash 不會讓資料變回"
+            "沒看過。"
+        )
+
     return {
         "os_window": [str(lo.date()), str(hi.date())],
         "os_window_days": total_days,
@@ -320,15 +447,19 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
         "holdout_status": status,
         "previously_seen_days": seen_days,
         "fresh_os_start": (None if fresh_start is None else str(fresh_start.date())),
-        "fresh_oos_claim_allowed": seen_days <= 0,
+        "fresh_oos_claim_allowed": seen_days <= 0 and seen_days_any <= 0,
+        "fresh_oos_blocked_reason": blocked_reason,
+        # 不分規則的窗口口徑:回答「這段未來資料總共被看過幾次」。
+        "window_previously_revealed_any_rules": seen_days_any > 0,
+        "window_previously_seen_days_any_rules": seen_days_any,
+        "window_reveal_count_any_rules": reveal_count_any,
+        "window_distinct_rules_any": distinct_rules,
         "prior_reveals_same_rules": [r.get("seq") for r in same],
         "prior_reveals_other_rules": other,
         "declared_consumed": [c.to_dict() for c in declared],
         "note": (
-            "holdout_previously_seen=True 代表這段 OS 已經被同一套規則(或既成"
-            "宣告)看過:可以為重現目的再跑,但不得再稱 fresh OOS。"
-            if seen_days > 0 else
-            "這段 OS 在本台帳裡是第一次被這套規則揭露。"
+            blocked_reason if blocked_reason else
+            "這段 OS 在本台帳裡是第一次被任何規則揭露。"
         ),
     }
 
@@ -366,6 +497,9 @@ def record_reveal(*, strategy_hash: str, strategy_name: Optional[str],
         _lock(fh, exclusive=True)
         try:
             records = _parse_and_verify(fh)
+            # 指紋在**鎖內**驗:被刪掉的台帳不可以靠「再寫一列」就重新開始,
+            # 否則 `os.remove(ledger)` 仍然是一條無痕的洗白路徑。
+            _verify_against_checkpoint(records, path)
             status = reveal_status(strategy_hash=strategy_hash,
                                    strategy_name=strategy_name,
                                    os_start=lo, os_end=hi, records=records)
@@ -400,6 +534,8 @@ def record_reveal(*, strategy_hash: str, strategy_name: Optional[str],
             fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+            # 指紋也在鎖內更新,否則併發揭露會互相寫回較短的列數。
+            _write_checkpoint(records + [record], path)
         finally:
             _unlock(fh)
     return record
@@ -418,7 +554,8 @@ def rules_fingerprint(payload: Mapping[str, Any]) -> str:
 
 
 __all__ = [
-    "ConsumedHoldout", "GENESIS", "HoldoutLedgerError", "KNOWN_CONSUMED_HOLDOUTS",
-    "LEDGER_NAME", "LEDGER_SCHEMA", "ledger_path", "read_ledger", "record_reveal",
+    "CHECKPOINT_SUFFIX", "ConsumedHoldout", "GENESIS", "HoldoutLedgerError",
+    "KNOWN_CONSUMED_HOLDOUTS", "LEDGER_NAME", "LEDGER_SCHEMA", "checkpoint_path",
+    "ledger_path", "read_checkpoint", "read_ledger", "record_reveal",
     "reveal_status", "rules_fingerprint", "verify_ledger",
 ]

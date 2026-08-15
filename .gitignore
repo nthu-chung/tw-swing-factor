@@ -7,6 +7,12 @@ outputs/*
 # 例外：重現回測必需的候選池 fixture + 不可覆寫的凍結 manifest 要進版控
 !outputs/universe_top*.json
 !outputs/FROZEN_MANIFEST_*.json
+# 例外：holdout 揭露台帳與 forward 執行紀錄是「稽核紀錄」不是資料產物。
+# 不進版控的話，換一台 clone 或一個 rm 就把「這段 OS 已經被看過」洗掉，
+# 而那正是台帳存在的唯一理由（見 evaluation/holdout.py 設計決定 4）。
+!outputs/holdout_ledger.jsonl
+!outputs/holdout_ledger.jsonl.checkpoint.json
+!outputs/forward_test_runs.jsonl
 
 # 環境與密鑰（不要把 FinMind token 進版控）
 .env

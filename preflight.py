@@ -101,12 +101,19 @@ TEXT_SUFFIXES = {
 # `_cache/` 一律不得追蹤。`outputs/` 只放研究紀錄(Markdown)與少數刻意的 fixture:
 #   - universe_top*.json:重現 legacy static universe 對照組所需
 #   - FROZEN_MANIFEST_*.json:凍結規則,依定義不可覆寫,必須進版控
+#   - holdout_ledger.jsonl(+ .checkpoint.json)、forward_test_runs.jsonl:
+#     **稽核紀錄**,不是資料產物。它們記的是「這段 holdout 被誰看過幾次」;
+#     不進版控的話換一台 clone 或一個 `rm` 就靜靜回到 fresh(見
+#     evaluation/holdout.py 的設計決定 4),而那正是它們存在的唯一理由。
 DATA_ARTIFACT_DIRS = ("_cache/",)
 OUTPUT_DIR_PREFIX = "outputs/"
 OUTPUT_ALLOWLIST = (
     "outputs/*.md",
     "outputs/universe_top*.json",
     "outputs/FROZEN_MANIFEST_*.json",
+    "outputs/holdout_ledger.jsonl",
+    "outputs/holdout_ledger.jsonl.checkpoint.json",
+    "outputs/forward_test_runs.jsonl",
 )
 # 資料產物副檔名:任何位置被追蹤都視為誤提交(測試 fixture 除外)。
 DATA_ARTIFACT_SUFFIXES = (

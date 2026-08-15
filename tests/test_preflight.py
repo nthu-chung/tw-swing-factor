@@ -126,6 +126,28 @@ class DataArtifactTest(unittest.TestCase):
         ]
         self.assertEqual(preflight.check_data_artifacts(allowed), [])
 
+    def test_audit_ledgers_are_allowed_and_gitignore_agrees(self):
+        """holdout 台帳與 forward 執行紀錄是稽核紀錄,必須可以進版控。
+
+        原本 `outputs/*` 被 .gitignore 全數排除、preflight 白名單也沒有它們 ——
+        於是「這段 OS 已經被看過」只存在某一台機器的檔案裡:一個 `rm` 或換一台
+        clone 就靜靜回到 fresh(實測 `os.remove(ledger)` 後同 hash 同窗回報
+        fresh)。preflight 與 .gitignore 必須同時放行,少一邊就等於沒放行。
+        """
+        from evaluation import holdout as holdout_ledger
+
+        ledger = f"outputs/{holdout_ledger.LEDGER_NAME}"
+        audit_records = [
+            ledger,
+            ledger + holdout_ledger.CHECKPOINT_SUFFIX,
+            "outputs/forward_test_runs.jsonl",
+        ]
+        self.assertEqual(preflight.check_data_artifacts(audit_records), [])
+        ignore = (preflight.ROOT / ".gitignore").read_text(encoding="utf-8")
+        for rel in audit_records:
+            self.assertIn(f"!{rel}", ignore,
+                          f"{rel} 在 preflight 放行但 .gitignore 仍然擋著")
+
 
 class RequiredFileTest(unittest.TestCase):
     def test_missing_public_file_fails_but_untracked_only_warns(self):

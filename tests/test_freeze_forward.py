@@ -56,6 +56,12 @@ def _panel(n_days: int = 120, sids=("A", "B", "C", "D"), seed: int = 7) -> pd.Da
     return pd.DataFrame(rows).sort_values(["date", "stock_id"]).reset_index(drop=True)
 
 
+# 凍結資料的交易日曆。manifest 的 holdout 邊界(IS／embargo／OS 日期)是必要
+# 內容:沒有它 `validate_manifest` 會判 `ok=False`,forward 也拒用 —— 所以每一份
+# 要被 validate / apply / forward 使用的 manifest 都得帶日曆。
+CAL = pd.bdate_range("2024-06-24", periods=500)
+
+
 class _FakeProvider:
     """假的 PIT provider(只要能被辨識並帶著走就夠;引擎在此被 mock)。"""
 
@@ -73,6 +79,35 @@ def _fake_summary(n: int, *, pit: bool = True, beyond: int = 0) -> dict:
         "eval_audit": {"days_beyond_last_pick": beyond},
         "universe": {"candidate_pool_pit": pit},
     }
+
+
+def _signal_panel(n_days: int = 140, sids=("A", "B", "C", "D", "E"),
+                  seed: int = 11) -> pd.DataFrame:
+    """給訊號測試用的稠密 panel:**量能也要隨機**。
+
+    舊的 `_panel()` 每檔股票的 volume 是常數,`ts_mean(volume, w)` 換視窗只差在
+    暖身期的 NaN —— 用它來測 `vol_window` 幾乎測不到東西。
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for k, sid in enumerate(sids):
+        px = 100.0
+        for d in pd.bdate_range("2025-01-01", periods=n_days):
+            px *= 1.0 + rng.normal(0.001 * (k + 1), 0.02)
+            rows.append({
+                "date": d, "stock_id": sid, "name": f"N{sid}", "close": px,
+                "volume": float(rng.lognormal(13 + 0.2 * k, 0.6)),
+                "foreign_net": rng.normal(1e4 * (k + 1), 2e4),
+                "trust_net": rng.normal(5e3, 1e4),
+                "in_dynamic_universe": True, "trend_ok": True,
+            })
+    return pd.DataFrame(rows).sort_values(["date", "stock_id"]).reset_index(drop=True)
+
+
+def _series_differs(a: pd.Series, b: pd.Series) -> bool:
+    """兩條分數序列是否不同(NaN 用哨兵值比對,NaN 位置變了也算不同)。"""
+    sentinel = -1e9
+    return bool((a.fillna(sentinel).values != b.fillna(sentinel).values).any())
 
 
 def _legacy_manifest() -> dict:
@@ -210,10 +245,85 @@ class FrozenCoverageTest(unittest.TestCase):
             self.assertIn(k, m)
 
 
+# ── 2.5 凍結的訊號參數確實 load-bearing(不是只進 hash 的裝飾)─────────────
+class FrozenSignalParamsTest(unittest.TestCase):
+    """六個 load-bearing 的凍結參數必須真的決定分數與投組行為。
+
+    原本的破口(2026-08-15 審查用突變測試證明):`mom_window` / `flow_window` /
+    `vol_window` / `w_momentum` / `w_flow` / `stop_loss` 六個參數**進得了 hash**,
+    卻沒有任何測試證明 forward 真的用凍結值在跑。實測三個突變全套 340 測試零
+    新增失敗:
+
+      - `o.ts_ir(ret1, spec.sig("mom_window"))` → 讀模組常數 `SIGNAL_MOM_WINDOW`
+      - `spec.sig("w_momentum")/spec.sig("w_flow")` → 讀 `W_MOMENTUM`/`W_FLOW`
+      - `_apply_portfolio_config` 裡的
+        `config.BT_TREND_STOP_LOSS = spec.port("stop_loss")` 整行刪掉
+
+    也就是「凍結參數確實傳入 forward evaluator」這條 P0-1 回歸測試,對訊號那半
+    與停損實質上沒有達成 —— 換成模組常數之後,forward 驗證的是「今天的參數」而
+    不是「當時凍結的規則」,而 hash 仍然對得上。
+    """
+
+    PANEL = _signal_panel()
+    # 每個訊號參數各給一個與預設(20/20/20/0.5/0.5)不同的值。
+    VARIANTS = {
+        "mom_window": 60,
+        "flow_window": 60,
+        "vol_window": 60,
+        "w_momentum": 0.9,
+        "w_flow": 0.9,
+    }
+    MODULE_CONSTANTS = {
+        "SIGNAL_MOM_WINDOW": 3, "SIGNAL_FLOW_WINDOW": 3, "SIGNAL_VOL_WINDOW": 3,
+        "W_MOMENTUM": 0.05, "W_FLOW": 0.95,
+    }
+
+    def test_every_frozen_signal_param_changes_the_score(self):
+        """改凍結規格的任一訊號參數 → 分數序列必須不同。
+
+        若 `build_signal` 改讀模組常數,換規格就完全不影響輸出,這裡會變紅。
+        """
+        base = s19.build_signal(self.PANEL)
+        for key, value in self.VARIANTS.items():
+            with self.subTest(param=key):
+                spec = s19.SPEC.replace(signal={key: value})
+                other = s19.build_signal(self.PANEL, spec=spec)
+                self.assertTrue(
+                    _series_differs(base, other),
+                    f"凍結的 {key}={value} 沒有影響訊號 —— build_signal 沒在讀 spec")
+
+    def test_frozen_spec_beats_the_module_constant_projection(self):
+        """模組常數只是 SPEC 的投影:改常數不得改變 `build_signal` 的輸出。
+
+        這是同一件事的反向斷言 —— 上一條證明「spec 有效」,這條證明
+        「常數無效」,兩條合起來才排除「其實在讀常數」。
+        """
+        base = s19.build_signal(self.PANEL)
+        for name, bogus in self.MODULE_CONSTANTS.items():
+            with self.subTest(constant=name):
+                with mock.patch.object(s19, name, bogus):
+                    self.assertFalse(
+                        _series_differs(base, s19.build_signal(self.PANEL)),
+                        f"改模組常數 {name} 竟然改變了訊號 —— 那代表 build_signal "
+                        "讀的是常數,forward 會用今天的參數驗證當時凍結的規則")
+
+    def test_signal_fails_closed_when_a_frozen_param_is_missing(self):
+        """規格缺參數時不得用預設值頂替(那就是「凍結不完整卻照跑」)。"""
+        partial = StrategySpec(
+            name=s19.SPEC.name,
+            signal={k: v for k, v in s19.SPEC.signal.items()
+                    if k != "vol_window"},
+            portfolio=dict(s19.SPEC.portfolio),
+        )
+        with self.assertRaisesRegex(KeyError, "vol_window"):
+            s19.build_signal(self.PANEL, spec=partial)
+
+
 # ── 3. manifest 驗證:legacy / 不完整不得冒充 ─────────────────────────────
 class ManifestValidationTest(unittest.TestCase):
     def test_fresh_manifest_is_reliable(self):
-        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15")
+        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15",
+                                           calendar=CAL)
         st = freeze_manifest.validate_manifest(m)
         self.assertTrue(st.ok, st.describe())
         self.assertIn("reliable", st.reliability)
@@ -259,14 +369,16 @@ class ManifestValidationTest(unittest.TestCase):
 
     def test_apply_rules_refuses_renamed_config_key(self):
         """config 已無此參數時不可靜默略過(舊版 `if hasattr` 就是這個 bug)。"""
-        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15")
+        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15",
+                                           calendar=CAL)
         m["rules"]["config"]["BT_PARAM_REMOVED_LONG_AGO"] = 1
         m["rules_sha256_16"] = freeze_manifest.rules_hash(m["rules"])
         with self.assertRaisesRegex(ValueError, "不存在"):
             freeze_manifest.apply_rules(m)
 
     def test_apply_rules_restores_frozen_values(self):
-        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15")
+        m = freeze_manifest.build_manifest("x", freeze_date="2026-08-15",
+                                           calendar=CAL)
         m["rules"]["config"]["BT_TREND_STOP_LOSS"] = 0.30
         m["rules_sha256_16"] = freeze_manifest.rules_hash(m["rules"])
         before = config.BT_TREND_STOP_LOSS
@@ -280,10 +392,10 @@ class ManifestValidationTest(unittest.TestCase):
     def test_immutable_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(config, "OUTPUT_DIR", Path(tmp)):
-                p1 = freeze_manifest.run("dup_label")
+                p1 = freeze_manifest.run("dup_label", calendar=CAL)
                 self.assertIsNotNone(p1)
                 body = p1.read_text(encoding="utf-8")
-                p2 = freeze_manifest.run("dup_label")
+                p2 = freeze_manifest.run("dup_label", calendar=CAL)
                 self.assertIsNone(p2, "同名 manifest 不可覆寫")
                 self.assertEqual(body, p1.read_text(encoding="utf-8"))
 
@@ -299,11 +411,17 @@ class ForwardTestPathTest(unittest.TestCase):
         self.panel = _panel()
         self.panel.attrs["universe_provider"] = _FakeProvider()
         self.calls: list = []
+        # 每次進引擎時 config 長什麼樣。凍結的投組參數有一半是**副作用**
+        # (`_apply_portfolio_config` 把 stop_loss / ma_exit / max_positions 寫進
+        # config),不看 config 就完全驗不到它們有沒有被套用。
+        self.cfg_seen: list = []
 
-    def _write_manifest(self, spec=None, *, label="fwd") -> Path:
+    def _write_manifest(self, spec=None, *, label="fwd",
+                        calendar=CAL) -> Path:
         with mock.patch.object(config, "OUTPUT_DIR", self.out):
             m = freeze_manifest.build_manifest(label, spec,
-                                               freeze_date=self.FREEZE_DATE)
+                                               freeze_date=self.FREEZE_DATE,
+                                               calendar=calendar)
             path = freeze_manifest.manifest_path(m)
             path.write_text(json.dumps(m, ensure_ascii=False, indent=2, default=str),
                             encoding="utf-8")
@@ -316,6 +434,11 @@ class ForwardTestPathTest(unittest.TestCase):
 
         def fake_bt(**kwargs):
             self.calls.append(kwargs)
+            self.cfg_seen.append({
+                "BT_TREND_STOP_LOSS": config.BT_TREND_STOP_LOSS,
+                "BT_MA_EXIT": config.BT_MA_EXIT,
+                "BT_MAX_POSITIONS": config.BT_MAX_POSITIONS,
+            })
             make = summary_factory or _fake_summary
             return {"summary": make(len(self.calls) - 1),
                     "trades": pd.DataFrame(), "equity_curve": pd.DataFrame()}
@@ -351,6 +474,32 @@ class ForwardTestPathTest(unittest.TestCase):
             self.assertEqual(kw["rebalance_every"], 20)
             self.assertEqual(kw["top_n"], 10)
         self.assertEqual(payload["strategy"]["portfolio"]["max_positions"], 10)
+
+    def test_frozen_stop_loss_and_ma_exit_reach_the_engine_config(self):
+        """凍結的 stop_loss / ma_exit / max_positions 必須在引擎跑的當下生效。
+
+        這三個不是簽章參數,是 `_apply_portfolio_config()` 寫進**全域 config**
+        的副作用 —— 只斷言 `rebalance_every` / `top_n` 完全驗不到它們。實測突變
+        (刪掉 `config.BT_TREND_STOP_LOSS = spec.port("stop_loss")` 這一行)
+        全套測試零新增失敗:凍結的停損進得了 hash,卻沒有任何測試證明 forward
+        真的用它跑。
+        """
+        frozen = s19.SPEC.replace(portfolio={"stop_loss": 0.07, "ma_exit": 33,
+                                             "max_positions": 6,
+                                             "rebalance_days": 2})
+        before = (config.BT_TREND_STOP_LOSS, config.BT_MA_EXIT,
+                  config.BT_MAX_POSITIONS)
+        # 前提:凍結值必須與現行 config 不同,否則斷言只是碰巧相等。
+        self.assertNotEqual(before, (0.07, 33, 6))
+        self._run(self._write_manifest(frozen, label="cfg"))
+        self.assertEqual(len(self.cfg_seen), 2, "2 日再平衡 = 2 個相位")
+        for seen in self.cfg_seen:
+            self.assertAlmostEqual(seen["BT_TREND_STOP_LOSS"], 0.07)
+            self.assertEqual(seen["BT_MA_EXIT"], 33)
+            self.assertEqual(seen["BT_MAX_POSITIONS"], 6)
+        # 跑完要還原(否則凍結參數會外洩到同一個 process 的其他研究)
+        self.assertNotEqual(config.BT_TREND_STOP_LOSS, 0.07)
+        self.assertNotEqual(config.BT_MA_EXIT, 33)
 
     def test_forward_uses_frozen_spec_not_current_module_default(self):
         """凍結值與現在的模組預設不同時,forward 必須用**凍結**的那個。"""
@@ -501,7 +650,8 @@ class ForwardTestPathTest(unittest.TestCase):
     def test_forward_refuses_manifest_missing_load_bearing_param(self):
         import forward_test
         with mock.patch.object(config, "OUTPUT_DIR", self.out):
-            m = freeze_manifest.build_manifest("gap", freeze_date=self.FREEZE_DATE)
+            m = freeze_manifest.build_manifest("gap", freeze_date=self.FREEZE_DATE,
+                                               calendar=CAL)
             del m["rules"]["config"]["BT_ORDER_SIZE_MODE"]
             m["rules_sha256_16"] = freeze_manifest.rules_hash(m["rules"])
             path = freeze_manifest.manifest_path(m)

@@ -41,6 +41,16 @@ manifest 只凍了切割的**參數**(`EVAL_SPLIT_MODE`/`IS_OS_SPLIT`/`EMBARGO_D
 `holdout` 刻意**不進 `rules` / hash**:解出來的日期是資料的函數,放進 hash 會讓
 同一套規則在不同快照下變成不同規則(SNAPSHOT_END_DATE 不進 hash 是同一個理由)。
 
+2026-08-15 再修:邊界「有欄位」不等於「有釘住」
+------------------------------------------------
+`holdout_boundaries(calendar=...)` 是選用關鍵字,而 CLI **沒有**對應選項 ——
+走正式路徑產出的 manifest 一律 `resolved=False`(`is_window`/`os_window` 都是
+null),`validate_manifest` 只給一個 warning、`forward_test` 印一行就照跑。閘門
+又變回「呼叫端要記得傳的關鍵字參數」。修法兩件事:(1) `run()`(CLI 的唯一
+路徑)預設自己用 `trading_calendar()` 解日曆(離線只讀 TAIEX 一條序列);
+(2) `resolved=False` 從 warning 升成 `ok=False` —— 沒有邊界的 manifest 不是
+可靠的凍結版本,不得被 forward 拿去宣稱 OOS。
+
 輸出:outputs/FROZEN_MANIFEST_<freeze_date>_<label>.json(immutable)。
 用法:.venv/bin/python freeze_manifest.py --label momentum_only_v1
       .venv/bin/python freeze_manifest.py --strategy s19_chip_momentum --label s19_v1
@@ -54,6 +64,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 import config
 import provenance
@@ -185,14 +197,55 @@ HOLDOUT_SLIDING_NOTE = (
 )
 
 
+def trading_calendar(history_days: Optional[int] = None) -> Any:
+    """解出凍結資料的交易日曆(**離線、只讀一條序列**)。
+
+    為什麼要有這個函式(2026-08-15 審查抓到的洞)
+    ----------------------------------------------
+    `holdout_boundaries(calendar=...)` 一直是**選用關鍵字**,而 `__main__` 沒有
+    對應的 CLI 選項 —— 也就是說走 CLI **不可能**解出日期。實測 `run("cli_default")`
+    產出 `holdout.resolved=False`、`is_window=null`、`os_window=null`,而
+    `validate_manifest` 只回一個 warning、`forward_test.run` 印一行就照跑:
+    P1-3 的「manifest 固定記錄 IS／embargo／OS 邊界」在唯一的正式路徑上等於沒做,
+    閘門又變回「呼叫端要記得傳的關鍵字參數」。
+
+    這裡取的是大盤(TAIEX)一條序列(`data.fetch_market_index`,快取優先),
+    再裁到個股價格的資料視窗 —— 不觸發全市場抓取,所以凍結仍然是便宜的動作;
+    真的抓不到就 raise,而不是產出一份沒有邊界的 manifest。
+    """
+    import data
+
+    market = data.fetch_market_index()
+    if market is None or len(market) == 0 or "date" not in market.columns:
+        raise RuntimeError(
+            "[fail-closed] 解不出交易日曆:大盤(TAIEX)序列為空。"
+            "manifest 必須固定記錄 IS／embargo／OS 邊界(只記切割參數不算 ——"
+            "同一組參數在不同快照下解出不同的 OS)。請先跑 prefetch.py 取得 "
+            "TAIEX 快取,再重新凍結。"
+        )
+    days = pd.DatetimeIndex(
+        sorted(set(pd.to_datetime(market["date"], errors="coerce").dropna()))
+    )
+    # 裁到個股價格的視窗:TAIEX 抓的是 MARKET_HISTORY_DAYS(較長,MA200 暖身),
+    # 直接拿去切 IS/OS 會把 IS 起點推到回測根本看不到的日期。
+    scope = data.cache_scope("price", "CALENDAR", history_days)
+    lo, hi = pd.Timestamp(scope.start), pd.Timestamp(scope.end)
+    days = days[(days >= lo) & (days <= hi)]
+    if len(days) < 2:
+        raise RuntimeError(
+            f"[fail-closed] 交易日曆在資料視窗 {scope.start}~{scope.end} 內只有 "
+            f"{len(days)} 天,解不出 IS／embargo／OS 邊界"
+        )
+    return days
+
+
 def holdout_boundaries(calendar: Optional[Any] = None) -> Dict[str, Any]:
     """凍結時的 IS / embargo / OS 邊界。
 
-    `calendar` = 凍結資料的交易日序列(例如全期回測 `equity_curve["date"]`)。
-    有它才解得出**日期**;沒有就只記切割**規則**並標 `resolved=False` ——
-    這裡刻意不去抓資料:freeze 是離線動作,為了解一組日期而觸發全市場抓取
-    會讓凍結本身變成一件昂貴又可能失敗的事。未解析時 `validate_manifest`
-    會出警告(看得見,而不是假裝邊界已經釘住)。
+    `calendar` = 凍結資料的交易日序列(例如全期回測 `equity_curve["date"]`,
+    或 `trading_calendar()`)。有它才解得出**日期**;沒有就只記切割**規則**並標
+    `resolved=False` —— 而 `resolved=False` 的 manifest **不是**可靠的凍結版本
+    (`validate_manifest` 會判 `ok=False`),正式路徑 `run()` 預設會自己去解。
     """
     out: Dict[str, Any] = {
         "boundaries_schema": 1,
@@ -355,9 +408,15 @@ def validate_manifest(m: Any) -> ManifestStatus:
         if missing_hold:
             problems.append(f"holdout 段缺 {missing_hold}")
         elif not hold.get("resolved"):
-            warnings.append(
-                "holdout 邊界未解析成日期(凍結時沒給交易日曆):只釘住切割規則,"
-                "實際 OS 區間以揭露時寫進 holdout 台帳的為準"
+            # 2026-08-15:原本只是 warning,於是「manifest 固定記錄 IS／embargo／
+            # OS 邊界」實際上從沒發生過 —— CLI 根本沒有傳日曆的路徑,產出的
+            # manifest 一律 resolved=False,而 forward 印一行警告就照跑。
+            # 只凍切割**參數**是不夠的:同一組參數在不同快照下解出不同的 OS。
+            problems.append(
+                "holdout 邊界未解析成日期(resolved=False):只釘住切割規則等於"
+                "沒釘住 OS —— 同一組切割參數在不同快照下解出不同的 OS 區間。"
+                "請用 freeze_manifest.run()(預設自己解交易日曆)或傳 "
+                "build_manifest(calendar=...) 重新凍結"
             )
 
     rules = m.get("rules")
@@ -438,6 +497,15 @@ def apply_rules(m: Dict[str, Any]) -> StrategySpec:
 
 def run(label: str, *, strategy: str = DEFAULT_STRATEGY,
         calendar: Optional[Any] = None) -> Optional[Path]:
+    """凍結並寫出 manifest。**這是 CLI 走的唯一路徑。**
+
+    `calendar=None` 時自己去解交易日曆(`trading_calendar()`,離線只讀 TAIEX),
+    因為 holdout 邊界是 manifest 的必要內容:少了它,`validate_manifest` 會判
+    `ok=False`,forward 也拒用。原本 `calendar` 只是個選用關鍵字而 CLI 沒有
+    對應選項,結果正式路徑產出的 manifest 一律 `resolved=False`。
+    """
+    if calendar is None:
+        calendar = trading_calendar()
     m = build_manifest(label, strategy=strategy, calendar=calendar)
     path = manifest_path(m)
     if path.exists():
@@ -458,15 +526,13 @@ def run(label: str, *, strategy: str = DEFAULT_STRATEGY,
           f"{len(m['rules']['strategy']['portfolio'])} 投組")
     print(f"  資料快照@凍結 = {m['data_snapshot_at_freeze']}｜"
           f"git = {m['git_commit'][:10]}(dirty={m['git_dirty']})")
+    # 走到這裡 holdout 一定是 resolved 的:未解析的 manifest 在上面的
+    # validate_manifest 就被擋掉了(不再有「只釘住規則」的產出)。
     h = m["holdout"]
-    if h.get("resolved"):
-        print(f"  holdout 邊界:IS {h['is_window'][0]}~{h['is_window'][1]}｜"
-              f"embargo {h['embargo_trading_days']} 交易日｜"
-              f"OS {h['os_window'][0]}~{h['os_window'][1]}")
-    else:
-        print(f"  holdout 邊界:只釘住規則(mode={h['split_mode']}, "
-              f"embargo={h['embargo_days']});日期未解析,揭露時記進 "
-              f"{holdout_ledger.LEDGER_NAME}")
+    print(f"  holdout 邊界:IS {h['is_window'][0]}~{h['is_window'][1]}｜"
+          f"embargo {h['embargo_trading_days']} 交易日｜"
+          f"OS {h['os_window'][0]}~{h['os_window'][1]}｜"
+          f"揭露紀錄 {holdout_ledger.LEDGER_NAME}")
     print(f"  → {path}")
     if status.warnings:
         print("  ⚠ " + "；".join(status.warnings))
@@ -474,10 +540,15 @@ def run(label: str, *, strategy: str = DEFAULT_STRATEGY,
     return path
 
 
-if __name__ == "__main__":
+def main(argv: Optional[List[str]] = None) -> Optional[Path]:
+    """CLI 入口(抽成函式,測試才能釘住「CLI 預設路徑產出的 manifest」)。"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="baseline")
     ap.add_argument("--strategy", default=DEFAULT_STRATEGY,
                     choices=sorted(KNOWN_STRATEGIES))
-    args = ap.parse_args()
-    run(args.label, strategy=args.strategy)
+    args = ap.parse_args(argv)
+    return run(args.label, strategy=args.strategy)
+
+
+if __name__ == "__main__":
+    main()

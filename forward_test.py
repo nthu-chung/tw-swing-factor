@@ -263,6 +263,13 @@ def run(manifest_path: Optional[str] = None, *,
               f"({holdout['holdout_status']}, 重疊 "
               f"{holdout['previously_seen_days']} 天):這次**不是** fresh OOS,"
               f"真正沒看過的起點是 {holdout['fresh_os_start']}。")
+    elif holdout.get("window_previously_revealed_any_rules"):
+        # 同一段 holdout 被別套規則看過:換一個參數就換一個 hash,但資料不會
+        # 因此變回沒看過。這條路徑正是參數研究迴圈消耗 holdout 的方式。
+        print("[forward] ⚠ 這段 forward 窗雖然是**這套 hash** 第一次看,但已被 "
+              f"{holdout.get('window_distinct_rules_any')} 套其他規則揭露過"
+              f"(共 {holdout.get('window_reveal_count_any_rules')} 次):"
+              "屬多重檢定,不得宣稱 fresh OOS。")
 
     payload = {
         "manifest": str(manifest_path),
@@ -292,9 +299,12 @@ def run(manifest_path: Optional[str] = None, *,
         "evidence_note": (
             "forward-only 期間的結果。相位中位數/最小值與基準都在同一份檔案裡;"
             "交易數不足時不構成 edge 證據,也不自動升級任何策略的證據等級。"
+            # 擋下 fresh OOS 宣稱的理由直接引用台帳的判定,不在這裡重寫一份 ——
+            # 舊版寫死「此窗與已消耗的 holdout 重疊」,遇到「別套規則看過」這種
+            # 情況會指著錯的原因(holdout_status 其實是 fresh)。
             + ("" if holdout["fresh_oos_claim_allowed"] else
-               f"｜此窗與已消耗的 holdout 重疊({holdout['holdout_status']}),"
-               "只能當重現,不得宣稱 fresh OOS。")
+               "｜" + str(holdout.get("fresh_oos_blocked_reason") or
+                          "這段 holdout 已被看過,只能當重現。"))
         ),
     }
 
