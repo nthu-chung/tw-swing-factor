@@ -183,7 +183,9 @@ DataFrame adapter，但上述呼叫必須可用。
 - 完整目標持倉與 `target_cash_weight`。
 - `enter / hold / resize / exit` actions。
 - 每個 action 的 `reason_code`、當下 rank／score、最早可成交時間。
-- `snapshot_complete=True`；缺少此旗標時，股票未出現只能解讀為 unknown，不可自動賣。
+- `snapshot_complete`：**誠實反映實際採用的完整性判定**，缺省為 `False`（見 §9B.1）。
+  只有 signal frame 自己宣告 `snapshot_complete=True` 才算完整排名母體；缺少此旗標時，
+  股票未出現只能解讀為 unknown，不可自動賣。
 - 規則／輸入／輸出的 deterministic fingerprint 或可進既有 rules hash 的完整內容。
 
 事件引擎入口須能顯式接收 `signal_frame` 與 `strategy_position_policy`，並允許把
@@ -292,6 +294,10 @@ PYTHONPATH=. .venv/bin/python preflight.py
 `exit_pending` 缺值時預設 `True`，與 §5 的 `snapshot_complete` 同一套 fail-closed
 哲學：資訊不足時不自動賣。事件引擎一律顯式提供這一欄。
 
+（注意兩者的**旗標值**方向相反：`snapshot_complete` 缺值是 `False`、`exit_pending`
+缺值是 `True`；相同的是**行為**——都不因為「不知道」而產生賣出。`snapshot_complete`
+的缺省值於 2026-08-15 由 `True` 改為 `False`，理由見 §9B.1。）
+
 #### 9A.1a 這個預設值的已知限制（2026-08-15 審查後補；待 owner 決定）
 
 審查指出：上面那個預設**方向不是 fail-closed**。它只在報酬低於
@@ -346,6 +352,68 @@ external `picks_by_date` 路徑的安全預設是「截到最後一個訊號日�
 * signal_frame 同一天同一檔出現兩個 rank → raise（決策會取決於列順序）。
 * 給了 `regime_by_date` 就必須逐日給滿；缺值不得當成 `risk_on` —— 缺值放行等於
   在資料缺口上偷偷恢復滿曝險，方向剛好是最該擋的那一邊。
+
+## 9B. 契約澄清：訊號快照的完整性語意（2026-08-15，**owner 已同意**）
+
+本節記錄一次**外部語意的變更**（不是實作細節），依 §9 的規定先寫下理由並取得
+owner 同意。獨立審查者用實際重現找出下列兩個缺陷，兩者是同一個病灶的兩面：
+policy 把「我今天沒看到這一列」當成「這檔已經掉出排名母體」的證據。
+
+### 9B.1 `snapshot_complete` 缺省值改為 `False`
+
+**原缺陷（重現）**：`strategies/position_policy.py` 舊版 `_normalize_signals()` 以
+`snapshot_complete = True` 起始，只有 signal frame 帶了 `snapshot_complete` 欄才會
+改變。於是「持有 B、今天的訊號只有 A、frame 沒有完整性旗標」會讓 B 被判
+`exit / not_ranked` 賣掉。§5 要求這種情況視為 unknown、不得自動賣出；舊行為會直接
+改變換股次數、交易成本與績效。`frame.empty` 與「截至 as_of 沒有任何有效快照」時
+舊版直接 `return (..., True)`，是同一個 bug 的另外兩個出口——後者等於用一張空表
+把整個組合清空。
+
+**新語意**：
+
+1. 缺少 `snapshot_complete` 旗標 = 完整性**未知** = `False`。
+2. 空 DataFrame、或截至 as_of 找不到有效快照時，若沒有獨立於資料列之外的完整性
+   metadata，一律 `snapshot_complete=False`。v1 **沒有**這種獨立 metadata 通道
+   （不採用 `DataFrame.attrs` 之類會在 groupby／copy 之間靜默失傳的管道），因此
+   這兩種情況恆為 `False`。
+3. 完整性只取自**實際被採用的那一個快照日**的列（見 §9B.2）；較舊快照宣告完整
+   不能替最新快照背書。任一列為 `False`／NaN 則整個快照視為不完整。
+4. `decision.snapshot_complete` 必須誠實反映實際採用的判定。owner 明確**不採用**
+   「decision 永遠回報 `True`、內部卻不賣」的方案：那會讓稽核紀錄與實際行為
+   不一致，事後無法由 decision_log 重建當天到底用了什麼語意。
+
+**為什麼在 contract test 的 `_signals()` fixture 加旗標不等於放寬測試**：該 fixture
+的每一個案例本來就在描述「當日完整排名母體」（所有斷言都預設沒列出的股票是真的
+不在母體裡），加上 `snapshot_complete=True` 只是把這個一直存在的前提寫出來，讓輸入
+自己說清楚。斷言一條都沒有刪除或放寬——`test_decision_is_complete_and_auditable`
+的 `assertTrue(d.snapshot_complete)` 原封不動保留，而「缺旗標時必須是 `False`」
+另由 `tests/test_strategy_position_policy_snapshot.py` 正面釘住。換句話說：改的是
+**輸入的誠實度**，不是**輸出的驗收標準**。
+
+### 9B.2 多日 signals 只採用截至 as_of 的最新一個快照
+
+**原缺陷（重現）**：舊版對多日 signals 做
+`sort_values("_asof").drop_duplicates(subset=["stock_id"], keep="last")`，取的是
+**每檔各自的最新列**，不是「截至 as_of 的最新那一個快照日的全部列」。於是一檔在
+最新快照裡已經整列消失（掉出榜外）的股票，會沿用它舊快照的 rank 繼續被當成今天的
+有效訊號：既可能被當成 top-10 買進，也會因為「還在名單裡」而躲掉 `not_ranked`，
+而且輸出裡完全看不出那個 rank 是舊的。
+
+**新語意**：選出截至 as_of 的**最新一個快照日**，只用那一天的列；跨快照日合併
+rank 一律禁止。同一個快照日出現重複 `stock_id` 時 fail-closed raise（舊版靠
+`drop_duplicates` 靜默留下最後一列，決策取決於列順序，還會讓同一檔佔掉兩個資金槽；
+與 §9A.3 對引擎的同一條 fail-closed 一致）。`date <= as_of` 的過濾維持不變，
+`test_appending_future_signals_does_not_change_past_decision` 仍然成立。
+
+### 9B.3 對現有路徑的影響
+
+- 事件引擎每天只餵**單一快照日**的列給 `policy.decide()`，所以 §9B.2 不改變引擎
+  路徑的排名結果。
+- 但 §9B.1 會改變引擎行為：`signal_frame` 若不宣告 `snapshot_complete`，所有決策日
+  都算不完整，`not_ranked` 退出不會發生，且
+  `summary["strategy_position_policy"]["snapshot_complete_all_days"]` 為 `False`。
+  **要讓 `not_ranked` 生效，signal frame 必須自己宣告完整性。** 這個方向是刻意的：
+  賣錯股票要有明確依據，缺資訊時不動作。
 
 ## 10. 完成報告邊界
 

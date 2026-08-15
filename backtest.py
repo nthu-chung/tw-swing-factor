@@ -968,6 +968,10 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
       - `signal_frame`:長表 `date / stock_id / rank`(可含 `raw_score` /
         `eligible` / `snapshot_complete`)。**決策日由這張表的快照日期定義**,
         引擎不自己算「每五列」或星期幾 —— 假日週會讓那種推法整段錯位。
+        `snapshot_complete` 沒宣告時,該快照視為**完整性未知**(規格 §9B.1):
+        持股從快照消失只能解讀為 unknown,不會產生 `not_ranked` 退出,
+        `summary[...]["snapshot_complete_all_days"]` 也會是 False。要讓
+        `not_ranked` 生效,訊號那端必須自己宣告 `snapshot_complete=True`。
       - `strategy_position_policy`:`strategies.position_policy.StrategyPositionPolicy`。
         傳了就改走 desired-state 迴圈(T 日收盤決策 → T+1 開盤成交),與
         `picks_by_date` 互斥。沒傳時本函式的行為與此次改動前**完全相同**。

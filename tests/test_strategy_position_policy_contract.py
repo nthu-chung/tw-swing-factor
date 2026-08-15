@@ -58,6 +58,20 @@ def _spec(**overrides):
 
 
 def _signals(ranks, *, score_start=1.0):
+    """建立**完整**排名母體的訊號快照。
+
+    `snapshot_complete=True` 是 2026-08-15 owner 同意的契約澄清後補上的:這個
+    fixture 本來就是在描述「當日完整排名母體」(所有案例都假設沒列出的股票就是
+    真的不在母體裡),旗標只是把那個前提寫出來。
+
+    在此之前實作把缺旗標當成 True,等於用「我沒看到它」當成「它已經掉出母體」的
+    證據 —— 持有 B、當天訊號只有 A 時 B 會被判 `exit / not_ranked` 賣掉。缺旗標
+    的正確語意是 unknown(規格 §5、§9B.1),因此預設值改為 False,而**真的**完整
+    的快照必須自己宣告。這是把前提寫明,不是放寬斷言:
+    `test_decision_is_complete_and_auditable` 的 `assertTrue(d.snapshot_complete)`
+    原封不動保留,缺旗照樣為 False 的行為另由
+    `tests/test_strategy_position_policy_snapshot.py` 逐條釘住。
+    """
     rows = []
     for i, (sid, rank) in enumerate(ranks.items()):
         rows.append({
@@ -65,6 +79,7 @@ def _signals(ranks, *, score_start=1.0):
             "rank": int(rank),
             "raw_score": float(score_start - i * 0.01),
             "eligible": True,
+            "snapshot_complete": True,
         })
     return pd.DataFrame(rows)
 

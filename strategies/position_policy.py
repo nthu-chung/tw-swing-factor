@@ -229,30 +229,52 @@ def _as_frame(obj, columns: Sequence[str]) -> pd.DataFrame:
     return frame
 
 
+def _empty_signal_frame() -> pd.DataFrame:
+    return pd.DataFrame({
+        "stock_id": pd.Series([], dtype=object),
+        "rank": pd.Series([], dtype=float),
+        "raw_score": pd.Series([], dtype=float),
+    })
+
+
 def _normalize_signals(signals, as_of: pd.Timestamp):
     """回傳 `(sig_frame, snapshot_complete)`。
 
-    **未來訊號不得改變過去決策**:若 signals 帶 `date` 欄,只保留 `date <= as_of`
-    的列,並在同一檔多筆時取最後一個 as-of 的那筆。沒有這一刀,把整段歷史訊號表
-    直接丟進來就會用未來的排名決定過去的部位 —— 而且完全不會報錯。
+    這裡有三刀,每一刀都擋掉一種曾經真的發生、而且不會報錯的假績效:
+
+    1. **未來訊號不得改變過去決策**:若 signals 帶 `date` 欄,只保留
+       `date <= as_of` 的列。沒有這一刀,把整段歷史訊號表直接丟進來就會用未來的
+       排名決定過去的部位。
+    2. **只採用截至 as_of 的最新那一個快照日,不跨快照日合併 rank**
+       (規格 §9B.2)。舊版是
+       `sort_values("_asof").drop_duplicates("stock_id", keep="last")`,取的是
+       **每檔各自的最新列**:一檔在最新快照裡已經掉出榜外(整列消失),卻會沿用
+       它上一個快照的 rank 繼續被當成有效訊號 —— 既可能被當成 top-10 買進,也會
+       因為「還在名單裡」而躲掉 `not_ranked`。輸出裡完全看不出那個 rank 是舊的。
+    3. **完整性未知一律當成不完整**(`snapshot_complete=False`,規格 §9B.1)。
+       舊版預設 True,於是「持有 B、今天訊號只有 A、frame 沒帶旗標」會把 B 判成
+       `exit / not_ranked` 賣掉 —— 用「我沒看到它」當成「它已經掉出母體」的證據。
+       缺旗標時正確語意是 unknown,不可自動賣。空表、或截至 as_of 沒有任何有效
+       快照時同理:v1 沒有獨立於資料列之外的完整性 metadata 通道,拿不到旗標就是
+       不知道,一律 False。
     """
     frame = _as_frame(signals, ("stock_id", "rank", "raw_score", "eligible"))
     if frame.empty:
-        return (pd.DataFrame(columns=["stock_id", "rank", "raw_score"]), True)
+        return (_empty_signal_frame(), False)
     if "stock_id" not in frame.columns or "rank" not in frame.columns:
         raise ValueError("signals 至少要有 stock_id 與 rank 欄")
 
     if "date" in frame.columns:
         dates = pd.to_datetime(frame["date"])
-        frame = frame[dates <= as_of].copy()
-        if frame.empty:
-            return (pd.DataFrame(columns=["stock_id", "rank", "raw_score"]), True)
-        frame["_asof"] = pd.to_datetime(frame["date"])
-        frame = (frame.sort_values(["_asof"], kind="mergesort")
-                      .drop_duplicates(subset=["stock_id"], keep="last"))
-        frame = frame.drop(columns=["_asof"])
+        keep = dates <= as_of
+        if not bool(keep.any()):
+            return (_empty_signal_frame(), False)
+        frame = frame[keep].copy()
+        asof_dates = dates[keep]
+        # 「截至 as_of 的最新一個快照日」= 這一天的**全部**列,其他快照日一列都不用。
+        frame = frame[asof_dates == asof_dates.max()].copy()
 
-    snapshot_complete = True
+    snapshot_complete = False
     if "snapshot_complete" in frame.columns:
         snapshot_complete = bool(
             frame["snapshot_complete"].fillna(False).astype(bool).all())
@@ -267,6 +289,14 @@ def _normalize_signals(signals, as_of: pd.Timestamp):
                       if "raw_score" in frame.columns else np.nan),
     })
     out = out[out["rank"].notna()]
+    # 同一個快照日同一檔兩個 rank → raise。舊版靠 drop_duplicates 靜默留下最後一列,
+    # 於是決策取決於列順序;現在不再跨快照日合併,同一天的重複只可能是上游算錯,
+    # 放行的話還會讓同一檔佔掉兩個資金槽(規格 §9A.3 對引擎的同一條 fail-closed)。
+    dupes = sorted(set(out.loc[out["stock_id"].duplicated(), "stock_id"]))
+    if dupes:
+        raise ValueError(
+            f"[fail-closed] 同一個快照日有重複的 stock_id {dupes};"
+            "同一檔兩個 rank 會讓決策取決於列順序")
     # 同 rank 時用 stock_id 當第二鍵:決策必須 deterministic,否則同一份輸入
     # 重跑會挑到不同的股票,任何 parity 或 forward 比對都失去意義。
     out = out.sort_values(["rank", "stock_id"], kind="mergesort").reset_index(drop=True)
@@ -461,9 +491,10 @@ class StrategyPositionPolicy:
                 rank = rank_of.get(sid)
                 if rank is None or not math.isfinite(float(rank)):
                     if snapshot_complete:
-                        # 完整 snapshot 下「不在名單裡」= 已不在 eligible universe。
-                        # snapshot 不完整時什麼都不做(規格 §5:未列出只能解讀為
-                        # unknown,不可自動賣)。
+                        # 只有**明確宣告完整**的 snapshot,「不在名單裡」才等於
+                        # 已不在 eligible universe。沒有旗標時 snapshot_complete
+                        # 是 False(規格 §5、§9B.1),什麼都不做 —— 未列出只能
+                        # 解讀為 unknown,不可拿「我沒看到它」當賣出的證據。
                         _add_exit(sid, "not_ranked")
                     continue
                 if float(rank) > float(spec.exit_rank):
