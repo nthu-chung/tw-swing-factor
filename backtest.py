@@ -970,7 +970,7 @@ def _build_research_panel(symbols: Optional[List[str]] = None, *,
 
 
 # ── StrategyPositionPolicy 的訊號快照 ───────────────────────────────────────
-def _prepare_signal_snapshots(signal_frame):
+def _prepare_signal_snapshots(signal_frame, *, decision_frequency=None):
     """把長表 `date/stock_id/rank` 切成 `{快照日 -> 當日完整排名}`。
 
     **決策日就是快照日,引擎不自己算星期幾。** 舊的 `rebalance_every/phase` 是
@@ -993,7 +993,146 @@ def _prepare_signal_snapshots(signal_frame):
             f"[fail-closed] signal_frame 有 {dupes} 筆重複的 (date, stock_id);"
             "同一天同一檔兩個 rank,決策結果會取決於列順序")
     snapshots = {d: g.reset_index(drop=True) for d, g in frame.groupby("date")}
-    return snapshots, sorted(snapshots)
+    dates = sorted(snapshots)
+    _assert_snapshot_frequency(dates, decision_frequency)
+    return snapshots, dates
+
+
+def _iso_week(day) -> tuple:
+    """回傳 (ISO 年, ISO 週)。跨年時 ISO 週的年份與日曆年不同,必須成對用。"""
+    cal = pd.Timestamp(day).isocalendar()
+    return (int(cal[0]), int(cal[1]))
+
+
+def _assert_snapshot_frequency(dates, decision_frequency) -> None:
+    """快照間距必須符合 policy 宣告的 `decision_frequency`。
+
+    原本的缺陷:決策日 = 快照日(這是刻意的,見 `_prepare_signal_snapshots`),
+    但**沒有任何東西驗證快照頻率真的是宣告的那一種**。producer 送日頻快照,
+    policy 就會日頻換股,而 `rules_hash` 裡仍寫著 `decision_frequency="weekly"` ——
+    一份宣稱週頻的規則跑出日頻的週轉率與成本,而且從結果看不出來。
+    規格 §3.1 明文:一般進場、排名續抱、排名退出只在每週決策日發生。
+
+    weekly 的判準是「**同一個 ISO 週最多一個快照**」,而不是「間隔剛好 5 個交易日」:
+    §3.1 同時規定假日週以該週最後一個有效交易日為決策日,所以週與週之間的**間距會變**,
+    甚至整週沒有交易日也合法(春節)。真正不可接受的是同一週出現多次決策。
+    """
+    if not decision_frequency or decision_frequency == "daily":
+        return
+    if decision_frequency != "weekly":
+        raise ValueError(
+            f"[fail-closed] 未知的 decision_frequency={decision_frequency!r};"
+            "引擎不知道該用什麼判準驗證快照頻率")
+    seen: Dict[tuple, Any] = {}
+    for day in dates:
+        key = _iso_week(day)
+        if key in seen:
+            raise ValueError(
+                "[fail-closed] policy 宣告 decision_frequency='weekly',但 "
+                f"signal_frame 在同一個 ISO 週 {key} 有多個快照日:"
+                f"{str(seen[key])[:10]} 與 {str(day)[:10]}。"
+                "決策日 = 快照日,所以這會變成日頻換股,而 rules_hash 仍寫著 weekly。"
+                "要跑日頻請把 decision_frequency 設成 'daily';"
+                "要跑週頻請用 backtest.select_decision_snapshots() 先降頻。")
+        seen[key] = day
+
+
+WEEKLY_PHASES = 5
+
+
+def select_decision_snapshots(dates, *, decision_frequency: str = "weekly",
+                              phase: int = 0) -> List:
+    """從逐日(或較密)的快照日挑出**某一個等價相位**的決策日。
+
+    為什麼需要這個:policy 路徑的決策日 = 快照日,所以引擎自己**不能**平移決策日;
+    要跑滿等價相位,必須由呼叫端提供較密的快照,再由這裡降頻。規格 §3.1 要求
+    「正式研究仍須跑滿所有等價 weekly phase,報中位數、最小值與最差 MaxDD」——
+    只報一個星期幾等於挑路徑(AGENTS.md 陷阱 2 實測同訊號換相位 Sharpe 從
+    -0.09 擺到 +1.09)。
+
+    weekly + phase p:每個 ISO 週取第 p 個可用交易日;**該週不足 p+1 天時取該週
+    最後一個有效交易日**(§3.1 的假日週規則)。因此在短週裡相鄰相位可能落在同一天,
+    這是規格要的行為,不是 bug。
+    """
+    if decision_frequency == "daily":
+        return sorted(dates)
+    if decision_frequency != "weekly":
+        raise ValueError(
+            f"[fail-closed] select_decision_snapshots 不支援 "
+            f"decision_frequency={decision_frequency!r}")
+    if not 0 <= int(phase) < WEEKLY_PHASES:
+        raise ValueError(
+            f"[fail-closed] weekly 相位必須在 [0, {WEEKLY_PHASES - 1}],"
+            f"目前為 {phase}")
+    by_week: Dict[tuple, List] = {}
+    for day in sorted(dates):
+        by_week.setdefault(_iso_week(day), []).append(day)
+    picked = []
+    for week_days in by_week.values():
+        idx = min(int(phase), len(week_days) - 1)
+        picked.append(week_days[idx])
+    return sorted(picked)
+
+
+def backtest_policy_phases(*, signal_frame, strategy_position_policy,
+                           single_phase_debug: bool = False, **kwargs):
+    """policy 路徑跑滿所有等價相位,回傳 `evaluation.phases.PhaseSweep`。
+
+    掃描本身交給 `evaluation.phases.sweep_phases` —— repo 裡唯一的相位掃描實作,
+    `tests/test_phase_sweep.py` 用 AST 掃描禁止再長出第四份手寫迴圈。
+
+    呼叫端要提供**比決策頻率更密**的 signal_frame(weekly 策略就給逐日快照),
+    這裡才有東西可以降頻。若只給了已經是週頻的快照,每個相位都會選到同一批日子,
+    掃描會退化成「同一條路徑跑五次」—— 那比只跑一個相位更糟,因為中位數與最小值
+    看起來像穩健性統計,實際上是同一個數字重複五次。因此這種情況 **fail-closed**,
+    不給軟標記。
+    """
+    spec = strategy_position_policy.spec
+    frequency = spec.decision_frequency
+    n_phases = 1 if frequency == "daily" else WEEKLY_PHASES
+
+    frame = pd.DataFrame(signal_frame).copy()
+    frame["date"] = pd.to_datetime(frame["date"])
+    all_snapshot_dates = sorted(frame["date"].unique())
+    selections = {
+        idx: select_decision_snapshots(
+            all_snapshot_dates, decision_frequency=frequency, phase=idx)
+        for idx in range(n_phases)
+    }
+    distinct = {tuple(v) for v in selections.values()}
+    if n_phases > 1 and len(distinct) < n_phases:
+        raise ValueError(
+            "[fail-closed] 各相位選到同一批決策日,掃描會退化成同一條路徑跑 "
+            f"{n_phases} 次(distinct={len(distinct)})。"
+            "policy 路徑的決策日 = 快照日,引擎不能自己平移;要跑滿等價相位,"
+            "signal_frame 必須提供比決策頻率更密的快照(weekly 策略請給逐日快照)。")
+
+    def _run_phase(idx):
+        """單一相位的 body;掃描由 sweep_phases 負責。"""
+        keep = set(selections[idx])
+        sub = frame[frame["date"].isin(keep)]
+        if sub.empty:
+            return None
+        res = backtest_portfolio(
+            signal_frame=sub,
+            strategy_position_policy=strategy_position_policy,
+            **kwargs,
+        )
+        summary = res.get("summary") if isinstance(res, dict) else None
+        if not summary:
+            return None
+        return {
+            "phase": idx,
+            "n_decision_days": len(keep),
+            "sharpe": summary.get("sharpe"),
+            "cum_ret": summary.get("cum_ret"),
+            "ann_ret": summary.get("ann_ret"),
+            "max_drawdown": summary.get("max_drawdown"),
+            "n_trades": summary.get("n_trades"),
+        }
+
+    return sweep_phases(_run_phase, n_phases=n_phases,
+                        single_phase_debug=single_phase_debug)
 
 
 def _unique_regime_provenance(regime_map: Mapping) -> Optional[List[Dict]]:
@@ -1239,7 +1378,12 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
     if policy_enabled:
         # policy 路徑沒有 panel,但同一道未還原價 fail-closed 閘門仍要生效。
         _assert_price_integrity(symbols)
-        signal_snapshots, decision_dates = _prepare_signal_snapshots(signal_frame)
+        # 宣告的決策頻率要拿來驗證快照間距 —— 否則 rules_hash 寫 weekly、
+        # 實際跑日頻換股,兩者從結果看不出差別(見 _assert_snapshot_frequency)。
+        signal_snapshots, decision_dates = _prepare_signal_snapshots(
+            signal_frame,
+            decision_frequency=strategy_position_policy.spec.decision_frequency,
+        )
         cal = sorted(set().union(*[set(p["date"]) for p in price_cache.values()])) \
             if price_cache else []
         lo = min(decision_dates)
