@@ -32,6 +32,10 @@ import evaluation_split
 import factors
 import price_integrity
 import universe as uni
+# 相位掃描只有一份實作(evaluation/phases.py)。正式 IS/OS、S19 的 evaluate 與
+# forward_test 都走它;這裡不再自己寫 `for phase in range(...)`。
+from evaluation.phases import combine as phase_combine
+from evaluation.phases import sweep_phases
 from factor_engine import panel_density
 # MonthlyPITUniverseProvider 這裡不直接呼叫(候選池一律走 historical_pit_universe),
 # 但保留 re-export:它是 provider 的正式類別,測試與外部腳本以 backtest 為錨點取用。
@@ -1259,12 +1263,18 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
              pool: Optional[int] = None,
              dynamic_enabled: Optional[bool] = None,
              universe_top_n: Optional[int] = None,
-             static_comparator: bool = False):
+             static_comparator: bool = False,
+             single_phase_debug: bool = False):
     """一次跑完整體回測 + 因子IC，並印報告。
 
     `static_comparator=True` = 關掉 dynamic universe、用 legacy 單日靜態池跑對照組。
     這條路徑刻意保留(它是偏誤對照組),但結果會在 summary 標
     `formal_evidence_eligible=False`,不可當正式證據。
+
+    `single_phase_debug=True` 只跑 phase 0,**僅供 debug**(例如快速看引擎有沒有
+    跑通)。相位掃描走 `evaluation.phases.sweep_phases` —— 正式 IS/OS 與
+    `forward_test` 共用同一份實作,旗標會一路標進 `phase_stats`,單相位的數字
+    不得當成策略績效。
     """
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
@@ -1313,14 +1323,23 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
     print(f"[backtest] split={split.mode}｜IS {split.is_window[0]}~{split.is_window[1]} "
           f"({split.n_is}日)｜embargo {split.n_embargo}日｜"
           f"OS {split.os_window[0]}~{split.os_window[1]} ({split.n_os}日)")
-    print(f"[backtest] 每段跑滿 {rebalance_every} 個等價再平衡相位；決策看中位數與最小值。\n")
+    if single_phase_debug:
+        print("[backtest] ⚠ single_phase_debug:只跑 phase 0,這是 debug 路徑,"
+              "單一相位的績效只是一條路徑,不可作正式證據。\n")
+    else:
+        print(f"[backtest] 每段跑滿 {rebalance_every} 個等價再平衡相位；"
+              "決策看中位數與最小值。\n")
 
-    phase_rows = []
     trade_frames = []
     results = {}
+    sweeps = {}
     for segment, (start, end) in {"IS": split.is_window,
                                   "OS": split.os_window}.items():
-        for phase in range(rebalance_every):
+
+        def _run_phase(phase: int, segment=segment, start=start, end=end):
+            """單一相位的 body。掃描本身交給 evaluation.phases.sweep_phases,
+            這裡不再自己寫 `for phase in range(...)` —— 那份手寫迴圈跟 S19 的
+            那份連相位數的決定方式都不同,是 P1-1 要收掉的重複實作。"""
             res = backtest_portfolio(
                 symbols=symbols, sample=sample,
                 start_date=start, end_date=end,
@@ -1334,16 +1353,20 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
             )
             results[(segment, phase)] = res
             if "summary" not in res:
-                phase_rows.append({"segment": segment, "phase": phase,
-                                   "error": res.get("error", "?")})
-                continue
+                return {"segment": segment, "phase": phase,
+                        "error": res.get("error", "?")}
             summary = res["summary"]
             actual_end = pd.Timestamp(summary["eval_audit"]["eval_window"][1])
             if actual_end > pd.Timestamp(end):
                 raise RuntimeError(
                     f"{segment} phase={phase} 評估窗溢出 {actual_end.date()} > {end}"
                 )
-            phase_rows.append({
+            if "trades" in res and not res["trades"].empty:
+                trades = res["trades"].copy()
+                trades["segment"] = segment
+                trades["rebalance_phase"] = phase
+                trade_frames.append(trades)
+            return {
                 "segment": segment, "phase": phase,
                 "n_trades": summary["n_trades"],
                 "ann_ret": summary["ann_ret"], "sharpe": summary["sharpe"],
@@ -1352,14 +1375,16 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
                 "integrity_bypassed": summary["data"]["integrity_bypassed"],
                 "survivorship_free": summary["universe"].get("survivorship_free", False),
                 "eval_end": summary["eval_audit"]["eval_window"][1],
-            })
-            if "trades" in res and not res["trades"].empty:
-                trades = res["trades"].copy()
-                trades["segment"] = segment
-                trades["rebalance_phase"] = phase
-                trade_frames.append(trades)
+            }
 
-    phase_df = pd.DataFrame(phase_rows)
+        sweeps[segment] = sweep_phases(
+            _run_phase, n_phases=rebalance_every,
+            single_phase_debug=single_phase_debug,
+            stats_kwargs={"drawdown_col": "max_drawdown"},
+        )
+
+    phase_df = phase_combine(list(sweeps.values()))
+    segment_stats = {seg: sw.stats() for seg, sw in sweeps.items()}
     print("=" * 94)
     print(f"  {'段':<4}{'相位':>5}{'交易':>7}{'年化':>10}{'Sharpe':>10}{'MaxDD':>10}{'累積':>10}")
     print("-" * 94)
@@ -1369,9 +1394,14 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
               f"{row['ann_ret']:>10.1%}{row['sharpe']:>10.2f}"
               f"{row['max_drawdown']:>10.1%}{row['cum_ret']:>10.1%}")
     print("-" * 94)
-    for segment, group in valid.groupby("segment", sort=False):
-        print(f"  {segment} 相位摘要：Sharpe 中位 {group['sharpe'].median():.2f} / "
-              f"最小 {group['sharpe'].min():.2f}；MaxDD 最差 {group['max_drawdown'].min():.1%}")
+    for segment, st in segment_stats.items():
+        if not st.get("n_phases"):
+            print(f"  {segment} 相位摘要：無有效相位")
+            continue
+        debug = "（single_phase_debug，非正式證據）" if st["single_phase_debug"] else ""
+        print(f"  {segment} 相位摘要：Sharpe 中位 {st['sharpe_median']:.2f} / "
+              f"最小 {st['sharpe_min']:.2f}；MaxDD 最差 "
+              f"{st['worst_max_drawdown']:.1%}{debug}")
     print("=" * 94)
 
     ic_results = {}
@@ -1404,7 +1434,11 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
             ic.to_csv(path, index=False, encoding="utf-8-sig")
             print(f"  {segment} 因子IC已存：{path}")
 
+    # `single_phase_debug` 由掃描的**意圖**決定,不從列數反推:再平衡天數真的是 1
+    # 的正式全相位掃描不該被誤標成 debug,反之單相位 debug 也不可以裝成全相位。
     return {"split": split.to_dict(), "phases": phase_df,
+            "phase_stats": segment_stats,
+            "single_phase_debug": bool(single_phase_debug),
             "results": results}, ic_results
 
 

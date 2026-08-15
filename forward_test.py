@@ -28,9 +28,15 @@ Forward-only 樣本外測試(唯一能產生真 clean OOS 的路徑)
 
 現在的形狀:manifest 先過 `validate_manifest`(legacy/不完整一律拒用)→
 `apply_rules` 把 config 與策略規格原封套回去 → 走策略單元的**全相位**掃描
-(`strategies/s19_chip_momentum.evaluate`,PIT 候選池由策略的 `build_panel` 從
+(`strategies/s19_chip_momentum.evaluate_sweep`,底層是 `evaluation/phases.py`
+的共用 sweep,和正式 IS/OS 同一份實作;PIT 候選池由策略的 `build_panel` 從
 `universes.historical_pit_universe()` 取)→ 附基準 → 寫**不可覆寫**的輸出 +
 append-only ledger。
+
+2026-08-15(P1-1)另外修掉:相位聚合原本是這支自己寫的第三份實作,
+`single_phase_debug` 用 `len(df) == 1` 反推 —— 那是拿**結果**當**意圖**:
+20 相位掃描只有一相位有結果時會被誤標成 debug,而再平衡天數真的是 1 的正式
+全相位掃描也會被誤標。現在旗標由掃描端宣告,forward 收到 debug 掃描直接 raise。
 
 注意:未還原價下仍受 backtest 的 fail-closed 閘門保護(會 raise,除非顯式逃生門)。
 
@@ -51,6 +57,7 @@ import pandas as pd
 
 import config
 import freeze_manifest
+from evaluation.phases import PhaseSweep
 
 LEDGER_NAME = "forward_test_runs.jsonl"
 
@@ -60,38 +67,24 @@ def _latest_manifest() -> Optional[str]:
     return files[-1] if files else None
 
 
-def _phase_stats(df: pd.DataFrame) -> Dict[str, Any]:
-    """相位分布統計。**只做聚合,不自己掃相位** —— 掃描由策略單元的
-    `evaluate()` 負責(P1-1 要抽成 `evaluation/phases.py` 時搬的是那一份,
-    這裡不該長出第二個迴圈)。"""
-    if df.empty:
-        return {"n_phases": 0}
-    sharpe = pd.to_numeric(df["sharpe"], errors="coerce")
-    dd = pd.to_numeric(df["max_dd"], errors="coerce")
-    trades = pd.to_numeric(df["n_trades"], errors="coerce")
-    return {
-        "n_phases": int(len(df)),
-        "sharpe_median": float(sharpe.median()),
-        "sharpe_min": float(sharpe.min()),
-        "sharpe_max": float(sharpe.max()),
-        "worst_max_drawdown": float(dd.min()),
-        "n_trades_median": float(trades.median()),
-        "n_trades_total": float(trades.sum()),
-        # 單相位只能當 debug;跑滿相位才是實際會遇到的分布(AGENTS.md 陷阱 2)。
-        "single_phase_debug": bool(len(df) == 1),
-    }
-
-
-def _assert_forward_integrity(df: pd.DataFrame) -> None:
+def _assert_forward_integrity(sweep: PhaseSweep) -> None:
     """forward 是唯一能升級證據等級的路徑,所以它的偏誤閘門要最嚴。
 
-    兩件事在**結果層面**驗證(不是相信自己傳對了參數):
-      1. 每個相位的候選池都必須是 PIT(`candidate_pool_pit=True`)。
+    三件事在**結果層面**驗證(不是相信自己傳對了參數):
+      1. 掃描必須是**全相位**的。單相位只能 debug:同一訊號換相位 Sharpe 實測
+         從 -0.09 擺到 +1.09,拿一條路徑宣稱 clean OOS 等於挑路徑。
+      2. 每個相位的候選池都必須是 PIT(`candidate_pool_pit=True`)。
          舊版用 legacy 單日靜態池當候選池 = 用「凍結之後才知道誰熱門」決定
          forward 期能選誰,前視污染的正是這條路徑最不能污染的數字。
-      2. 評估窗不得溢出最後一個訊號日(`days_beyond_last_pick=0`),
+      3. 評估窗不得溢出最後一個訊號日(`days_beyond_last_pick=0`),
          否則 forward 會借用訊號用完後那段的走勢。
     """
+    if sweep.single_phase_debug:
+        raise RuntimeError(
+            "[fail-closed] forward 收到 single_phase_debug 掃描:"
+            "單相位只能 debug,不得作為 forward OOS 證據"
+        )
+    df = sweep.rows
     if df.empty:
         return
     bad_pit = df[df["candidate_pool_pit"] != True]      # noqa: E712
@@ -168,14 +161,18 @@ def run(manifest_path: Optional[str] = None, *,
             "forward 不接受無法證明是 PIT 的候選池"
         )
 
-    # 跑滿所有等價相位(相位數 = 凍結的再平衡天數)。
-    phases = mod.evaluate(panel, symbols, start, end,
-                          universe_provider=provider, spec=spec)
-    if phases.empty:
+    # 跑滿所有等價相位(相位數 = 凍結的再平衡天數)。掃描與聚合都走
+    # `evaluation.phases`,和正式 IS/OS 是同一份實作 —— 這裡不再自己寫迴圈,
+    # 也不再自己算中位/最小/最差 MaxDD(舊版那份用 `len(df)==1` 反推
+    # `single_phase_debug`,是拿結果當意圖)。
+    sweep = mod.evaluate_sweep(panel, symbols, start, end,
+                               universe_provider=provider, spec=spec)
+    phases = sweep.rows
+    if sweep.empty:
         print("[forward] forward 窗內沒有任何相位產出結果(可能訊號尚未出現)。")
         return None
-    _assert_forward_integrity(phases)
-    stats = _phase_stats(phases)
+    _assert_forward_integrity(sweep)
+    stats = sweep.stats()
 
     # 基準:動態 universe 等權買進持有(無成本,樂觀上界)。沒有基準的 forward
     # 數字無法解讀 —— 普漲段任何 long-only 策略都會是正的。

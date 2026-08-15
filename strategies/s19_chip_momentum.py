@@ -67,6 +67,7 @@ import pandas as pd
 import backtest
 import config
 from evaluation import build_evaluation_split
+from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import operators as op
 from factor_engine import panel_density
 from strategies.spec import StrategySpec
@@ -262,41 +263,61 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
     return r.get("summary", {}) if isinstance(r, dict) else {}
 
 
-def evaluate(panel: pd.DataFrame, symbols: List[str],
-             start=None, end=None, universe_provider=None, *,
-             spec: StrategySpec = SPEC) -> pd.DataFrame:
-    """跑滿所有等價再平衡相位。回傳每相位一列。
+def evaluate_sweep(panel: pd.DataFrame, symbols: List[str],
+                   start=None, end=None, universe_provider=None, *,
+                   spec: StrategySpec = SPEC,
+                   single_phase_debug: bool = False) -> PhaseSweep:
+    """跑滿所有等價再平衡相位,回傳 `PhaseSweep`(每相位一列 + 掃描 metadata)。
 
     只報單一相位的 Sharpe 是這個 repo 反覆踩過的坑(S04):同一訊號不同相位
     可以從 -0.09 擺到 +1.09。要看中位數與最小值,不是最大值。
 
-    註(給 P1-1):這是目前唯一「跑滿所有相位」的掃描實作,forward 也走這裡,
-    刻意不另開第二份迴圈。要抽成 `evaluation/phases.py` 時,搬的就是下面這段。
+    相位數 = 再平衡週期。「每 N 日再平衡」沒有指定從哪天起算,N 個起始偏移都是
+    同一條規則的合法實作,各自有自己的 Sharpe(rebalance timing luck)。早期版本
+    上限寫死 5,等於只抽樣 20 個路徑中的 5 個,中位數/最小值本身就帶抽樣誤差。
+
+    掃描本身走 `evaluation.phases.sweep_phases`(P1-1:正式 IS/OS 與 forward
+    共用同一份實作);這裡只負責「一個相位怎麼跑、回報哪些欄位」。
     每列附帶 `days_beyond_last_pick` 與 `candidate_pool_pit`,讓呼叫端能在結果
     層面驗證「沒有評估窗溢出」與「候選池是 PIT」,而不是只能相信自己傳對參數。
+
+    `single_phase_debug=True` 只跑 phase 0,**僅供 debug**;旗標會進 `stats()`,
+    forward 這類正式路徑會直接拒絕帶著這個旗標的掃描。
     """
     score = build_signal(panel, spec=spec)
-    rows = []
-    # 相位數 = 再平衡週期。「每 N 日再平衡」沒有指定從哪天起算,N 個起始偏移
-    # 都是同一條規則的合法實作,各自有自己的 Sharpe(rebalance timing luck)。
-    # 早期版本上限寫死 5,等於只抽樣 20 個路徑中的 5 個,中位數/最小值本身就
-    # 帶抽樣誤差。跑滿才是實際會遇到的分布。
-    for ph in range(int(spec.port("rebalance_days"))):
+
+    def _run_phase(ph: int) -> Optional[Dict]:
         s = run_once(panel, score, symbols, start, end, ph,
                      universe_provider=universe_provider, spec=spec)
         if not s:
-            continue
-        rows.append({
+            return None      # 該相位沒有結果 → 掃描繼續,但會被記進 sweep
+        return {
             "phase": ph, "sharpe": s.get("sharpe"), "ann_ret": s.get("ann_ret"),
-            "ann_vol": s.get("ann_vol"), "max_dd": s.get("max_drawdown"),
+            "ann_vol": s.get("ann_vol"), "max_drawdown": s.get("max_drawdown"),
             "n_trades": s.get("n_trades"), "win_rate": s.get("win_rate"),
             "payoff": s.get("payoff_ratio"),
             "days_beyond_last_pick": (
                 s.get("eval_audit", {}) or {}).get("days_beyond_last_pick"),
             "candidate_pool_pit": (
                 s.get("universe", {}) or {}).get("candidate_pool_pit"),
-        })
-    return pd.DataFrame(rows)
+        }
+
+    return sweep_phases(_run_phase, n_phases=int(spec.port("rebalance_days")),
+                        single_phase_debug=single_phase_debug)
+
+
+def evaluate(panel: pd.DataFrame, symbols: List[str],
+             start=None, end=None, universe_provider=None, *,
+             spec: StrategySpec = SPEC,
+             single_phase_debug: bool = False) -> pd.DataFrame:
+    """`evaluate_sweep` 的薄封裝:只要每相位一列的 DataFrame 時用這個。
+
+    要中位數/最小值/最差 MaxDD 或 `single_phase_debug` 旗標請用 `evaluate_sweep`
+    —— 那些統計不能從 DataFrame 反推(尤其 `single_phase_debug` 是掃描的**意圖**,
+    不是列數的函數)。
+    """
+    return evaluate_sweep(panel, symbols, start, end, universe_provider,
+                          spec=spec, single_phase_debug=single_phase_debug).rows
 
 
 def equal_weight_baseline(panel: pd.DataFrame, start=None, end=None) -> Dict:
@@ -450,7 +471,7 @@ def _fmt(df: pd.DataFrame) -> str:
     s = "|---|---|---|---|---|---|---|---|"
     rows = [
         f"| {int(r.phase)} | {r.sharpe:.3f} | {r.ann_ret:+.1%} | {r.ann_vol:.1%} | "
-        f"{r.max_dd:.1%} | {int(r.n_trades)} | {r.win_rate:.1%} | {r.payoff:.2f} |"
+        f"{r.max_drawdown:.1%} | {int(r.n_trades)} | {r.win_rate:.1%} | {r.payoff:.2f} |"
         for r in df.itertuples()
     ]
     return "\n".join([h, s] + rows)
@@ -463,17 +484,18 @@ def main():
     print(f"[S19] panel {panel.shape} | {len(symbols)} 檔 | "
           f"IS <= {cut.date()} | OS >= {os_start.date()}")
 
-    is_df = evaluate(panel, symbols, dates[0], cut)
-    os_df = evaluate(panel, symbols, os_start, dates[-1])
+    is_sweep = evaluate_sweep(panel, symbols, dates[0], cut)
+    os_sweep = evaluate_sweep(panel, symbols, os_start, dates[-1])
+    is_df, os_df = is_sweep.rows, os_sweep.rows
     b_is = equal_weight_baseline(panel, dates[0], cut)
     b_os = equal_weight_baseline(panel, os_start, dates[-1])
 
-    def stat(df):
-        g = df["sharpe"].astype(float)
-        return g.median(), g.min(), g.max()
-
-    m_is, lo_is, hi_is = stat(is_df)
-    m_os, lo_os, hi_os = stat(os_df)
+    # 中位/最小/最大都取自共用的相位聚合,報告與 forward 用的是同一套定義。
+    st_is, st_os = is_sweep.stats(), os_sweep.stats()
+    m_is, lo_is, hi_is = (st_is["sharpe_median"], st_is["sharpe_min"],
+                          st_is["sharpe_max"])
+    m_os, lo_os, hi_os = (st_os["sharpe_median"], st_os["sharpe_min"],
+                          st_os["sharpe_max"])
 
     lines = [
         "# S19 籌碼確認的風險調整動能(CRM)— 策略報告",
@@ -568,9 +590,11 @@ def main():
     out = config.OUTPUT_DIR / "CHIP_MOMENTUM_REPORT.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"[S19] 報告已存:{out}")
-    print(f"[S19] IS 中位 Sharpe {m_is:.3f}(最小 {lo_is:.3f})| "
-          f"OS 中位 {m_os:.3f}(最小 {lo_os:.3f})")
-    return {"is": is_df, "os": os_df, "baseline_is": b_is, "baseline_os": b_os}
+    print(f"[S19] IS 中位 Sharpe {m_is:.3f}(最小 {lo_is:.3f},最差 MaxDD "
+          f"{st_is['worst_max_drawdown']:.1%})| OS 中位 {m_os:.3f}"
+          f"(最小 {lo_os:.3f},最差 MaxDD {st_os['worst_max_drawdown']:.1%})")
+    return {"is": is_df, "os": os_df, "baseline_is": b_is, "baseline_os": b_os,
+            "phase_stats": {"IS": st_is, "OS": st_os}}
 
 
 if __name__ == "__main__":

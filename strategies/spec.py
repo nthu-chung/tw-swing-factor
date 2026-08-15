@@ -36,9 +36,12 @@ KNOWN_STRATEGIES: Dict[str, str] = {
 }
 
 # forward 正式驗證路徑會呼叫的策略介面。策略模組缺任何一個就不該進 forward
-# (缺 `evaluate` = 沒有相位掃描、缺 `equal_weight_baseline` = 沒有基準)。
+# (缺 `evaluate_sweep` = 沒有共用的全相位掃描、缺 `equal_weight_baseline` =
+# 沒有基準)。`evaluate_sweep` 必須回傳 `evaluation.phases.PhaseSweep`,forward
+# 才拿得到「這次是不是全相位」的意圖 —— 只給 DataFrame 的 `evaluate` 會逼呼叫端
+# 從列數反推,那正是 P1-1 修掉的 bug。
 STRATEGY_PROTOCOL: Tuple[str, ...] = (
-    "SPEC", "build_panel", "evaluate", "equal_weight_baseline",
+    "SPEC", "build_panel", "evaluate", "evaluate_sweep", "equal_weight_baseline",
 )
 
 

@@ -34,9 +34,18 @@
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
-相位**並報中位數與最小值——同一訊號換相位，Sharpe 實測可以從 -0.09 擺到 +1.09，
-只報一條路徑等於挑路徑。引擎另有 `summary["eval_audit"]` 稽核評估窗上界，
-`days_beyond_last_pick` 必須為 0，否則 IS 會借用 OS 的績效。
+相位**並報中位數、最小值與最差 MaxDD——同一訊號換相位，Sharpe 實測可以從 -0.09
+擺到 +1.09，只報一條路徑等於挑路徑。強制點是 `evaluation/phases.py` 的
+`sweep_phases()`／`PhaseSweep.stats()`：正式 IS/OS（`backtest.run_full`）、策略單元
+（`s19.evaluate_sweep`）與 `forward_test.py` 共用**同一份**掃描與聚合，
+`tests/test_phase_sweep.py` 以 AST 掃描禁止任何模組再手寫 `for phase in range(...)`。
+「最差 MaxDD」的定義是**所有相位裡最糟的那一個**（帶號取 min，不是中位或平均）；
+慣例翻成正值時直接 raise，因為那會變成回報最好的相位。單相位只能 debug：
+`single_phase_debug` 由呼叫端的**意圖**決定並標進 summary（舊版 `forward_test`
+用 `len(df) == 1` 反推，把「20 相位只有 1 個有結果」誤標成 debug、也會把再平衡
+天數為 1 的正式全相位掃描誤標），forward 收到 debug 掃描一律 raise。引擎另有
+`summary["eval_audit"]` 稽核評估窗上界，`days_beyond_last_pick` 必須為 0，
+否則 IS 會借用 OS 的績效。
 
 第三條屬於 freeze／forward：**凍結必須凍到全部規則**。強制點是
 `freeze_manifest.py`（config 的大寫參數預設全凍，排除要寫進 `NOT_FROZEN` 附理由）
@@ -85,6 +94,9 @@ MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 3
   閘門（不變式 3 的第二道防線；預設安全來自 `backtest.build_research_panel()`）。
 - `factor_engine/legacy_factors.py`：既有傳統因子。
 - `evaluation/splits.py`：統一 IS/OS 切割。
+- `evaluation/phases.py`：統一相位掃描與聚合（`sweep_phases` / `PhaseSweep` /
+  `phase_stats`）。正式 IS/OS、策略 `evaluate_sweep` 與 forward 共用這一份；
+  呼叫端只提供「一個相位怎麼跑」，掃滿與中位／最小／最差 MaxDD 由它負責。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
   `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
 - `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked

@@ -160,6 +160,8 @@
 | 凍結版本不可冒充（§8） | `freeze_manifest.validate_manifest` + `apply_rules` fail-closed；label 進檔名不進 hash | legacy／不完整／被改過的 manifest 不得被 forward 使用；同日不同 label 不再互相覆寫 |
 | 因子必須在稠密 panel 上算（§6） | 公開入口 `backtest.build_research_panel()` 預設稠密（`members_only=True` 只給純橫斷面統計）＋ `factor_engine/panel_density.py` 的標籤；`PanelOps` 的 `ts_*` 在 `members_only` panel 上 raise | long panel 的 `rolling(20)` 算的是「20 **列**」：間歇進出 universe 的股票會橫跨 60+ 個日曆日。`rotation_research` 的 `breakout_20`／量比／`positive_day_share_20` 正是這樣算出來的（訊號翻轉約 3%、命中率相對灌水約 +9.6%），2026-08-15 修為「稠密算因子、選股才套成員資格」 |
 | forward 不得挑相位／缺基準（§7） | `forward_test.run` 走策略單元的全相位掃描 + 等權基準 + 不可覆寫的輸出 | 舊版只跑單一相位、吃引擎預設 `rebalance_every=5/top_n=3`、沒有基準、每次重跑覆寫同名檔 |
+| 相位掃描只有一份實作（§7） | `evaluation/phases.py` 的 `sweep_phases()`／`PhaseSweep.stats()`：正式 IS/OS（`backtest.run_full`）、`s19.evaluate_sweep` 與 `forward_test` 共用；`tests/test_phase_sweep.py` 用 AST 掃描禁止再手寫 `for phase in range(...)` | 原本三份各自為政：`run_full` 掃 `rebalance_every`（CLI 預設 5）、S19 掃 20、`forward_test` 自己第三份聚合，MaxDD 欄名還分成 `max_drawdown`／`max_dd` |
+| 單相位只能 debug（§7） | `single_phase_debug` 由呼叫端的**意圖**傳入並標進 summary／`phase_stats`；forward 收到 debug 掃描直接 raise | 舊版 `forward_test` 用 `len(df) == 1` 反推旗標 —— 拿結果當意圖：20 相位只有 1 個有結果會被誤標成 debug，再平衡天數為 1 的正式全相位掃描也會被誤標 |
 
 ## 10. 標準操作流程（指令級）
 
@@ -226,7 +228,11 @@ forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（202
 - 候選池走策略的 `build_panel()` → `universes.historical_pit_universe()`；每個相位的
   `summary.universe.candidate_pool_pit` 必須為 True、`days_beyond_last_pick` 必須為 0。
 - **跑滿所有等價相位**（相位數 = 凍結的再平衡天數），輸出中位數／最小值／最差 MaxDD，
-  並附等權買進持有基準；算不出基準就 raise（和零比沒有意義）。
+  並附等權買進持有基準；算不出基準就 raise（和零比沒有意義）。掃描與聚合都走
+  `evaluation/phases.py`，和正式 IS/OS 是同一份實作；「最差 MaxDD」= 所有相位裡
+  最糟的那一個（帶號取 min，不是中位或平均）。
+- 掃描帶 `single_phase_debug=True`（只跑 phase 0）時 forward **直接 raise**：單相位
+  是一條路徑不是分布，同一訊號換相位 Sharpe 實測從 -0.09 擺到 +1.09。
 
 ### E. 每次宣稱前的例行稽核
 ```bash

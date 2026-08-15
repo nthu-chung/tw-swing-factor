@@ -232,6 +232,7 @@
 | 相對隨機 vs 相對被動 | 兩者要分開講：S19 **明顯勝過同集中度的隨機選股**（1.205 vs 0.312），選股有訊號；但**只勉強勝過等權持有全部合格股**（1.126）。即選股技巧大致只夠補償集中到 10 檔的分散度代價。 |
 | 下一個可證偽測試 | `freeze_manifest.py` 凍結 → `forward_test.py` 對 snapshot 之後做 forward-only —— 這是唯一還能升級證據等級的路（現有 IS/OS 都已被用過）。次要：補齊已下市股價格（可從 `pit_universe` 快照自帶 OHLCV 取）。 |
 | freeze／forward 路徑修復（2026-08-15） | 這條路徑原本本身就不可信：manifest 沒凍到策略參數（10 檔／20 日／MA60／-15% 全在模組常數，改了 hash 不變）、`FROZEN_KEYS` 只列 34 個而 config 有 92 個、label 既不進檔名也不進 hash、forward 只跑單一相位且吃引擎預設 `rebalance_every=5/top_n=3`、沒有基準、同名輸出每次覆寫。現已修（`strategies/spec.py` + `freeze_manifest` 反向 allowlist + `forward_test` 全相位／PIT／基準／不可覆寫，回歸測試見 `tests/test_freeze_forward.py`）。**S19 尚未凍結、也未跑過任何 forward 期，證據等級維持 blocked；修好工具不等於任何策略被驗證。** |
+| 相位評估統一（2026-08-15） | 「跑滿所有等價相位」原本有三份實作：`run_full` 掃 `rebalance_every`（CLI 預設 5）、S19 掃 20、`forward_test` 自己第三份聚合且用 `len(df) == 1` 反推 `single_phase_debug`。現已收攏到 `evaluation/phases.py`（回歸測試 `tests/test_phase_sweep.py`）。**這是重構，語意不變：本表所有數字都沒有重跑，S19 證據等級維持 blocked。** |
 | 附帶證偽 | **`margin_drop`（融資餘額下降＝散戶退場）IC 為 -0.006／-0.002，假說不成立**；生動能 `mom_ret` 的 IS IC 僅 +0.0012，全期 IC 幾乎全來自 OS 普漲段。 |
 
 ## 目前開發優先序
