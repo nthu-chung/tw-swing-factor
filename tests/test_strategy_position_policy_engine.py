@@ -387,13 +387,23 @@ class StaleDelistFailClosedTest(unittest.TestCase):
                         900_000.0)
 
 
-class ExitPendingAssumptionTest(unittest.TestCase):
-    """`exit_pending` 缺欄位時的 hard stop 行為(規格 §9A.1a 的已知限制)。
+class ExitPendingDefaultTest(unittest.TestCase):
+    """`exit_pending` 缺欄位時的 hard stop 行為(規格 §9A.1)。
 
-    這裡不是在慶祝現況,而是把缺口的邊界釘死:契約 test
-    `test_small_weight_drift_does_not_rebalance_or_average_down` 要求 -30% 且不帶
-    `exit_pending` 的部位維持 `hold`,所以預設值目前不能翻成 False;能做的是讓
-    「這是推定」在 reason_code 與 policy state 上留下痕跡。
+    原 bug(2026-08-15 重現):`_normalize_holdings` 對缺欄位的 `exit_pending`
+    預設 **True**,理由寫成「與 snapshot_complete 同一套 fail-closed 哲學」。
+    但兩個旗標的安全方向相反 —— `snapshot_complete=False` 的效果是**不賣**
+    (保守),`exit_pending=True` 的效果卻是**不停損**(漏掉風控)。§5 的最小
+    holdings 契約又不含這一欄,所以照契約呼叫 `policy.decide()` 的人,手上跌超過
+    18%(= hard_stop 8% + 一根跌停)的部位一律得到 `hold`,一筆退出意圖都不會產生:
+
+        entry 100 / close 75(-25%),不帶 exit_pending
+        舊行為 → action=hold, reason=stop_breached_earlier_exit_pending_assumed
+        新行為 → action=exit, reason=risk_stop
+
+    現在缺值預設 False:不知道有沒有待成交的退出意圖時,寧可重複產生 risk_stop
+    (重複看得見、可由 `n_stop_repeated_unknown_exit_pending` 稽核),也不要靜默
+    不停損(漏掉的停損在任何輸出裡都看不見)。
     """
 
     def _decide(self, holding_extra):
@@ -408,13 +418,27 @@ class ExitPendingAssumptionTest(unittest.TestCase):
             holdings=pd.DataFrame([row]), equity=1_000_000.0,
             regime="risk_on", is_decision_day=True)
 
-    def test_missing_column_holds_but_is_marked_as_an_assumption(self):
+    def test_missing_column_still_produces_the_stop(self):
+        """缺欄位 = 不知道 → 仍然停損,並把「可能重複」記進 policy state。"""
         policy, d = self._decide({})
         action = d.actions.set_index("stock_id").loc["1101"]
-        self.assertEqual(action["action"], "hold")
-        self.assertEqual(action["reason_code"],
-                         "stop_breached_earlier_exit_pending_assumed")
-        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 1)
+        self.assertEqual(action["action"], "exit")
+        self.assertEqual(action["reason_code"], "risk_stop")
+        self.assertEqual(
+            policy._state["n_stop_repeated_unknown_exit_pending"], 1)
+
+    def test_minimum_holdings_contract_alone_is_enough_to_stop(self):
+        """§5 的最小 holdings 契約(五個欄位)必須足以觸發 hard stop。
+
+        舊行為下 -19% / -25% / -50% 全都回 `hold`;缺 `exit_pending` 的呼叫端
+        等於整條停損失效。
+        """
+        for close in (81.0, 75.0, 50.0):
+            with self.subTest(close=close):
+                _, d = self._decide({"close": close})
+                action = d.actions.set_index("stock_id").loc["1101"]
+                self.assertEqual(action["action"], "exit")
+                self.assertEqual(action["reason_code"], "risk_stop")
 
     def test_engine_style_exit_pending_false_still_stops_after_a_gap(self):
         """引擎顯式說「沒有待成交的退出意圖」→ -25% 一定要停損。"""
@@ -422,7 +446,8 @@ class ExitPendingAssumptionTest(unittest.TestCase):
         action = d.actions.set_index("stock_id").loc["1101"]
         self.assertEqual(action["action"], "exit")
         self.assertEqual(action["reason_code"], "risk_stop")
-        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 0)
+        self.assertEqual(
+            policy._state["n_stop_repeated_unknown_exit_pending"], 0)
 
     def test_known_exit_pending_true_does_not_duplicate_the_stop(self):
         policy, d = self._decide({"exit_pending": True})
@@ -430,10 +455,22 @@ class ExitPendingAssumptionTest(unittest.TestCase):
         self.assertEqual(action["action"], "hold")
         self.assertEqual(action["reason_code"],
                          "stop_breached_earlier_exit_pending")
-        self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 0)
+        self.assertEqual(
+            policy._state["n_stop_repeated_unknown_exit_pending"], 0)
 
-    def test_engine_path_never_relies_on_the_assumption(self):
-        """事件引擎一律顯式帶欄位 → 正式回測的推定計數必須恆為 0。"""
+    def test_fresh_cross_is_unaffected_by_the_default(self):
+        """一般跨越日(-9%,還沒到 stop+跌停)本來就與 `exit_pending` 無關。"""
+        for extra in ({}, {"exit_pending": True}, {"exit_pending": False}):
+            with self.subTest(extra=extra):
+                policy, d = self._decide({"close": 91.0, **extra})
+                action = d.actions.set_index("stock_id").loc["1101"]
+                self.assertEqual(action["action"], "exit")
+                self.assertEqual(action["reason_code"], "risk_stop")
+                self.assertEqual(
+                    policy._state["n_stop_repeated_unknown_exit_pending"], 0)
+
+    def test_engine_path_never_relies_on_the_default(self):
+        """事件引擎一律顯式帶欄位 → 正式回測的「可能重複」計數必須恆為 0。"""
         dates = list(pd.bdate_range("2026-01-05", periods=10))
         # dates[4] 直接跳空到 -25%(合成資料;現實會被漲跌停擋住,但引擎不得依賴
         # 那個假設,長期停牌後重開就是這個形狀)。
@@ -443,9 +480,10 @@ class ExitPendingAssumptionTest(unittest.TestCase):
         with mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", False):
             result = _run(prices, signals, _one_slot_policy())
         self.assertIn("risk_stop", set(result["trades"]["exit_reason"]))
-        decisions = pd.DataFrame(result["decision_log"])
-        self.assertNotIn("stop_breached_earlier_exit_pending_assumed",
-                         set(decisions["reason_code"]))
+        state = result["summary"]["strategy_position_policy"][
+            "policy_state_delta"]
+        self.assertEqual(
+            int(state["n_stop_repeated_unknown_exit_pending"]), 0)
 
 
 class PolicyProvenanceTest(unittest.TestCase):

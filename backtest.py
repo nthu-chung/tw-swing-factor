@@ -1448,6 +1448,17 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
     }
     _policy_decision_dates = set(decision_dates) if policy_enabled else set()
     _policy_snapshot_dates = sorted(signal_snapshots) if policy_enabled else []
+    # policy 物件可能被跨 request 重複使用(相位掃描就是),所以它的執行期計數
+    # 要取**這次 request 的增量**;直接讀累計值會把別段的數字算進這份 summary,
+    # 與 §9C.2「排除統計是 request 級」同一條原則。
+    _policy_state_before = (strategy_position_policy.state()
+                            if policy_enabled else {})
+
+    def _policy_state_delta() -> Dict[str, Any]:
+        after = strategy_position_policy.state()
+        return {k: (v - _policy_state_before.get(k, 0)
+                    if isinstance(v, (int, float)) else v)
+                for k, v in after.items()}
     # regime 由外部(帶 PIT provenance)決定;給了就必須逐日給滿。缺哪天就當
     # risk_on 放行,等於在資料缺口上偷偷恢復滿曝險 —— 那正是最該擋的方向。
     _regime_map: Dict[Any, str] = {}
@@ -2213,6 +2224,11 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
                           else "default_risk_on_no_external_regime"),
         "regime_pit_provenance": bool(regime_by_date),
         "desired_realized_audit": dict(policy_audit),
+        # policy 自己的執行期計數(這一次 request 的**增量**,不是 policy 物件
+        # 的累計)。像 `n_stop_repeated_unknown_exit_pending`(呼叫端沒給
+        # exit_pending,深跌部位的 risk_stop 可能被記成多天)不放進 summary,
+        # 就只能靠讀程式碼相信它是 0。引擎一律顯式帶欄位,正式路徑上必為 0。
+        "policy_state_delta": _policy_state_delta(),
         "exit_reason_stats": exit_stats,
         "capital_scenario": {
             "initial_capital": initial_capital,

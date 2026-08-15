@@ -63,11 +63,6 @@ REASON_HOLD = "within_hold_buffer"
 REASON_HOLD_OFF_DAY = "off_decision_day"
 REASON_CAP = "concentration_cap"
 REASON_STOP_BREACHED_EARLIER = "stop_breached_earlier_exit_pending"
-# 同一件事,但 `exit_pending` 是**推定**而非引擎給的事實(呼叫端用了 §5 的最小
-# holdings 契約、沒帶那一欄)。分開一個 reason_code 是為了讓「這筆沒停損是因為
-# 我們假設退出意圖已經在路上」在 decision_log 裡看得見,而不是混進真實的
-# breached_earlier 裡再也分不出來。
-REASON_STOP_BREACHED_ASSUMED = "stop_breached_earlier_exit_pending_assumed"
 
 VALID_REGIMES: tuple = ("risk_on", "caution", "risk_off")
 
@@ -331,19 +326,24 @@ def _normalize_holdings(holdings) -> pd.DataFrame:
         out[flag] = (frame[flag].fillna(False).astype(bool).values
                      if flag in frame.columns else False)
     # `exit_pending` = 引擎手上「已經送出但還沒成交」的退出意圖(跌停賣不掉、
-    # 停牌…)。缺這一欄時預設 **True**(unknown → 假設已被處理),與 §5 的
-    # snapshot_complete 同一套「資訊不足時不自動賣」哲學。
+    # 停牌…)。缺這一欄時預設 **False**(規格 §9A.1,2026-08-15 由 True 改回)。
     #
-    # 但這個預設值**只在 -(hard_stop_pct + 一根跌停) 以下的部位才會有影響**,而在
-    # 那個區間它關掉的是停損而不是自動賣出 —— 方向並不是保守的。§5 的最小 holdings
-    # 契約沒有這一欄,所以「不帶 exit_pending 的呼叫端」拿到的是一個**假設**,不是
-    # 事實。用 `exit_pending_known` 把兩者分開,決策才有辦法由結果重建(規格 §1.4);
-    # 這個限制與待辦見 STRATEGY_POSITION_POLICY_SPEC.md §9A.1。事件引擎一律顯式
-    # 提供這一欄,因此正式回測路徑永遠是 known=True。
+    # 為什麼不是 True:`snapshot_complete` 與 `exit_pending` 的「安全方向」相反。
+    # 前者缺值代表「不知道這檔還在不在母體」,保守解讀是**不賣**;後者缺值若當成
+    # True,代表「假設退出意圖早就送過了」→ 今天不再產生 `risk_stop`,那是**漏掉
+    # 停損**的方向。fail-closed 的定義是「資訊不足時不得放過風險控制」,不是
+    # 「資訊不足時一律不動作」。§5 的最小 holdings 契約又不含這一欄,所以照契約
+    # 呼叫的人在舊預設下會拿到「跌 30% 也只回 hold、一筆退出意圖都沒有」。
+    # 代價是重複產生退出意圖(同一次停損被記成多天),但那是**看得見**的重複;
+    # 漏掉的停損在任何輸出裡都看不見。
+    #
+    # `exit_pending_known` 仍然保留:重複的 risk_stop 有沒有可能是這個預設造成的,
+    # 事後要分得出來(規格 §7 的可重建要求)。事件引擎一律顯式提供這一欄,因此
+    # 正式回測路徑永遠是 known=True。
     has_exit_pending = "exit_pending" in frame.columns
     out["exit_pending"] = (
-        frame["exit_pending"].fillna(True).astype(bool).values
-        if has_exit_pending else True)
+        frame["exit_pending"].fillna(False).astype(bool).values
+        if has_exit_pending else False)
     out["exit_pending_known"] = bool(has_exit_pending)
     # `intraday_low` 之類的日內欄位刻意**不讀**:v1 的 hard stop 是收盤確認,
     # 用日內最低價觸發等於假設手動投資人剛好掛在理論停損價並成交(規格 §3.4)。
@@ -374,13 +374,11 @@ def _hard_stop_state(entry_price: float, close: float, hard_stop_pct: float,
          `exit_pending=False`,這時仍然要 fail-closed 地產生 risk_stop,
          不能因為「錯過跨越日」就永遠不停損。
 
-    `exit_pending` 缺值時預設 True(unknown 不自動賣),與 §5 的 snapshot_complete
-    同一套哲學。**已知限制**:這個預設在 -(hard_stop_pct + 10%) 以下的區間關掉的是
-    停損,方向並不保守;而 §5 的最小 holdings 契約又不含這一欄。目前 contract test
-    `test_small_weight_drift_does_not_rebalance_or_average_down`(entry 100 / close 70
-    = -30%,且不帶 exit_pending)明文要求那種部位維持 `hold`,所以預設值不能翻成
-    False。呼叫端沒帶欄位時改用 `REASON_STOP_BREACHED_ASSUMED` 標記,讓「這是假設」
-    留下痕跡;完整討論與待 owner 決定的事項見規格 §9A.1。
+    `exit_pending` 缺值時預設 **False**(規格 §9A.1):不知道有沒有待成交的退出
+    意圖時,寧可再產生一次 `risk_stop`(重複、但看得見),也不要靜默不停損
+    (漏掉、而且任何輸出裡都看不出來)。這與 `snapshot_complete` 缺值取 False
+    是同一條原則 —— 兩者都是「缺資訊時不得放過風險控制」,不是「缺資訊時一律
+    不動作」;方向剛好相反是因為兩個旗標的 True 各自代表不同的事。
     """
     if not (math.isfinite(entry_price) and entry_price > 0
             and math.isfinite(close)):
@@ -388,10 +386,24 @@ def _hard_stop_state(entry_price: float, close: float, hard_stop_pct: float,
     ret = close / entry_price - 1.0
     if ret > -float(hard_stop_pct) + 1e-12:
         return "none"
-    fresh_floor = -(float(hard_stop_pct) + DAILY_PRICE_LIMIT_PCT)
-    if ret >= fresh_floor - 1e-12 or not exit_pending:
+    if not _is_beyond_fresh_cross_zone(entry_price, close, hard_stop_pct):
         return "fresh_cross"
-    return "breached_earlier"
+    return "breached_earlier" if exit_pending else "fresh_cross"
+
+
+def _is_beyond_fresh_cross_zone(entry_price: float, close: float,
+                                hard_stop_pct: float) -> bool:
+    """今天**不可能**是這個部位的 hard stop 跨越日嗎?
+
+    跌幅已經超過 `hard_stop_pct + 一根跌停` 時為 True(推導見
+    `_hard_stop_state`)。只有落在這個區間,`exit_pending` 的值才會改變結果 ——
+    所以「呼叫端沒給 `exit_pending`」的稽核計數也只在這裡才有意義。
+    """
+    if not (math.isfinite(entry_price) and entry_price > 0
+            and math.isfinite(close)):
+        return False
+    ret = close / entry_price - 1.0
+    return ret < -(float(hard_stop_pct) + DAILY_PRICE_LIMIT_PCT) - 1e-12
 
 
 class StrategyPositionPolicy:
@@ -421,6 +433,15 @@ class StrategyPositionPolicy:
 
     def rules(self) -> Dict[str, Any]:
         return self._spec.rules()
+
+    def state(self) -> Dict[str, Any]:
+        """執行期統計的唯讀快照(回傳 copy,呼叫端改不到內部狀態)。
+
+        引擎會把它併進 summary 的稽核區塊:像
+        `n_stop_repeated_unknown_exit_pending` 這種「這份結果有沒有被推定值影響」
+        的計數,不放進結果就只能靠讀程式碼相信。
+        """
+        return dict(self._state)
 
     def rules_hash(self) -> str:
         """規則指紋。與 holdout 台帳／freeze manifest 共用同一份實作。"""
@@ -456,7 +477,11 @@ class StrategyPositionPolicy:
         actions: List[Dict[str, Any]] = []
         exits: Dict[str, List[str]] = {}
         stale_stop_breaches: List[str] = []
-        assumed_stop_breaches: List[str] = []   # exit_pending 是推定的,不是事實
+        # 呼叫端沒帶 `exit_pending`(§5 的最小 holdings 契約)時,預設 False 會
+        # 讓深跌部位每天都重新產生一次 `risk_stop`。那是刻意選的方向(寧可重複
+        # 也不要漏),但重複次數必須可稽核 —— 事後要分得出「這批 risk_stop 是
+        # 真的多次跨越」還是「呼叫端沒給欄位」。
+        unknown_exit_pending: List[str] = []
 
         def _add_exit(sid: str, reason: str) -> None:
             exits.setdefault(sid, []).append(reason)
@@ -472,10 +497,14 @@ class StrategyPositionPolicy:
                 float(spec.hard_stop_pct), bool(row.exit_pending))
             if stop_state == "fresh_cross":
                 _add_exit(sid, "risk_stop")
+                if not bool(row.exit_pending_known) and _is_beyond_fresh_cross_zone(
+                        float(row.entry_price), float(row.close),
+                        float(spec.hard_stop_pct)):
+                    # 只有深跌區間的部位才會受 `exit_pending` 預設影響;這一筆
+                    # risk_stop 有可能是「昨天也產生過一次」的重複。
+                    unknown_exit_pending.append(sid)
             elif stop_state == "breached_earlier":
                 stale_stop_breaches.append(sid)
-                if not bool(row.exit_pending_known):
-                    assumed_stop_breaches.append(sid)
             if slots <= 0:
                 # risk_off 是緊急降曝險,允許每日形成退出意圖(不保證成交)。
                 _add_exit(sid, "regime_reduce")
@@ -533,11 +562,9 @@ class StrategyPositionPolicy:
                 if sid in stale_stop_breaches:
                     # 早已跌破停損價、退出意圖仍卡在成交端(跌停/停牌)。誠實標記,
                     # 不要偽裝成一般續抱,也不要重複產生一次新的 risk_stop 事件。
-                    # 呼叫端沒給 exit_pending 時,「意圖已在路上」只是推定 → 另一個
-                    # reason_code,讓稽核分得出事實與假設。
-                    reason = (REASON_STOP_BREACHED_ASSUMED
-                              if sid in assumed_stop_breaches
-                              else REASON_STOP_BREACHED_EARLIER)
+                    # 走到這裡必然是引擎**顯式**說 `exit_pending=True`(缺值預設
+                    # False 會走 fresh_cross → risk_stop),所以這個標記是事實。
+                    reason = REASON_STOP_BREACHED_EARLIER
                 else:
                     reason = (REASON_HOLD if is_decision_day
                               else REASON_HOLD_OFF_DAY)
@@ -630,12 +657,12 @@ class StrategyPositionPolicy:
             self._state.get("n_entries_skipped_no_room", 0)) + n_skipped_no_room
         self._state["n_stop_breached_earlier"] = int(
             self._state.get("n_stop_breached_earlier", 0)) + len(stale_stop_breaches)
-        # 這一項若不是 0,代表有部位是靠「推定 exit_pending」才沒有觸發 hard stop。
-        # 正式回測路徑(事件引擎)一律顯式帶欄位,所以它應該恆為 0;不為 0 就是有人
-        # 用最小 holdings 契約直接呼叫 policy,那份結果的停損統計不可直接採信。
-        self._state["n_stop_breached_earlier_assumed"] = int(
-            self._state.get("n_stop_breached_earlier_assumed", 0)
-        ) + len(assumed_stop_breaches)
+        # 這一項若不是 0,代表有 risk_stop 是在「呼叫端沒給 exit_pending」的深跌
+        # 區間產生的 —— 同一次停損可能被記成多天。正式回測路徑(事件引擎)一律
+        # 顯式帶欄位,所以它應該恆為 0;不為 0 時停損次數統計不可直接採信。
+        self._state["n_stop_repeated_unknown_exit_pending"] = int(
+            self._state.get("n_stop_repeated_unknown_exit_pending", 0)
+        ) + len(unknown_exit_pending)
 
         rules = self._spec.rules()
         fingerprint = rules_fingerprint({
@@ -667,7 +694,6 @@ class StrategyPositionPolicy:
 
 __all__ = [
     "EXIT_PRIORITY",
-    "REASON_STOP_BREACHED_ASSUMED",
     "REASON_STOP_BREACHED_EARLIER",
     "StrategyPositionDecision",
     "StrategyPositionPolicy",

@@ -240,11 +240,21 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
                                      "target_weight"] == 0.10).all())
 
     def test_small_weight_drift_does_not_rebalance_or_average_down(self):
+        """權重漂移不交易。
+
+        `LAGGARD` 的 close 於 2026-08-15 由 70 改成 95(entry 100):這條測試要
+        測的是「權重掉到 7% 不得機械式攤平」,但 -30% 同時**穿過 hard stop**
+        (`hard_stop_pct=0.08`),而 fixture 用的是 §5 的最小 holdings(沒有
+        `exit_pending`)。舊實作靠「`exit_pending` 缺值預設 True」把那檔判成
+        「早就跌破、意圖已在路上」才回 `hold`,於是這條測試反過來把「缺資訊時
+        不停損」釘成了契約。close 改成 95 讓部位維持 -5%(在停損之上)、權重
+        仍是 0.07,測的東西不變,但不再順帶關掉停損。斷言一條都沒改。
+        """
         d = _decide(
             _policy(), ranks={"WINNER": 1, "LAGGARD": 2},
             holdings=(
                 ("WINNER", 0.12, 100.0, 120.0, 20),
-                ("LAGGARD", 0.07, 100.0, 70.0, 20),
+                ("LAGGARD", 0.07, 100.0, 95.0, 20),
             ),
         )
         actions = _frame(d, "actions").set_index("stock_id")
