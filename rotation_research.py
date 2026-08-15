@@ -40,6 +40,7 @@ import config
 import data
 import evaluation_split
 import price_integrity
+import return_convention
 import universe as uni
 from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import panel_density
@@ -584,7 +585,18 @@ def performance_metrics(eq: pd.DataFrame, trades: pd.DataFrame) -> dict:
 
 
 def benchmark_metrics(start_date: str, end_date: str) -> dict:
-    market = data.fetch_market_index().copy()
+    """大盤基準的績效。
+
+    **基準序列必須與個股序列同口徑**:個股在還原價下含息,舊版卻拿 TAIEX 價格
+    指數(不含息)當基準,實測每年憑空生出 2.86pp 超額、Sharpe 差 0.113。
+    改走 `return_convention.fetch_benchmark_index()`(含息個股 → 含息報酬指數),
+    口徑對不上或抓不到就 raise,不退回價格指數。
+    """
+    raw = return_convention.fetch_benchmark_index()
+    # 口徑先抄下來:attrs 在切片/排序後不保證跟著走,但這個標籤不可以掉。
+    tag = {"return_convention": raw.attrs.get("return_convention"),
+           "benchmark_dataset": raw.attrs.get("benchmark_dataset")}
+    market = raw.copy()
     market["date"] = pd.to_datetime(market["date"])
     market = market[
         (market["date"] >= pd.Timestamp(start_date))
@@ -596,14 +608,24 @@ def benchmark_metrics(start_date: str, end_date: str) -> dict:
         "date": market["date"],
         "equity": market["close"] / market["close"].iloc[0],
     })
-    return performance_metrics(eq, pd.DataFrame())
+    out = performance_metrics(eq, pd.DataFrame())
+    # 基準的口徑跟著數字走:讀報表的人不必回頭猜這條線含不含息。
+    out.update(tag)
+    return out
 
 
 def market_relative_metrics(eq: pd.DataFrame, start_date: str, end_date: str) -> dict:
-    """Return simple daily CAPM beta/alpha and relative terminal wealth."""
+    """Return simple daily CAPM beta/alpha and relative terminal wealth.
+
+    alpha/相對財富也是「和基準比」,基準同樣要與個股序列同口徑(見
+    `benchmark_metrics`):拿不含息指數去回歸含息權益曲線,ann_alpha 會被灌高。
+    """
     if eq is None or eq.empty:
         return {}
-    market = data.fetch_market_index().copy()
+    raw = return_convention.fetch_benchmark_index()
+    tag = {"return_convention": raw.attrs.get("return_convention"),
+           "benchmark_dataset": raw.attrs.get("benchmark_dataset")}
+    market = raw.copy()
     market["date"] = pd.to_datetime(market["date"])
     market = market[
         (market["date"] >= pd.Timestamp(start_date))
@@ -623,6 +645,7 @@ def market_relative_metrics(eq: pd.DataFrame, start_date: str, end_date: str) ->
         "relative_wealth": float(strategy_wealth / market_wealth - 1),
         "ann_alpha": float(alpha_daily * 252),
         "beta": float(beta),
+        **tag,
     }
 
 

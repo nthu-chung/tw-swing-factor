@@ -65,6 +65,7 @@ import pandas as pd
 
 import config
 import freeze_manifest
+import return_convention
 from evaluation import holdout as holdout_ledger
 from evaluation.phases import PhaseSweep
 
@@ -291,6 +292,9 @@ def run(manifest_path: Optional[str] = None, *,
         "phases": phases.to_dict(orient="records"),
         "benchmark_equal_weight_hold": benchmark,
         "excess_sharpe_vs_benchmark_median": excess,
+        # 「策略−基準」只有在兩條序列同口徑時才是超額報酬。這個區塊記兩邊各自
+        # 含不含息,口徑不一致時 summary_block() 直接 raise(見 return_convention)。
+        "return_convention": return_convention.summary_block(),
         # holdout 使用紀錄跟著結果走:讀這份檔案的人不必去翻台帳,就看得到
         # 這段 forward 窗是不是第一次被這套規則揭露。
         "holdout": holdout,

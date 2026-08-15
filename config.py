@@ -126,6 +126,18 @@ PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
 # DividendResult 裡，所以閘門仍對「還原後」序列跑殘留斷點掃描才放行。
 SELF_ADJUST_PRICES = os.getenv("SWING_SELF_ADJUST", "1").strip() != "0"
 
+# ── 基準報酬口徑（2026-08-15 加）────────────────────────────────────────
+# 個股序列在「官方還原價」或「自建還原價」下是**含息**的（現金股利被還原回價格），
+# 而基準長年用 TAIEX **價格指數**（不含息）→ 兩邊口徑不一致，超額報酬被系統性
+# 灌高。實測回測窗 2024-06-03~2026-06-20：TAIEX 價格指數算術年化 42.38%、
+# 含息報酬指數 45.23%（差 2.86pp/年），Sharpe 1.677 vs 1.790（差 0.113）。
+#
+# "auto" = 由個股序列的口徑推導基準（含息 → TaiwanStockTotalReturnIndex，
+# 不含息 → TaiwanStockPrice 的 TAIEX 價格指數）。要顯式指定就寫資料集名，
+# 但口徑跟個股對不上時 `return_convention` 會 fail-closed raise —— 口徑不一致的
+# 「贏過基準」比不比更糟（它看起來像 alpha）。
+BENCHMARK_INDEX_DATASET = os.getenv("SWING_BENCHMARK_INDEX", "auto").strip() or "auto"
+
 # ── 未還原價 fail-closed 閘門（2026-07-24 加；2026-08-02 收緊）──────────────
 # 未還原價會被公司行動（除權息/分割/減資）污染 → 假停損/假 MA 出場、選股排名被
 # 機械性壓低。backtest._prepare_panel 在未還原價時**一律** raise，拒絕產出假績效。

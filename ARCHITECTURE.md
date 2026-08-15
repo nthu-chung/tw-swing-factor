@@ -17,7 +17,7 @@
 限制是什麼」，不會連券商 API，也不會替使用者送出訂單。每日人工流程可以引用同一
 套規則產生警示，例如漲停、處置、全額交割，但輸出仍只是候選資料。
 
-## 八個不可協商的管線不變式
+## 九個不可協商的管線不變式
 
 這些不是風格偏好，每一條都對應一個實際發生過、會產生假結果的缺陷。改動任何一層
 之前先確認沒有破壞它們。
@@ -32,6 +32,7 @@
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
 | 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss。視窗由呼叫端指定的全市場表（處置／注意）用 `data.window_cache_scope()`（戳 `w{start}_{end}`）；讀取端 `execution.tradability` 必須自己確認快取涵蓋回測區間，涵蓋不到就當缺資料 fail-closed。衍生的稽核 panel 快取（`factor_audit.panel_cache_path` / `defensive_rs.panel_path`）檔名帶快照與 `HISTORY_DAYS` | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op。同一個洞在 `data.py` 之外重演過一次：處置快取只以快照為 key，先放一份只涵蓋 2026-05-01~05-10 的檔，再請求 2021-01-01~2026-06-22 會零重抓直接回傳那一列——而這層資料決定「處置期間禁新倉」，等於把更早期間全部當成沒被處置而放行進場 |
 | 8 | **只有上市／上櫃普通股能進候選池** | `security_type.py` 的證券別白名單，由 `universe.get_universe` / `pit_universe.load_history*` / `current_watchlist` / `build_universe.build` 共用（引擎邊界 `_prepare_panel` 再擋一次非普通股產業別）；判準來自 TaiwanStockInfo 的 `type` + `industry_category` + `stock_name` 後綴，缺任一欄或出現沒見過的產業別一律 fail-closed（`on_unknown` 只有 `raise`／`exclude`，刻意沒有 `allow`）；被擋掉的數量與理由寫進 `summary["universe"]["excluded_by_security_type"]` | `universe._is_normal_stock(stock_id, market_type)` 收了 `market_type` 卻**完全沒用它**，只檢查「4 碼數字非 00 開頭」——而興櫃、DR（91xx）、創新板的代號同樣是 4 碼數字。實測凍結快照下舊規則放行 2509 檔、其中 408 檔不是上市櫃普通股（興櫃 369／創新板 28／DR 11）；PIT 逐日快照混進 28 檔創新板 + 4 檔 DR，`outputs/universe_top100.json` 也含 1 檔創新板。**興櫃沒有 ±10% 漲跌停**：2026-05 單日 |ret|>10.5% 佔比為上市 0.034%／上櫃 0.042%／興櫃 3.872%（約 100 倍），最大 +57.17%；動能因子找的正是那種標的，偏誤方向是系統性灌高 Sharpe。流動性擋不住——最大一檔興櫃日均成交值 14.75 億、全市場 ADV 排名 #188，落在 `DYNAMIC_UNIVERSE_CANDIDATE_POOL=300` 之內 |
+| 9 | **基準與個股序列同報酬口徑（含息 vs 不含息）** | `return_convention.py` 是唯一判定入口（由 `PRICE_DATASET` + `SELF_ADJUST_PRICES` 推導個股口徑，再決定基準指數：含息 → `TaiwanStockTotalReturnIndex`、不含息 → `TaiwanStockPrice`/TAIEX）；`summary["return_convention"]` 記兩條序列各自的口徑，不一致直接 raise（`config.BENCHMARK_INDEX_DATASET` 顯式指定不一致的基準也 raise）；`rotation_research` 的基準與 alpha/beta 走 `fetch_benchmark_index()`，含息指數取不到就 raise，**不退回價格指數** | 個股在自建／官方還原價下是含息序列（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻是 TAIEX 價格指數 → 差額全部變成假超額。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677 vs 含息 45.23%／1.790，**2.86pp/年、Sharpe 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。量級剛好落在「看起來像小 alpha」的區間，只印警告會被捲過去 |
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
@@ -96,7 +97,10 @@ jsonl（與那份指紋）是**稽核紀錄不是資料產物**，已加進 `.gi
 pool as-of、dynamic universe 設定、price dataset 與自建還原及
 `data.integrity_bypassed`、`universe.future_pool_bypassed`、
 `universe.excluded_by_security_type`（被證券別白名單擋掉的檔數與理由——修正證券別
-過濾會改變候選池組成，沒有這一欄就分不出兩份結果用的是哪一種池）、漲跌停／處置／
+過濾會改變候選池組成，沒有這一欄就分不出兩份結果用的是哪一種池）、
+`return_convention`（個股序列與基準序列各自含不含息、基準用哪個指數資料集，以及
+仍以價格指數為基準的 `known_residuals`——沒有這一欄，「超額報酬 +X%」事後無從判斷
+分子分母是不是同一把尺）、漲跌停／處置／
 張數／成本設定、`evaluation` 的 IS／embargo／OS 固定日期、phase、
 `provenance.git_state()` 的 git commit，以及 `eval_audit`。兩個實測過的失真點：pool as-of 曾經取
 `build_universe.load_asof(universe_top_n)`，那是**每日 top-N（100）**那份檔案，

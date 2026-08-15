@@ -720,6 +720,49 @@ def fetch_market_index(history_days: int = None) -> pd.DataFrame:
     return df
 
 
+# ── 市場層級：大盤**含息**報酬指數（口徑一致的比較基準）─────────────────────
+# 為什麼要有第二條大盤序列:上面那條 TAIEX 是**價格指數**(不含息),而個股序列在
+# 官方還原價或自建還原價下是**含息**的 → 拿它當基準等於用不含息的尺量含息的東西,
+# 差額全部變成假超額。實測 2024-06-03~2026-06-20:價格指數算術年化 42.38%、含息
+# 45.23%(差 2.86pp/年),Sharpe 1.677 vs 1.790(差 0.113);2015~2026 逐年差
+# 2.41~4.81pp,**沒有一年為負** —— 是系統性偏誤,不是雜訊。
+#
+# 選擇邏輯不在這裡,在 `return_convention.py`(資料層只負責把序列取回來)。
+# 快取檔 market__TAIEX_TR__<snapshot>__d<days>.pkl:與價格指數不同命名空間,
+# 範圍戳同樣走 MARKET_HISTORY_DAYS(不變式 7:範圍必須進 key)。
+def fetch_market_total_return_index(history_days: int = None) -> pd.DataFrame:
+    """
+    回傳大盤**含息**報酬指數（TAIEX Total Return）日資料：date, close。
+    來源 FinMind TaiwanStockTotalReturnIndex / data_id=TAIEX（實測需 level 2）。
+    服務明確無資料才回空；API 失敗 raise（不得回空表冒充無資料）。
+
+    這個資料集只有一個價格欄位（實測欄位為 `price`，無 OHLCV、無成交量），所以
+    它**只能**用於報酬比較,不能拿去當 OHLC 或成交量來源。
+    """
+    scope = cache_scope("market", "TAIEX_TR", history_days,
+                        default_attr="MARKET_HISTORY_DAYS")
+    cached = _load_cache(scope)
+    if cached is not None:
+        return cached
+    df = _finmind_get("TaiwanStockTotalReturnIndex", "TAIEX", scope.start, scope.end)
+    if df.empty:
+        return df
+    # 實測回傳欄位:price / stock_id / date。容忍 close 命名以免上游改欄位就靜默壞掉。
+    if "close" not in df.columns and "price" in df.columns:
+        df = df.rename(columns={"price": "close"})
+    if "close" not in df.columns:
+        raise FinMindAPIError(
+            "TaiwanStockTotalReturnIndex 回傳沒有 price/close 欄位:"
+            f"{sorted(df.columns)}；拒絕猜欄位"
+        )
+    df = df[["date", "close"]].copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+    _save_cache(scope, df)
+    return df
+
+
 # ── 整合：一次取得單檔所有資料 ──────────────────────────────────────────
 def fetch_bundle(stock_id: str, history_days: int = None,
                  include_extras: bool = False) -> dict:

@@ -28,7 +28,7 @@ process list；本 repo 的資料請求只用 `Authorization: Bearer ...` header
 | dataset | 內容 | 本 repo 用在哪 |
 |---|---|---|
 | `TaiwanStockPrice` | 日 OHLCV + 成交金額(**未還原**) | `data.fetch_price` |
-| `TaiwanStockPrice` (`data_id=TAIEX`) | 大盤指數 | `data.fetch_market_index` |
+| `TaiwanStockPrice` (`data_id=TAIEX`) | 大盤**價格**指數(**不含息**) | `data.fetch_market_index`(市場濾網/regime/RS 因子;**不可當報酬比較基準**,見下) |
 | `TaiwanStockInfo` | 代號/名稱/產業/市場別 | `data.fetch_stock_info` |
 | `TaiwanStockInstitutionalInvestorsBuySell` | 外資/投信/自營淨買 | `data.fetch_institutional` |
 | `TaiwanStockMarginPurchaseShortSale` | 融資融券餘額 | `data.fetch_margin` |
@@ -47,6 +47,33 @@ process list；本 repo 的資料請求只用 `Authorization: Bearer ...` header
 | dataset | 公開 client 欄位 | 狀態 |
 |---|---|---|
 | `TaiwanStockPriceLimit` | `date / stock_id / reference_price / limit_up / limit_down` | 已接 `data.fetch_price_limits`；本機未設定 token，尚未驗證真實回應、免費層權限、新上市空值語意與歷史覆蓋，不列入「可用(已實測)」 |
+
+### `TaiwanStockTotalReturnIndex` —— 含息報酬指數(**需 level 2,免費層取不到**)
+
+```
+dataset=TaiwanStockTotalReturnIndex&data_id=TAIEX
+→ 欄位 price / stock_id / date(只有一個價格欄,無 OHLCV、無成交量)
+```
+
+2026-08-15 在 level 2(Backer)實測可用:2014-01-02~2026-08-14 共 3078 列,
+日期集合與 `TaiwanStockPrice(data_id=TAIEX)` **完全一致**(同一份行事曆)。
+`data_id=TPEx` 同樣有(上櫃含息)。
+
+**為什麼非用不可**:個股序列在自建/官方還原價下是**含息**的,拿不含息的 TAIEX
+價格指數當基準 = 兩把尺。實測 2024-06-03~2026-06-20(算術年化):
+
+| 基準 | 年化 | 波動 | Sharpe |
+|---|---|---|---|
+| TAIEX 價格指數(舊用法) | 42.38% | 25.26% | 1.677 |
+| TAIEX 含息報酬指數 | 45.23% | 25.28% | 1.790 |
+| **差** | **2.86pp/年** | | **0.113** |
+
+逐年(2015~2026)差 2.41~4.81pp,**沒有一年為負**。個股側同期 20 檔等權樣本:
+還原價 61.83% vs 未還原 55.87%(差 5.96pp/年;剔除 2327 分割污染後仍 3.52pp)。
+
+接在 `data.fetch_market_total_return_index`(快取 `market__TAIEX_TR__<snap>__d<days>`),
+選哪一個指數由 `return_convention.py` 決定 —— 口徑對不上或抓不到一律 raise,
+**不會退回價格指數**。
 
 ### 被鎖(回 `status=400 Your level is register`)
 
@@ -189,13 +216,20 @@ openapi 系列(`/openapi/v1/...`)只給**近期滾動視窗**:處置約 2 週、
 
 ## 5. 付費才有的東西(以及該不該買)
 
-**目前結論:不需要。** 兩個曾經的阻擋項都已用免費資料解決:
+**結論修正(2026-08-15):正確的比較基準需要付費層。** 兩個曾經的阻擋項仍可用免費
+資料解決:
 
 - 還原價 → `price_adjust.py`(缺口:分割/減資,由 `price_integrity` 殘留掃描擋)
 - 市值 → `CapitalStock / 10 × close`
 
+但**還原價一旦開啟,個股序列就是含息的**,而免費層只有不含息的 TAIEX 價格指數 →
+拿它當基準每年憑空生出 2.86pp 超額(見第 1 節)。免費層下的正確行為是 fail-closed
+(算不出同口徑基準就不報超額),不是換一把尺繼續比。
+
 真正只有付費才有的,依價值排序:
 
+0. **含息報酬指數**(`TaiwanStockTotalReturnIndex`)—— 唯一能讓「贏過大盤」這句話
+   成立的基準。level 2 實測可用;沒有它就只能改用等權買進持有基準,或不做指數比較。
 1. **分點進出**(`TaiwanStockTradingDailyReport`)—— 台股特有的主力券商籌碼維度,
    現有因子完全沒有,且很難自建。從 S19 的因子掃描看,籌碼面(法人流)是有效的
    那一半,往這個方向加深最有機會找到**低相關**的第二個 portfolio 成分。
@@ -209,6 +243,7 @@ openapi 系列(`/openapi/v1/...`)只給**近期滾動視窗**:處置約 2 週、
 ## 關聯檔案
 
 - 自建還原價:`price_adjust.py`｜PIT 候選池:`pit_universe.py`
+- 報酬口徑(含息/不含息)與基準選擇:`return_convention.py`
 - 注意/處置:`twse_disposition.py`(上市)、`tpex_disposition.py`(上櫃)
 - 資料層:`data.py`｜候選池建構:`build_universe.py`
 - 規劃性質的資料源比較(TEJ 等):`DATA_SOURCE_RESEARCH.md`

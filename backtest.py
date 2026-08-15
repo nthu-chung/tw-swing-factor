@@ -33,6 +33,7 @@ import evaluation_split
 import factors
 import price_integrity
 import provenance
+import return_convention
 import security_type
 import universe as uni
 # 相位掃描只有一份實作(evaluation/phases.py)。正式 IS/OS、S19 的 evaluate 與
@@ -1987,6 +1988,11 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 and bool(getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False))
             ),
         },
+        # 報酬口徑:這份權益曲線是含息還是不含息,以及與它比較的基準是哪一種。
+        # 個股序列在自建/官方還原價下含息,而基準長年用 TAIEX 價格指數(不含息)
+        # —— 實測每年憑空生出 2.86pp 超額、Sharpe 差 0.113。口徑不一致時
+        # `summary_block()` 直接 raise,所以有 summary 就代表比較是同一把尺。
+        "return_convention": return_convention.summary_block(),
         "params": {
             "exit_mode": config.BT_EXIT_MODE,
             "ma_exit": config.BT_MA_EXIT,

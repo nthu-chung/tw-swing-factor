@@ -26,6 +26,22 @@
 > 判定實作見 `security_type.py`，結果側的辨識欄位是
 > `summary["universe"]["excluded_by_security_type"]`。
 >
+> **報酬口徑不一致（2026-08-15 發現並修正機制，所有「超額 / 贏過基準」結論需重驗）**：
+> 個股序列在 `SELF_ADJUST_PRICES=1`（預設）或 `PRICE_DATASET=TaiwanStockPriceAdj`
+> 下是**含息**的（現金股利被還原回價格），而基準一直用 TAIEX **價格指數**（不含息）。
+> 實測回測窗 2024-06-03~2026-06-20（算術年化，與引擎慣例一致）：價格指數 42.38%／
+> Sharpe 1.677，含息報酬指數 45.23%／1.790 —— **每年 2.86 個百分點的假超額、
+> Sharpe 差 0.113**；2015~2026 逐年差 2.41~4.81pp，**沒有一年為負**（系統性，非雜訊）。
+> 因此本表與各報告中**所有以大盤指數為基準的超額報酬、ann_alpha、relative_wealth
+> 與「贏過大盤」宣稱，在用一致口徑重跑之前一律視為需重驗**。這是標記而不是重新
+> 評價：不得因這次修正宣稱任何策略變好或變壞，也不得為了「證明修正有效」重跑績效。
+> 以**等權買進持有**為基準的結論（S19 的 IS/OS 基準、`forward_test`）不受影響——
+> 那條基準直接由個股 close 算出，必然與策略序列同口徑。
+> 判定與選擇實作見 `return_convention.py`，結果側的辨識欄位是
+> `summary["return_convention"]`（口徑不一致時直接 raise，不會有結果）。
+> 已知殘留：`rs_excess` 因子仍以價格指數為基準（見
+> `summary["return_convention"]["known_residuals"]`）。
+>
 > **候選池部分修復（2026-08）**：正式回測改走月頻 PIT
 > （`universes/monthly_pit.py`，M 月只用完整 M-1 曆月，含當時在市後來下市者），
 > 但下市股價格覆蓋仍不完整，`survivorship_free` 維持 `False`。

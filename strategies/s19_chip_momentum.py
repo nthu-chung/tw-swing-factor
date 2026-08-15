@@ -66,6 +66,7 @@ import pandas as pd
 
 import backtest
 import config
+import return_convention
 from evaluation import build_evaluation_split
 from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import operators as op
@@ -329,6 +330,11 @@ def equal_weight_baseline(panel: pd.DataFrame, start=None, end=None) -> Dict:
     用與 backtest 引擎相同的算術慣例:ann=mean*252, vol=std*sqrt(252)。
     報酬必須在稠密 panel 上先算再篩成員,否則成員進出的日期斷點會被當成單日
     巨幅報酬,把基準灌爆。
+
+    報酬口徑:這條基準是**從個股 close 直接算的**,所以必然與策略序列同口徑
+    (含息與否由 `PRICE_DATASET` / `SELF_ADJUST_PRICES` 決定)—— 它不會有
+    「含息個股 vs 不含息指數」那種問題。仍把口徑標進回傳值,因為讀 forward
+    payload 的人看到的是這個 dict,不是這段註解。
     """
     full = panel.sort_values(["stock_id", "date"]).copy()
     full["r"] = full.groupby("stock_id")["close"].pct_change()
@@ -343,7 +349,9 @@ def equal_weight_baseline(panel: pd.DataFrame, start=None, end=None) -> Dict:
     ann = float(eq.mean() * 252)
     vol = float(eq.std(ddof=1) * np.sqrt(252))
     return {"ann_ret": ann, "ann_vol": vol,
-            "sharpe": ann / vol if vol > 0 else float("nan"), "n_days": len(eq)}
+            "sharpe": ann / vol if vol > 0 else float("nan"), "n_days": len(eq),
+            "return_convention": return_convention.stock_series_convention(),
+            "benchmark_source": "dynamic_universe_equal_weight_hold"}
 
 
 def is_os_split(panel: pd.DataFrame) -> Tuple[pd.Timestamp, pd.Timestamp]:

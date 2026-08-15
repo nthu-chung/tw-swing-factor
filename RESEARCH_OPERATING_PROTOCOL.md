@@ -166,6 +166,7 @@
 | holdout 只有第一次是 holdout（§1/§7） | `evaluation/holdout.py` 的 append-only 台帳 `outputs/holdout_ledger.jsonl`（雜湊鏈防靜默改寫 + 排他檔案鎖）；`backtest.run_full` 的 OS 段、`s19.main`、`forward_test.run` 每次揭露都 append：strategy hash、OS 起訖、reveal time、git commit | 重疊到看過的區間 → `holdout_previously_seen=True`、`fresh_oos_claim_allowed=False`，並回報 `fresh_os_start`。原本完全沒有這個紀錄，而 IS/OS 切點錨在資料尾端、資料視窗又隨 `SNAPSHOT_END_DATE` 滑動：快照 2026-06-22 的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 後 OS 起點變成 2026-01-05 —— 2025-11-19~2026-01-04 **從 OS 變成 IS**，同一段資料會被第二次報成 fresh OOS |
 | 凍結必須釘住 holdout 邊界（§8） | `freeze_manifest.holdout_boundaries()` 寫進 `manifest["holdout"]`（不進 `rules`／hash）；`validate_manifest` 缺這段即判不可靠，未解析成日期時出警告 | 只凍 `EVAL_SPLIT_MODE`／`IS_OS_SPLIT`／`EMBARGO_DAYS` 這些**參數**是不夠的：同一組參數在不同快照下解出不同的 OS 區間 |
 | 單相位只能 debug（§7） | `single_phase_debug` 由呼叫端的**意圖**傳入並標進 summary／`phase_stats`；forward 收到 debug 掃描直接 raise | 舊版 `forward_test` 用 `len(df) == 1` 反推旗標 —— 拿結果當意圖：20 相位只有 1 個有結果會被誤標成 debug，再平衡天數為 1 的正式全相位掃描也會被誤標 |
+| 基準與個股同報酬口徑（§1/§7） | `return_convention.py` 是口徑的單一判定入口；`summary["return_convention"]` 記錄兩條序列各自含不含息，不一致直接 raise；`rotation_research.benchmark_metrics` / `market_relative_metrics` 改走 `return_convention.fetch_benchmark_index()`，含息指數抓不到就 raise（**不退回價格指數**） | 個股序列在自建／官方還原價下是**含息**的（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻一直是 TAIEX **價格指數**（不含息）。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677，含息報酬指數 45.23%／1.790 —— **每年 2.86pp 的假超額、Sharpe 差 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。這個量級剛好落在「看起來像小 alpha」的區間，所以只印警告沒有用 |
 
 ## 10. 標準操作流程（指令級）
 
@@ -279,6 +280,25 @@ forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（202
 - **還原價**：預設仍未還原；`price_adjust.py` 自建只處理除權息，不含分割／減資。
   真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。未還原價現在一律
   fail-closed raise（§9），不是警告。
+- **報酬口徑不一致（2026-08-15 發現並修正機制，既有超額結論一律需重驗）**：
+  個股序列含息、基準用 TAIEX 價格指數（不含息），差額被當成策略的超額報酬。
+  實測量級 **2.86pp/年、Sharpe 0.113**（2024-06-03~2026-06-20；逐年 2.41~4.81pp，
+  2015~2026 沒有一年為負）。因此**本 repo 所有既有的「超額報酬 / 贏過大盤指數 /
+  ann_alpha / relative_wealth」結論,在用一致口徑重跑之前一律視為需重驗**——
+  這是標記，不是重新評價：不得因此宣稱任何策略變好或變壞，也不得為了證明修正
+  有效而重跑績效。走等權買進持有基準（`s19.equal_weight_baseline`、`forward_test`）
+  的結論不受此影響：那條基準直接從個股 close 算，必然同口徑。
+  含息指數（`TaiwanStockTotalReturnIndex`）**需 FinMind level 2**，免費層取不到時
+  正確行為是 fail-closed，不是換一把尺繼續比。
+- **口徑修正的已知殘留**：`factor_engine.legacy_factors._attach_relative_strength`
+  的 `rs_excess` / `down_day_excess` 仍以價格指數為基準，含息個股序列下
+  `score_rs`（門檻型分數）被系統性灌高。刻意未一起改：因子層改了之後每次建 panel
+  都需要付費層的含息指數，免費 token 會完全無法建 panel。這一項寫在
+  `summary["return_convention"]["known_residuals"]`，升級任何用到 RS 因子的結論前
+  必須先處理。市場濾網／regime 的 MA、波動判定沿用價格指數則是刻意的——那是水準值
+  規則，不是報酬比較。另外 `disposition_event_study.py` 的「超額 = 個股 − TAIEX」
+  兩邊**都**是不含息（它直接 `read_pickle` 快取、繞過 `fetch_price` 的自建還原），
+  口徑碰巧一致，但那是繞過還原路徑的副作用而不是設計——動它之前要連還原價一起處理。
 - **產業分類非 PIT**：歷史日期套用當前 FinMind 標籤，族群策略保留 `industry_pit=False`。
 - **單一多頭窗**：資料僅 2024–2026，無足夠空頭；clean OOS 檢定力低，靠 forward-only 累積。
 - 在上述各項處理完之前，**所有絕對績效一律標「樂觀上界、待重驗」**，不得作為上線依據。
