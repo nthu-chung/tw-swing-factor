@@ -257,6 +257,9 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
             rebalance_every=spec.port("rebalance_days"),
             top_n=spec.port("max_positions"), picks_by_date=picks,
             universe_provider=universe_provider,
+            # 訊號視窗/權重只在 spec 裡,引擎自己看不到 —— 不往下傳的話,
+            # summary 就少了決定這份績效的另一半規則。
+            strategy_spec=spec,
         )
     finally:
         _restore_portfolio_config(old)

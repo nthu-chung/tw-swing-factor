@@ -135,7 +135,14 @@ def _metrics(eq: pd.DataFrame, regime: pd.DataFrame) -> dict:
 
 
 def _run(symbols, picks, filt=False, reb=5, pick=5, start=None, end=None):
-    filt_orig = getattr(config, "MARKET_FILTER_ENABLED", False)
+    # 原 bug(2026-08-15 修):只還原 MARKET_FILTER_ENABLED,`MARKET_FILTER_RULE`
+    # 被永久留在 "vol"。這個模組改的是**全域** config,同一個 process 後續任何
+    # 回測(包含別的腳本 import 進來跑的)都會沿用那條規則,而 summary 當時也
+    # 不記實際生效值 —— 污染完全不可見。全域參數的還原必須是全部,不是一半。
+    filt_orig = (
+        getattr(config, "MARKET_FILTER_ENABLED", False),
+        getattr(config, "MARKET_FILTER_RULE", None),
+    )
     if filt:
         config.MARKET_FILTER_ENABLED = True
         config.MARKET_FILTER_RULE = "vol"
@@ -146,7 +153,7 @@ def _run(symbols, picks, filt=False, reb=5, pick=5, start=None, end=None):
             dynamic_enabled=True, picks_by_date=picks,
             static_universe_comparator=True)   # research-only:非 PIT 候選池
     finally:
-        config.MARKET_FILTER_ENABLED = filt_orig
+        (config.MARKET_FILTER_ENABLED, config.MARKET_FILTER_RULE) = filt_orig
 
 
 def run(pool=300, pick=5, reb=5, vol_th=0.25):

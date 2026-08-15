@@ -17,6 +17,34 @@ import config
 import data
 
 
+# ── 未來池逃生門的紀錄簿 ────────────────────────────────────────────────
+# 2026-08-15:`SWING_ALLOW_FUTURE_POOL=1` 以前**只 print 一行**就放行。價格逃生門
+# (`ALLOW_UNADJUSTED_BACKTEST`)至少會在 summary 戳 `integrity_bypassed=True`,
+# 未來池逃生門卻不留任何痕跡 —— 於是「用晚於快照的排名池回套歷史」產生的績效,
+# 存進 outputs/ 之後就跟乾淨結果長得一模一樣,只有當初盯著 stdout 的人知道。
+# 這裡把放行事件記進 process 級紀錄簿,回測 summary 會把它寫進 `universe` 欄位。
+_FUTURE_POOL_BYPASSES: List[Dict] = []
+
+
+def future_pool_bypass_log() -> List[Dict]:
+    """本 process 內被 `SWING_ALLOW_FUTURE_POOL=1` 放行過的未來池。"""
+    return [dict(e) for e in _FUTURE_POOL_BYPASSES]
+
+
+def reset_future_pool_bypass_log() -> None:
+    """清空紀錄簿(測試用;正式流程一個 process = 一次研究執行,不該清)。"""
+    _FUTURE_POOL_BYPASSES.clear()
+
+
+def _record_future_pool_bypass(pool_asof: str, snap: str, top_n: int) -> None:
+    _FUTURE_POOL_BYPASSES.append({
+        "pool_top_n": int(top_n),
+        "pool_asof": str(pool_asof),
+        "snapshot_end": str(snap),
+        "detected_by": "universe.get_universe",
+    })
+
+
 def _assert_universe_pit(pool_asof: str, top_n: int) -> None:
     """候選池 PIT 檢查:池的建構日不得晚於資料快照,否則 = 未來池 look-ahead。
 
@@ -35,6 +63,9 @@ def _assert_universe_pit(pool_asof: str, top_n: int) -> None:
         return
     if pool_asof > snap:
         if getattr(config, "ALLOW_FUTURE_POOL", False):
+            # 只 print 不夠:結果落到 outputs/ 之後那行警告就消失了。記進紀錄簿,
+            # 讓 backtest summary 的 `future_pool_bypassed` 帶著它一起留存。
+            _record_future_pool_bypass(pool_asof, snap, top_n)
             print(f"[universe] ⚠ 候選池建於 {pool_asof} 晚於快照 {snap}(未來池 look-ahead),"
                   f"SWING_ALLOW_FUTURE_POOL=1 已放行——結果含選股前視,不可當已驗證。")
             return

@@ -20,7 +20,8 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Dict
+import re
+from typing import Any, List, Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -31,6 +32,7 @@ import dynamic_universe
 import evaluation_split
 import factors
 import price_integrity
+import provenance
 import universe as uni
 # 相位掃描只有一份實作(evaluation/phases.py)。正式 IS/OS、S19 的 evaluate 與
 # forward_test 都走它;這裡不再自己寫 `for phase in range(...)`。
@@ -287,6 +289,181 @@ def _resolve_universe_source(symbols: Optional[List[str]], *,
     }
 
 
+# ── 候選池 provenance:pool as-of 必須來自「真的被用到的那份池」────────────
+_POOL_FILE_RE = re.compile(r"^universe_top(\d+)\.json$")
+
+
+def _available_pool_sizes() -> List[int]:
+    """`outputs/` 底下現存的 legacy 候選池檔(top-N)。"""
+    try:
+        names = [p.name for p in config.OUTPUT_DIR.glob("universe_top*.json")]
+    except Exception:
+        return []
+    sizes = [int(m.group(1)) for m in map(_POOL_FILE_RE.match, names) if m]
+    return sorted(set(sizes))
+
+
+def _legacy_pool_provenance(symbols: Optional[List[str]], *,
+                            dynamic_enabled: bool,
+                            universe_top_n: int) -> Dict[str, Any]:
+    """legacy 單日候選池的**真實** provenance(讀哪一份檔、它的 as_of 是哪天)。
+
+    原 bug(2026-08-15 修):`_prepare_panel` 寫的是
+
+        _pool_asof = build_universe.load_asof(universe_top_n)
+
+    但 `universe_top_n` 是**每日 dynamic universe 的 top-N(100)**,不是候選池。
+    真正被套進歷史的候選池是 `universe.get_research_candidates()` 讀的
+    `outputs/universe_top{DYNAMIC_UNIVERSE_CANDIDATE_POOL}.json`(300)。實測:
+    top100 的 `as_of=2026-06-20`(<= 快照 2026-06-22,看起來完全合規),top300 的
+    `as_of=2026-08-03`(> 快照 = 未來池 look-ahead),而同一份 metadata 的
+    `candidate_source` 卻誠實寫著 top300。summary 因此自我矛盾,而且是往
+    「看起來合規」的方向錯 —— 最危險的那個方向:未來池的績效會被當成乾淨結果。
+
+    修法是不再用「每日 top-N」推測,而是用**實際的 symbols** 去比對現存的池檔:
+    只有當 symbols 是某份池的子集(子集是正當的:資料品質黑名單會扣掉幾檔)才
+    採用該檔的 as_of。比對不到就誠實回報 `candidate_pool_asof=None`,不拿快照日
+    或別份池的日期頂替 —— 頂替出來的戳只會讓人誤以為 PIT 已被驗證過。
+    """
+    expected = int(
+        getattr(config, "DYNAMIC_UNIVERSE_CANDIDATE_POOL", universe_top_n)
+        if dynamic_enabled else universe_top_n
+    )
+    wanted = set(symbols or ())
+    resolved: Optional[int] = None
+    resolved_by = "unresolved"
+    import build_universe as _bu
+    if wanted:
+        # 由小到大找「第一個完全涵蓋 symbols 的池」:候選池只會被縮小
+        # (黑名單),不會被擴大,所以最小的 superset 就是實際用的那一份。
+        # 單一檔案壞掉(手改過、格式舊)只跳過那一份,不放棄整個比對。
+        for n in sorted({expected, *_available_pool_sizes()}):
+            try:
+                ids = set(_bu.load(n))
+            except Exception:
+                continue
+            if ids and wanted <= ids:
+                resolved = n
+                resolved_by = ("expected_candidate_pool" if n == expected
+                               else "symbol_set_match")
+                break
+
+    asof: Optional[str] = None
+    if resolved is not None:
+        try:
+            asof = _bu.load_asof(resolved)
+        except Exception:
+            asof = None
+    return {
+        "candidate_pool_top_n": resolved,
+        "candidate_pool_file": (None if resolved is None
+                                else f"outputs/universe_top{resolved}.json"),
+        "candidate_pool_asof": asof,
+        "candidate_pool_asof_source": (
+            f"universe_top{resolved}.json" if asof else "unresolved"),
+        "candidate_pool_resolved_by": resolved_by,
+        "candidate_pool_expected_top_n": expected,
+        # 每日 dynamic universe 的 top-N 跟候選池是兩件事,分開記,不再混用。
+        "dynamic_universe_top_n": int(universe_top_n),
+    }
+
+
+def _future_pool_provenance(pool_asof: Optional[str], snapshot: str, *,
+                            pool_top_n: Optional[int] = None) -> Dict[str, Any]:
+    """未來池逃生門(`SWING_ALLOW_FUTURE_POOL`)的 summary 欄位。
+
+    原 bug:那道逃生門只 print 一行就放行,summary 沒有任何欄位 —— 對比價格
+    逃生門至少有 `data.integrity_bypassed`。結果存進 `outputs/` 之後,含選股前視
+    的績效跟乾淨績效長得一模一樣。
+
+    兩個來源都算數:
+      1. `universe._assert_universe_pit` 放行時記下的事件(呼叫端載入池時觸發);
+      2. 引擎自己比對「實際用到的池檔 as_of」與資料快照 —— 有些路徑直接傳
+         `symbols=` 進來,根本沒經過 `get_universe`,那道檢查一次都不會跑。
+    """
+    events = [dict(e) for e in uni.future_pool_bypass_log()]
+    if snapshot and pool_asof and str(pool_asof) > str(snapshot):
+        already = any(str(e.get("pool_asof")) == str(pool_asof) for e in events)
+        if not already:
+            events.append({
+                "pool_top_n": pool_top_n,
+                "pool_asof": str(pool_asof),
+                "snapshot_end": str(snapshot),
+                "detected_by": "backtest_summary",
+            })
+    return {
+        "future_pool_bypass_allowed": bool(getattr(config, "ALLOW_FUTURE_POOL", False)),
+        "future_pool_bypassed": bool(events),
+        "future_pool_bypass_events": events,
+    }
+
+
+def _apply_future_pool_downgrade(universe_meta: Dict[str, Any]) -> None:
+    """用了未來池就不可能是正式證據 —— 就地降級,理由寫進 `evidence_note`。"""
+    if not universe_meta.get("future_pool_bypassed"):
+        return
+    universe_meta["formal_evidence_eligible"] = False
+    note = str(universe_meta.get("evidence_note") or "").strip()
+    extra = ("候選池建構日晚於資料快照(未來池 look-ahead),"
+             "含選股前視,不可作正式證據")
+    universe_meta["evidence_note"] = f"{note}｜{extra}" if note else extra
+
+
+def _evaluation_provenance(split_info, segment: Optional[str]) -> Dict[str, Any]:
+    """IS / embargo / OS 的固定日期(以及「呼叫端根本沒宣告」這件事)。
+
+    為什麼要進 summary:IS/OS 是在凍結資料**內部**畫的線,引擎不知道那條線存在
+    (AGENTS.md 陷阱 5 的註)。過去 summary 只有 `period` 與 `eval_audit`,
+    要判斷「這段到底是 IS 還是 OS、embargo 幾天」只能翻當初的腳本或憑記憶 ——
+    而 holdout 被看過幾次正是這個 repo 最需要留痕跡的事。
+
+    沒宣告時**不猜**:`split_declared=False` 明說這個數字沒有被綁到任何切割。
+    """
+    out: Dict[str, Any] = {
+        "segment": segment,
+        "split_declared": split_info is not None,
+        "is_window": None,
+        "os_window": None,
+        "embargo_trading_days": None,
+        "split_mode": None,
+        # config 的切割設定:即使呼叫端沒宣告,也看得到當時的全域設定值。
+        "is_os_split_config": getattr(config, "IS_OS_SPLIT", None),
+        "embargo_days_config": getattr(config, "EMBARGO_DAYS", None),
+        "ic_horizon": getattr(config, "BT_IC_HORIZON", None),
+    }
+    if split_info is None:
+        return out
+    d = split_info.to_dict() if hasattr(split_info, "to_dict") else dict(split_info)
+    out.update({
+        "is_window": [d.get("is_start"), d.get("is_end")],
+        "os_window": [d.get("os_start"), d.get("os_end")],
+        "embargo_trading_days": d.get("n_embargo"),
+        "split_mode": d.get("mode"),
+        "n_is": d.get("n_is"),
+        "n_os": d.get("n_os"),
+        "n_total": d.get("n_total"),
+    })
+    return out
+
+
+def _dynamic_universe_settings(dynamic_enabled: bool,
+                               universe_top_n: int) -> Dict[str, Any]:
+    """dynamic universe 的**實際生效**設定(每日成員資格怎麼決定)。
+
+    這些值決定了「哪些股票當天可被選」,跟因子權重同級的 load-bearing 參數,
+    但過去只有走 `_prepare_panel` 的路徑會記到一半(external picks 路徑完全沒有)。
+    """
+    return {
+        "dynamic_enabled": bool(dynamic_enabled),
+        "top_n": int(universe_top_n) if dynamic_enabled else None,
+        "lookback": config.DYNAMIC_UNIVERSE_LOOKBACK,
+        "min_obs": config.DYNAMIC_UNIVERSE_MIN_OBS,
+        "min_avg_volume_lots": config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
+        "min_avg_turnover": config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
+        "candidate_pool_n_config": config.DYNAMIC_UNIVERSE_CANDIDATE_POOL,
+    }
+
+
 # ── 預先計算所有股票的因子（含未來報酬）──────────────────────────────
 def _prepare_panel(symbols: List[str], min_score_for_trade: float,
                    start_date: Optional[str], end_date: Optional[str],
@@ -389,14 +566,6 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
 
     panel = pd.concat(records, ignore_index=True)
     _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
-    # 候選池真實建構日(provenance),非硬編快照日;取不到(舊池無 as_of)才退回快照。
-    _pool_asof = _asof
-    if dynamic_enabled:
-        try:
-            import build_universe as _bu
-            _pool_asof = _bu.load_asof(universe_top_n) or _asof
-        except Exception:
-            pass
     universe_meta = {
         "enabled": dynamic_enabled,
         "direction": "long_only",
@@ -409,14 +578,25 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         # 缺歷史當時的產業標籤。族群輪動研究(S07/S08/S15)須把此標記納入解讀。
         "industry_pit": False,
         "industry_asof": _asof,          # = 資料快照日(TaiwanStockInfo 以此戳快取)
-        "candidate_pool_asof": _pool_asof,  # 候選池 json 的真實 as_of provenance
+        **_dynamic_universe_settings(dynamic_enabled, universe_top_n),
     }
     candidate_mask = None
     if universe_provider is not None:
         candidate_mask = universe_provider.candidate_mask(panel)
+        # provider 自帶候選池規則 / pool size / pool as-of(月頻 PIT 的歷史末端)。
         universe_meta.update(universe_provider.metadata())
+    else:
+        # legacy 單日池:pool as-of 必須來自**實際被用到的那份池檔**,
+        # 不是每日 top-N 那份(見 `_legacy_pool_provenance` 的原 bug 說明)。
+        universe_meta.update(_legacy_pool_provenance(
+            symbols, dynamic_enabled=dynamic_enabled,
+            universe_top_n=universe_top_n))
+    universe_meta.update(_future_pool_provenance(
+        universe_meta.get("candidate_pool_asof"), _asof,
+        pool_top_n=universe_meta.get("candidate_pool_top_n")))
     # provenance 最後蓋上:誠實標籤不可被 provider metadata 或舊欄位覆寫。
     universe_meta.update(universe_provenance)
+    _apply_future_pool_downgrade(universe_meta)
     if dynamic_enabled:
         ranked = dynamic_universe.add_membership(
             panel,
@@ -427,12 +607,9 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
             min_avg_turnover=config.DYNAMIC_UNIVERSE_MIN_AVG_TURNOVER,
             candidate_mask=candidate_mask,
         )
-        universe_meta.update({
-            "top_n": universe_top_n,
-            "lookback": config.DYNAMIC_UNIVERSE_LOOKBACK,
-            "min_avg_volume_lots": config.DYNAMIC_UNIVERSE_MIN_AVG_VOLUME_LOTS,
-            **dynamic_universe.membership_summary(ranked),
-        })
+        # 成員資格設定已由 `_dynamic_universe_settings` 統一記過(所有路徑一致),
+        # 這裡只補「這次實際的成員統計」。
+        universe_meta.update(dynamic_universe.membership_summary(ranked))
         # keep_non_members:保留非成員列(+in_dynamic_universe 旗標),讓 operator
         # 型因子能在「連續」個股序列上算 ts_(避免只在稀疏成員日 rolling 的失真);
         # IC/選股仍應自行過濾 in_dynamic_universe。預設維持舊行為(只留成員)。
@@ -542,7 +719,10 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        let_positions_run: bool = False,
                        rebalance_phase: int = 0,
                        universe_provider=None,
-                       static_universe_comparator: bool = False) -> Dict:
+                       static_universe_comparator: bool = False,
+                       evaluation_split_info=None,
+                       segment: Optional[str] = None,
+                       strategy_spec=None) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -557,6 +737,16 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
 
     流程：走訪全市場交易日，每天先處理出場、再（逢 rebalance 日）用空位進場。
     進場一律 T+1 開盤（訊號在 T 日收盤後產生）。
+
+    provenance 參數(都只影響 `summary`,不影響任何數字):
+      - `evaluation_split_info`:`evaluation.splits.EvaluationSplit` 或它的
+        `to_dict()`。傳了才能在結果裡看到這段是哪一組 IS/embargo/OS 邊界;
+        沒傳就誠實記 `split_declared=False`(= 這個數字沒有被綁到任何切割,
+        事後不可宣稱它是 IS 或 OS)。
+      - `segment`:`"IS"` / `"OS"` / `"forward"` 之類的段名。
+      - `strategy_spec`:`strategies.spec.StrategySpec`。引擎自己只知道 config 那半
+        參數;走 external picks 的策略(S19)其訊號視窗與權重在 spec 裡,不傳就
+        不會出現在 summary,那份績效等於少了決定它的一半規則。
     """
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
@@ -689,7 +879,12 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "enabled": dynamic_enabled, "direction": "long_only",
             "candidate_source": "external_picks_by_date",
             "survivorship_free": False, "industry_pit": False,
-            "industry_asof": _asof, "candidate_pool_asof": _asof,
+            "industry_asof": _asof,
+            # 候選池 as-of 沒有 provider 就是**不知道**(picks 由呼叫端決定)。
+            # 舊版在這裡填快照日,等於替一個沒被驗證過的候選池戳上合規日期。
+            "candidate_pool_asof": None,
+            "candidate_pool_asof_source": "unresolved",
+            **_dynamic_universe_settings(dynamic_enabled, universe_top_n),
         }
         # 呼叫端自建 panel/picks 但仍傳了真正的 PIT provider(S19 就是這樣)時,
         # summary 必須保留 provider 的真實 metadata —— 否則正式策略的候選池規則、
@@ -698,11 +893,16 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         if universe_provider is not None:
             universe_info["picks_source"] = "external_picks_by_date"
             universe_info.update(universe_provider.metadata())
+            universe_info["candidate_pool_asof_source"] = "universe_provider"
+        universe_info.update(_future_pool_provenance(
+            universe_info.get("candidate_pool_asof"), _asof,
+            pool_top_n=universe_info.get("candidate_pool_top_n")))
         universe_info.update(universe_provenance)
+        _apply_future_pool_downgrade(universe_info)
     else:
         universe_info = panel.attrs.get("universe", {
             "enabled": dynamic_enabled, "direction": "long_only",
-            "top_n": universe_top_n if dynamic_enabled else None,
+            **_dynamic_universe_settings(dynamic_enabled, universe_top_n),
             **universe_provenance,
         })
 
@@ -1044,16 +1244,29 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "enabled": filter_on,
             "rule": config.MARKET_FILTER_RULE if filter_on else None,
             "riskoff_weight": riskoff_weight if filter_on else None,
+            # 實際生效的 config 值(即使濾網關著也記):多支研究腳本會就地改寫
+            # 這些全域參數,還原不完整時,污染只有從「實際值」看得出來。
+            "config_rule": getattr(config, "MARKET_FILTER_RULE", None),
+            "config_riskoff_weight": getattr(
+                config, "MARKET_FILTER_RISKOFF_WEIGHT", None),
             "n_filter_exits": n_filter_exits,
             "n_regime_switches": n_regime_switches,
         },
         "universe": universe_info,
+        "evaluation": _evaluation_provenance(evaluation_split_info, segment),
+        # 這份結果是哪一份程式碼算出來的。dirty 工作樹 = 對不到 commit = 無法重現。
+        "provenance": provenance.git_state(),
         "data": {
             "price_dataset": getattr(config, "PRICE_DATASET", "TaiwanStockPrice"),
             "adjusted_price": price_integrity.is_adjusted_price_dataset(
                 getattr(config, "PRICE_DATASET", "TaiwanStockPrice")
             ),
             "snapshot_end": getattr(config, "SNAPSHOT_END_DATE", ""),
+            # 自建還原價(除權息回溯)是否開啟:未還原資料集下,它決定了報酬序列
+            # 本身,跟因子權重同級的 load-bearing 設定。
+            "self_adjust_prices": bool(getattr(config, "SELF_ADJUST_PRICES", False)),
+            "allow_unadjusted_backtest": bool(
+                getattr(config, "ALLOW_UNADJUSTED_BACKTEST", False)),
             # 未還原價 + 逃生門開啟時為 True:此結果含公司行動污染,非已驗證績效。
             "integrity_bypassed": (
                 not price_integrity.is_adjusted_price_dataset(
@@ -1070,6 +1283,22 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "rebalance_every": rebalance_every,
             "rebalance_phase": rebalance_phase,
             "max_positions": max_positions,
+            # 每個再平衡日最多從候選清單取幾檔(投組參數,過去只在呼叫端存在)。
+            "top_n": int(top_n),
+            "trend_guard": bool(getattr(config, "TREND_GUARD_ENABLED", False)),
+            "stale_exit_days": getattr(config, "BT_STALE_EXIT_DAYS", None),
+            "let_positions_run": bool(let_positions_run),
+            "picks_source": ("external_picks_by_date" if external_picks
+                             else "engine_composite"),
+            # 因子權重:最決定性的研究參數,過去完全不在 summary 裡 —— 同一份
+            # 報告換一組權重重跑,兩份結果長得一模一樣,沒有任何欄位區分得出來。
+            "factor_weights": dict(getattr(config, "FACTOR_WEIGHTS", {}) or {}),
+            # external picks 時引擎不算 composite,權重當下沒有作用:記下來但
+            # 標明沒生效,免得日後把它讀成「這組權重產生了這個績效」。
+            "factor_weights_applied": not external_picks,
+            # 策略單元自己的訊號/投組規格(呼叫端傳 StrategySpec 才有)。
+            "strategy": (strategy_spec.rules()
+                         if hasattr(strategy_spec, "rules") else strategy_spec),
         },
     }
     return {"summary": summary, "trades": tdf, "equity_curve": eq.reset_index()}
@@ -1350,6 +1579,9 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
                 universe_top_n=universe_top_n,
                 universe_provider=universe_provider,
                 static_universe_comparator=static_flag,
+                # IS/embargo/OS 的固定日期跟著每一段結果走:少了它,事後只能
+                # 從 period 猜這個 Sharpe 是 IS 還是 OS 的。
+                evaluation_split_info=split, segment=segment,
             )
             results[(segment, phase)] = res
             if "summary" not in res:

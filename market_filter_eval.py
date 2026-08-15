@@ -58,6 +58,19 @@ def _set_filter(enabled, rule, weight):
         config.MARKET_FILTER_RISKOFF_WEIGHT = weight
 
 
+def _restore_filter(state):
+    """把三個全域參數**全部**設回去。
+
+    原 bug(2026-08-15 修):收尾用的是 `_set_filter(*orig_filter)`,而
+    `_set_filter` 在 `enabled=False` 時只設 ENABLED、不碰 rule/weight ——
+    於是跑完這支腳本後,`MARKET_FILTER_RULE`/`RISKOFF_WEIGHT` 被永久留在最後
+    一個變體的值(實測 `('ma60', 0.5)`)。同一個 process 之後的回測就帶著
+    別人的參數在跑。還原不是「設回 enabled」,是設回**全部**。
+    """
+    (config.MARKET_FILTER_ENABLED, config.MARKET_FILTER_RULE,
+     config.MARKET_FILTER_RISKOFF_WEIGHT) = state
+
+
 def _metrics(eq: pd.DataFrame) -> dict:
     s = eq.set_index("date")["equity"] if "date" in eq.columns else eq["equity"]
     daily = s.pct_change().dropna()
@@ -111,37 +124,40 @@ def run(pool, rebalance, pick):
                    config.MARKET_FILTER_RISKOFF_WEIGHT)
     config.FACTOR_WEIGHTS = {"momentum": 1.0}  # 基線=上線純動能
 
-    symbols = uni.get_research_candidates(universe_top_n=pool)
-    print(f"[mf] universe top{pool}={len(symbols)} 檔｜rebalance {rebalance}日/持有{pick}檔｜"
-          f"snapshot {config.SNAPSHOT_END_DATE}")
+    # try/finally:中途 raise(資料缺、fail-closed 閘門)時舊版直接跳過還原,
+    # 把 FACTOR_WEIGHTS={"momentum":1.0} 與最後一組濾網參數留給整個 process。
+    try:
+        symbols = uni.get_research_candidates(universe_top_n=pool)
+        print(f"[mf] universe top{pool}={len(symbols)} 檔｜rebalance {rebalance}日/持有{pick}檔｜"
+              f"snapshot {config.SNAPSHOT_END_DATE}")
 
-    sp = _split(symbols, rebalance, pick, pool)
-    pk, tr, mdd = _dd_episode(sp["eq_full"])
-    print(f"[mf] 全期 {sp['is'][0]} ~ {sp['os'][1]}（{sp['n']} 日）")
-    print(f"[mf] IS {sp['is'][0]}~{sp['is'][1]} | embargo {sp['split']['n_embargo']}日 | OS {sp['os'][0]}~{sp['os'][1]}")
-    print(f"[mf] 基線最大回撤 {mdd:+.1%}：波峰 {pk} → 谷底 {tr}\n")
+        sp = _split(symbols, rebalance, pick, pool)
+        pk, tr, mdd = _dd_episode(sp["eq_full"])
+        print(f"[mf] 全期 {sp['is'][0]} ~ {sp['os'][1]}（{sp['n']} 日）")
+        print(f"[mf] IS {sp['is'][0]}~{sp['is'][1]} | embargo {sp['split']['n_embargo']}日 | OS {sp['os'][0]}~{sp['os'][1]}")
+        print(f"[mf] 基線最大回撤 {mdd:+.1%}：波峰 {pk} → 谷底 {tr}\n")
 
-    rows = []
-    for label, en, rule, w in VARIANTS:
-        _set_filter(en, rule, w)
-        rec = {"variant": label}
-        for seg, (st, ed) in {"full": (None, None), "IS": sp["is"], "OS": sp["os"]}.items():
-            res = _run(symbols, st, ed, rebalance, pick, pool)
-            if "equity_curve" not in res:
-                continue
-            m = _metrics(res["equity_curve"])
-            s = res["summary"]; mf = s["market_filter"]
-            for k, v in m.items():
-                rec[f"{seg}_{k}"] = v
-            if seg == "full":
-                rec["n_trades"] = s["n_trades"]
-                rec["filter_exits"] = mf["n_filter_exits"]
-                rec["switches"] = mf["n_regime_switches"]
-                rec["exit_breakdown"] = s["exit_breakdown"]
-        rows.append(rec)
-
-    config.FACTOR_WEIGHTS = orig_w
-    _set_filter(*orig_filter)
+        rows = []
+        for label, en, rule, w in VARIANTS:
+            _set_filter(en, rule, w)
+            rec = {"variant": label}
+            for seg, (st, ed) in {"full": (None, None), "IS": sp["is"], "OS": sp["os"]}.items():
+                res = _run(symbols, st, ed, rebalance, pick, pool)
+                if "equity_curve" not in res:
+                    continue
+                m = _metrics(res["equity_curve"])
+                s = res["summary"]; mf = s["market_filter"]
+                for k, v in m.items():
+                    rec[f"{seg}_{k}"] = v
+                if seg == "full":
+                    rec["n_trades"] = s["n_trades"]
+                    rec["filter_exits"] = mf["n_filter_exits"]
+                    rec["switches"] = mf["n_regime_switches"]
+                    rec["exit_breakdown"] = s["exit_breakdown"]
+            rows.append(rec)
+    finally:
+        config.FACTOR_WEIGHTS = orig_w
+        _restore_filter(orig_filter)
     df = pd.DataFrame(rows)
     _report(df, sp, pk, tr, mdd, pool, rebalance, pick)
     return df

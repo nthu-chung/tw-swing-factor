@@ -37,13 +37,13 @@ import argparse
 import hashlib
 import json
 import re
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
+import provenance
 from strategies.spec import KNOWN_STRATEGIES, StrategySpec, load_spec
 
 # manifest 格式版本。schema < 2 的 manifest 缺策略參數與大半 load-bearing 設定,
@@ -158,24 +158,12 @@ def rules_hash(rules: Dict[str, Any]) -> str:
 
 def _git_state() -> Dict[str, Any]:
     """記錄 git 狀態。dirty 的工作樹代表 manifest 對不到任何 commit ——
-    那份凍結**無法重現**,必須看得見(不是靜默當成乾淨)。"""
-    def _git(*args: str) -> Optional[str]:
-        try:
-            return subprocess.check_output(
-                ["git", *args], cwd=str(config.ROOT), stderr=subprocess.DEVNULL,
-            ).decode().strip()
-        except Exception:
-            return None
+    那份凍結**無法重現**,必須看得見(不是靜默當成乾淨)。
 
-    commit = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain")
-    dirty_files = [ln[3:] for ln in (status or "").splitlines() if ln.strip()]
-    return {
-        "git_commit": commit or "unknown",
-        "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD") or "unknown",
-        "git_dirty": bool(dirty_files),
-        "git_dirty_file_count": len(dirty_files),
-    }
+    實作在 `provenance.git_state`(回測 summary 用的是同一份)。凍結是一次性
+    動作,所以不吃 process 快取,一律重讀當下的工作樹狀態。
+    """
+    return provenance.git_state(use_cache=False)
 
 
 def manifest_filename(freeze_date: str, label: str) -> str:

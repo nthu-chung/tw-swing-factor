@@ -47,6 +47,24 @@
 `summary["eval_audit"]` 稽核評估窗上界，`days_beyond_last_pick` 必須為 0，
 否則 IS 會借用 OS 的績效。
 
+回測 `summary` 是這條流程的**可稽核產出物**：一個數字必須自己說得出它是怎麼算
+出來的，否則報告寫下去之後沒有人能重建它。強制內容為 factor weights（
+`params.factor_weights` 與 `factor_weights_applied`）、全部策略與投組參數（含
+`params.strategy` 的 `StrategySpec`）、PIT candidate rule／pool size／**真實**
+pool as-of、dynamic universe 設定、price dataset 與自建還原及
+`data.integrity_bypassed`、`universe.future_pool_bypassed`、漲跌停／處置／張數／
+成本設定、`evaluation` 的 IS／embargo／OS 固定日期、phase、`provenance.git_state()`
+的 git commit，以及 `eval_audit`。兩個實測過的失真點：pool as-of 曾經取
+`build_universe.load_asof(universe_top_n)`，那是**每日 top-N（100）**那份檔案，
+而真正套進歷史的是 top300——top100 的 `as_of=2026-06-20`（≤ 快照 2026-06-22，
+看起來合規）、top300 的 `as_of=2026-08-03`（未來池），同一份 metadata 的
+`candidate_source` 卻誠實寫 top300；現在 as-of 一律由「symbols 是哪一份池的子集」
+決定，比對不到就記 `None`，不拿快照日頂替。`SWING_ALLOW_FUTURE_POOL` 過去只
+print 一行就放行，現在會記事件並把 `formal_evidence_eligible` 降級。全域 config
+被就地改寫的研究腳本（`market_filter_eval`、`regime_strategy_lab`）必須 try/finally
+還原**全部**被改的參數；summary 另記 `market_filter.config_rule` 等實際生效值，
+讓還原漏洞事後看得見。
+
 第三條屬於 freeze／forward：**凍結必須凍到全部規則**。強制點是
 `freeze_manifest.py`（config 的大寫參數預設全凍，排除要寫進 `NOT_FROZEN` 附理由）
 加上 `strategies/spec.py` 的 `StrategySpec`（訊號視窗／權重與持股數／再平衡天數／
@@ -97,6 +115,8 @@ MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 3
 - `evaluation/phases.py`：統一相位掃描與聚合（`sweep_phases` / `PhaseSweep` /
   `phase_stats`）。正式 IS/OS、策略 `evaluate_sweep` 與 forward 共用這一份；
   呼叫端只提供「一個相位怎麼跑」，掃滿與中位／最小／最差 MaxDD 由它負責。
+- `provenance.py`：git 狀態的單一實作（回測 `summary["provenance"]` 與
+  `freeze_manifest` 共用；dirty 工作樹 = 對不到 commit = 無法重現，必須看得見）。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
   `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
 - `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked
