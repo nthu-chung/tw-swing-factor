@@ -1037,6 +1037,34 @@ def _assert_snapshot_frequency(dates, decision_frequency) -> None:
         seen[key] = day
 
 
+def _policy_cash_audit(cash_curve) -> Dict[str, Any]:
+    """已實現現金部位的稽核摘要。
+
+    `target_cash_weight` 只說了「打算留多少現金」;跌停賣不掉、現金不足買不進、
+    整張湊不齊都會讓實際現金偏離目標。兩者分不開時,「刻意空手」與「被迫滿倉」
+    在結果上長得一模一樣。
+    """
+    if not cash_curve:
+        return {"n_days": 0}
+    ratios = [c / e for _, c, e in cash_curve if e]
+    if not ratios:
+        return {"n_days": len(cash_curve)}
+    ordered = sorted(ratios)
+    mid = len(ordered) // 2
+    median = (ordered[mid] if len(ordered) % 2
+              else (ordered[mid - 1] + ordered[mid]) / 2.0)
+    return {
+        "n_days": len(cash_curve),
+        "cash_ratio_first": round(ratios[0], 6),
+        "cash_ratio_last": round(ratios[-1], 6),
+        "cash_ratio_median": round(median, 6),
+        "cash_ratio_min": round(min(ratios), 6),
+        "cash_ratio_max": round(max(ratios), 6),
+        "fully_invested_days": int(sum(1 for r in ratios if r < 0.01)),
+        "all_cash_days": int(sum(1 for r in ratios if r > 0.99)),
+    }
+
+
 WEEKLY_PHASES = 5
 
 
@@ -1564,6 +1592,7 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
     cash = initial_capital
     positions: Dict[str, dict] = {}   # sid -> 部位
     equity_curve = []                 # (date, equity)
+    policy_cash_curve: List = []      # (date, cash, equity)，只在 policy 路徑填
     trades = []
 
     def _price_row(sid, d):
@@ -2032,6 +2061,10 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
             _policy_settle_desired(di, d)
             equity = _mark_to_market(di, d)
             equity_curve.append((d, equity))
+            # 已實現現金部位:target_cash_weight 是 desired 那一側,跌停賣不掉、
+            # 現金不足、整張湊不齊都會讓實際現金與目標差開。只報 desired 會讓
+            # 「想留 40% 現金」與「因為賣不掉所以只有 5% 現金」看起來一樣。
+            policy_cash_curve.append((d, float(cash), equity))
             _policy_decide_at_close(di, d)
             continue
 
@@ -2438,10 +2471,18 @@ def _backtest_portfolio(symbols: Optional[List[str]] = None,
         "snapshot_complete_all_days": bool(
             policy_audit["n_snapshot_incomplete_days"] == 0),
         "target_portfolio": target_portfolio,
+        "cash_audit": _policy_cash_audit(policy_cash_curve),
     }
     result["decision_log"] = decision_log
     result["order_log"] = order_log
     result["target_portfolio"] = target_portfolio
+    # 權益曲線補上已實現現金(只在 policy 路徑;legacy 的回傳形狀一個欄位都不動)。
+    if policy_cash_curve:
+        cash_df = pd.DataFrame(policy_cash_curve,
+                               columns=["date", "cash", "_equity"])
+        cash_df["cash_ratio"] = cash_df["cash"] / cash_df["_equity"]
+        result["equity_curve"] = result["equity_curve"].merge(
+            cash_df[["date", "cash", "cash_ratio"]], on="date", how="left")
     return result
 
 
