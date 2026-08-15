@@ -25,6 +25,7 @@ import pandas as pd
 
 import backtest
 import config
+from _offline_registry import common_stocks
 from strategies.position_policy import (
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
@@ -70,6 +71,8 @@ def _run(prices, signals, policy, *, disposition=None, regime_by_date=None,
     symbols = sorted(prices)
     all_dates = sorted(set().union(*[set(p["date"]) for p in prices.values()]))
     with (
+        # policy 路徑的 signal_frame 也過證券別閘門(fail-closed),要宣告證券別。
+        common_stocks(*symbols),
         mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
         mock.patch.object(backtest, "_load_disposition_days",
                           lambda *a, **k: dict(disposition or {})),
@@ -99,16 +102,17 @@ class LegacyParityTest(unittest.TestCase):
         就無法逐位元證明行為沒變。
         """
         dates = list(pd.bdate_range("2026-01-05", periods=9))
-        prices = {"A": _flat(dates)}
-        picks = {d: [("A", 1.0, "A")] for d in dates[:-1]}
+        prices = {"1101": _flat(dates)}
+        picks = {d: [("1101", 1.0, "1101")] for d in dates[:-1]}
         with (
+            common_stocks("1101"),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *a, **k: {}),
             mock.patch.object(backtest.data, "fetch_price",
-                              return_value=prices["A"].copy()),
+                              return_value=prices["1101"].copy()),
         ):
             result = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, rebalance_every=5, top_n=1,
+                symbols=["1101"], sample=False, rebalance_every=5, top_n=1,
                 picks_by_date=picks, static_universe_comparator=True)
         self.assertEqual(sorted(result), ["equity_curve", "summary", "trades"])
         self.assertNotIn("strategy_position_policy", result["summary"])
@@ -117,7 +121,7 @@ class LegacyParityTest(unittest.TestCase):
     def test_policy_and_picks_by_date_are_mutually_exclusive(self):
         with self.assertRaises(ValueError):
             backtest.backtest_portfolio(
-                symbols=["A"], sample=False, picks_by_date={"x": []},
+                symbols=["1101"], sample=False, picks_by_date={"x": []},
                 signal_frame=pd.DataFrame({"date": [], "stock_id": [], "rank": []}),
                 strategy_position_policy=_one_slot_policy(),
                 static_universe_comparator=True)
@@ -126,8 +130,8 @@ class LegacyParityTest(unittest.TestCase):
 class ImmutableCapitalRequestTest(unittest.TestCase):
     def test_request_capital_does_not_mutate_global_config(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         before = (config.BT_INITIAL_CAPITAL, config.BT_ORDER_SIZE_MODE,
                   config.BT_MIN_COMMISSION)
         result = _run(prices, signals, _one_slot_policy(),
@@ -143,8 +147,8 @@ class ImmutableCapitalRequestTest(unittest.TestCase):
 
     def test_two_capital_scenarios_are_independent_in_one_process(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         big = _run(prices, signals, _one_slot_policy(), initial_capital=1_000_000.0)
         small = _run(prices, signals, _one_slot_policy(), initial_capital=500_000.0)
         self.assertEqual(big["summary"]["execution"]["initial_capital"], 1_000_000.0)
@@ -157,8 +161,8 @@ class DecisionDayAndTimingTest(unittest.TestCase):
     def test_decision_days_come_from_snapshot_dates_not_weekday_math(self):
         """兩個決策日都是週一;用「當週最後交易日」推會算成週五而整段錯位。"""
         dates = list(pd.bdate_range("2026-01-05", periods=10))
-        signals = _signals({dates[0]: {"A": 1}, dates[5]: {"A": 1}})
-        prices = {"A": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}, dates[5]: {"1101": 1}})
+        prices = {"1101": _flat(dates)}
         result = _run(prices, signals, _one_slot_policy())
         decisions = pd.DataFrame(result["decision_log"])
         decision_days = sorted(
@@ -170,8 +174,8 @@ class DecisionDayAndTimingTest(unittest.TestCase):
 
     def test_entry_never_fills_on_the_decision_day_itself(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        signals = _signals({dates[0]: {"A": 1}})
-        prices = {"A": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
+        prices = {"1101": _flat(dates)}
         result = _run(prices, signals, _one_slot_policy())
         orders = pd.DataFrame(result["order_log"])
         filled = orders[orders["status"] == "filled"]
@@ -185,14 +189,14 @@ class RiskStopTest(unittest.TestCase):
         """跳空時用實際開盤價,不回填理論停損價(規格 §3.4)。"""
         dates = list(pd.bdate_range("2026-01-05", periods=8))
         # dates[3] 收盤 -10% 觸發停損確認;dates[4] 開盤再跳空到 85。
-        prices = {"A": _flat(dates, overrides={
+        prices = {"1101": _flat(dates, overrides={
             dates[3]: (99.0, 99.5, 89.0, 90.0),
             dates[4]: (85.0, 86.0, 84.0, 85.5),
             dates[5]: (85.0, 86.0, 84.0, 85.5),
             dates[6]: (85.0, 86.0, 84.0, 85.5),
             dates[7]: (85.0, 86.0, 84.0, 85.5),
         })}
-        signals = _signals({dates[0]: {"A": 1}})
+        signals = _signals({dates[0]: {"1101": 1}})
         result = _run(prices, signals, _one_slot_policy())
         trades = result["trades"]
         stop = trades[trades["exit_reason"] == "risk_stop"]
@@ -202,8 +206,8 @@ class RiskStopTest(unittest.TestCase):
 
     def test_regime_risk_off_creates_exit_intent_for_every_holding(self):
         dates = list(pd.bdate_range("2026-01-05", periods=8))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         regimes = {d: ("risk_off" if d >= dates[3] else "risk_on") for d in dates}
         result = _run(prices, signals, _one_slot_policy(), regime_by_date=regimes)
         trades = result["trades"]
@@ -216,10 +220,10 @@ class RiskStopTest(unittest.TestCase):
 class TradabilityAuditTest(unittest.TestCase):
     def test_disposition_blocks_new_entry_and_is_recorded(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         result = _run(prices, signals, _one_slot_policy(),
-                      disposition={"A": set(dates)})
+                      disposition={"1101": set(dates)})
         # 一筆都沒成交也必須留下「為什麼沒成交」——否則只剩一句錯誤字串。
         orders = pd.DataFrame(result["order_log"])
         self.assertTrue((orders["status"] != "filled").all())
@@ -231,9 +235,9 @@ class TradabilityAuditTest(unittest.TestCase):
     def test_limit_up_lock_blocks_entry_and_is_recorded(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
         # dates[1] 一字漲停(開高低收都是前收 × 1.1)→ 買不到。
-        prices = {"A": _flat(dates, overrides={
+        prices = {"1101": _flat(dates, overrides={
             dates[1]: (110.0, 110.0, 110.0, 110.0)})}
-        signals = _signals({dates[0]: {"A": 1}})
+        signals = _signals({dates[0]: {"1101": 1}})
         result = _run(prices, signals, _one_slot_policy())
         orders = pd.DataFrame(result["order_log"])
         blocked = orders[(orders["date"] == dates[1]) &
@@ -255,13 +259,13 @@ class ConcentrationCapTest(unittest.TestCase):
                 px *= 1.08
             a_rows[d] = (round(px, 2), round(px * 1.01, 2),
                          round(px * 0.99, 2), round(px, 2))
-        prices = {"A": _flat(dates, overrides=a_rows), "B": _flat(dates)}
+        prices = {"1101": _flat(dates, overrides=a_rows), "1102": _flat(dates)}
         policy = StrategyPositionPolicy(StrategyPositionPolicySpec(
             entry_rank=2, exit_rank=4, max_slots=2, slot_weight=0.40,
             single_name_cap=0.50, risk_on_slots=2, caution_slots=1,
             risk_off_slots=0))
-        signals = _signals({dates[0]: {"A": 1, "B": 2},
-                            dates[6]: {"A": 1, "B": 2}})
+        signals = _signals({dates[0]: {"1101": 1, "1102": 2},
+                            dates[6]: {"1101": 1, "1102": 2}})
         result = _run(prices, signals, policy)
         orders = pd.DataFrame(result["order_log"])
         trims = orders[(orders["action"] == "resize") &
@@ -277,12 +281,12 @@ class SignalFrameValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             backtest._prepare_signal_snapshots(
                 pd.DataFrame({"date": [pd.Timestamp("2026-01-05")],
-                              "stock_id": ["A"]}))
+                              "stock_id": ["1101"]}))
 
     def test_duplicate_date_stock_rows_fail_closed(self):
         frame = pd.DataFrame({
             "date": [pd.Timestamp("2026-01-05")] * 2,
-            "stock_id": ["A", "A"], "rank": [1, 5]})
+            "stock_id": ["1101", "1101"], "rank": [1, 5]})
         with self.assertRaises(ValueError):
             backtest._prepare_signal_snapshots(frame)
 
@@ -291,25 +295,25 @@ class EngineFailClosedTest(unittest.TestCase):
     def test_snapshot_date_that_is_not_a_trading_day_fails_closed(self):
         """快照日不是交易日 → 那個決策日會被靜默略過,回測仍會跑完。"""
         dates = list(pd.bdate_range("2026-01-05", periods=8))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1},
-                            pd.Timestamp("2026-01-10"): {"A": 1}})  # 週六
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1},
+                            pd.Timestamp("2026-01-10"): {"1101": 1}})  # 週六
         with self.assertRaises(ValueError):
             _run(prices, signals, _one_slot_policy())
 
     def test_partial_regime_map_fails_closed(self):
         """regime 缺值不得當成 risk_on —— 那是在資料缺口上偷偷恢復滿曝險。"""
         dates = list(pd.bdate_range("2026-01-05", periods=8))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         with self.assertRaises(ValueError):
             _run(prices, signals, _one_slot_policy(),
                  regime_by_date={dates[0]: "risk_on"})
 
     def test_market_filter_overlay_and_policy_are_mutually_exclusive(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         with mock.patch.object(config, "MARKET_FILTER_ENABLED", True):
             with self.assertRaises(ValueError):
                 _run(prices, signals, _one_slot_policy())
@@ -326,17 +330,18 @@ class StaleDelistFailClosedTest(unittest.TestCase):
     def _prices(self):
         dates = list(pd.bdate_range("2026-01-05", periods=40))
         # A 第 5 天之後就沒有 bar(下市);B 提供 40 天市場日曆。
-        return dates, {"A": _flat(dates[:4]), "B": _flat(dates)}
+        return dates, {"1101": _flat(dates[:4]), "1102": _flat(dates)}
 
     def _run_policy(self, dates, prices):
-        signals = _signals({dates[0]: {"A": 1}})
+        signals = _signals({dates[0]: {"1101": 1}})
         return _run(prices, signals, _one_slot_policy())
 
     def _run_legacy(self, dates, prices):
         # picks 要鋪滿整段:legacy 的安全預設會把評估窗截到最後一個訊號日,
         # 只給前三天的話根本跑不到 BT_STALE_EXIT_DAYS(AGENTS.md 陷阱 5)。
-        picks = {d: [("A", 1.0, "A")] for d in dates}
+        picks = {d: [("1101", 1.0, "1101")] for d in dates}
         with (
+            common_stocks("1101", "1102"),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *a, **k: {}),
             mock.patch.object(backtest.data, "fetch_price",
@@ -344,7 +349,7 @@ class StaleDelistFailClosedTest(unittest.TestCase):
             mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
         ):
             return backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, rebalance_every=5, top_n=1,
+                symbols=["1101", "1102"], sample=False, rebalance_every=5, top_n=1,
                 start_date=str(dates[0])[:10], end_date=str(dates[-1])[:10],
                 picks_by_date=picks, static_universe_comparator=True)
 
@@ -370,7 +375,7 @@ class StaleDelistFailClosedTest(unittest.TestCase):
         self.assertEqual(result["summary"]["delisting"]["n_stale_exits"], 1)
         self.assertIn("stale_delisted", set(result["trades"]["exit_reason"]))
         orders = pd.DataFrame(result["order_log"])
-        settle = orders[(orders["stock_id"] == "A") &
+        settle = orders[(orders["stock_id"] == "1101") &
                         (orders["reason"] == "stale_delisted_recovery")]
         self.assertEqual(len(settle), 1)
         self.assertEqual(settle.iloc[0]["status"], "filled")
@@ -393,19 +398,19 @@ class ExitPendingAssumptionTest(unittest.TestCase):
 
     def _decide(self, holding_extra):
         policy = StrategyPositionPolicy(StrategyPositionPolicySpec())
-        row = {"stock_id": "A", "weight": 0.10, "entry_price": 100.0,
+        row = {"stock_id": "1101", "weight": 0.10, "entry_price": 100.0,
                "close": 75.0, "holding_days": 20}
         row.update(holding_extra)
         return policy, policy.decide(
             as_of=pd.Timestamp("2026-01-09"),
-            signals=pd.DataFrame([{"stock_id": "A", "rank": 1,
+            signals=pd.DataFrame([{"stock_id": "1101", "rank": 1,
                                    "raw_score": 1.0, "eligible": True}]),
             holdings=pd.DataFrame([row]), equity=1_000_000.0,
             regime="risk_on", is_decision_day=True)
 
     def test_missing_column_holds_but_is_marked_as_an_assumption(self):
         policy, d = self._decide({})
-        action = d.actions.set_index("stock_id").loc["A"]
+        action = d.actions.set_index("stock_id").loc["1101"]
         self.assertEqual(action["action"], "hold")
         self.assertEqual(action["reason_code"],
                          "stop_breached_earlier_exit_pending_assumed")
@@ -414,14 +419,14 @@ class ExitPendingAssumptionTest(unittest.TestCase):
     def test_engine_style_exit_pending_false_still_stops_after_a_gap(self):
         """引擎顯式說「沒有待成交的退出意圖」→ -25% 一定要停損。"""
         policy, d = self._decide({"exit_pending": False})
-        action = d.actions.set_index("stock_id").loc["A"]
+        action = d.actions.set_index("stock_id").loc["1101"]
         self.assertEqual(action["action"], "exit")
         self.assertEqual(action["reason_code"], "risk_stop")
         self.assertEqual(policy._state["n_stop_breached_earlier_assumed"], 0)
 
     def test_known_exit_pending_true_does_not_duplicate_the_stop(self):
         policy, d = self._decide({"exit_pending": True})
-        action = d.actions.set_index("stock_id").loc["A"]
+        action = d.actions.set_index("stock_id").loc["1101"]
         self.assertEqual(action["action"], "hold")
         self.assertEqual(action["reason_code"],
                          "stop_breached_earlier_exit_pending")
@@ -433,8 +438,8 @@ class ExitPendingAssumptionTest(unittest.TestCase):
         # dates[4] 直接跳空到 -25%(合成資料;現實會被漲跌停擋住,但引擎不得依賴
         # 那個假設,長期停牌後重開就是這個形狀)。
         gap = {d: (75.0, 76.0, 74.0, 75.0) for d in dates[4:]}
-        prices = {"A": _flat(dates, overrides=gap)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates, overrides=gap)}
+        signals = _signals({dates[0]: {"1101": 1}})
         with mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", False):
             result = _run(prices, signals, _one_slot_policy())
         self.assertIn("risk_stop", set(result["trades"]["exit_reason"]))
@@ -459,8 +464,8 @@ class PolicyProvenanceTest(unittest.TestCase):
 
     def test_summary_carries_rules_hash_and_capital_scenario(self):
         dates = list(pd.bdate_range("2026-01-05", periods=6))
-        prices = {"A": _flat(dates)}
-        signals = _signals({dates[0]: {"A": 1}})
+        prices = {"1101": _flat(dates)}
+        signals = _signals({dates[0]: {"1101": 1}})
         policy = _one_slot_policy()
         result = _run(prices, signals, policy, initial_capital=500_000.0)
         meta = result["summary"]["strategy_position_policy"]

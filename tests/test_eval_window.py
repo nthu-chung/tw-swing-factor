@@ -16,9 +16,10 @@ import pandas as pd
 
 import backtest
 import config
+from _offline_registry import use_common_stocks
 
 
-def _prices(sids=("A", "B", "C"), n=200, seed=3):
+def _prices(sids=("1101", "1102", "1103"), n=200, seed=3):
     """建價格快取:前半段平盤、後半段大漲(放大洩漏的可見度)。"""
     rng = np.random.default_rng(seed)
     days = pd.bdate_range("2025-01-01", periods=n)
@@ -38,10 +39,12 @@ def _prices(sids=("A", "B", "C"), n=200, seed=3):
 
 class EvalWindowTest(unittest.TestCase):
     def setUp(self):
+        # 外部 picks 路徑有證券別閘門(fail-closed),測試代號要顯式宣告證券別。
+        use_common_stocks(self, "1101", "1102", "1103")
         self.cache, self.days = _prices()
         self.cut = self.days[len(self.days) // 2]
         # 訊號只覆蓋前半段
-        self.picks = {d: [("A", 1.0, "A"), ("B", 0.9, "B"), ("C", 0.8, "C")]
+        self.picks = {d: [("1101", 1.0, "1101"), ("1102", 0.9, "1102"), ("1103", 0.8, "1103")]
                       for d in self.days if d <= self.cut}
 
     def _run(self, **kw):
@@ -89,13 +92,13 @@ class EvalWindowTest(unittest.TestCase):
 
     def test_stale_position_without_delisting_data_fails_closed(self):
         """下市/長停牌不能用最後收盤假裝可成交，否則會低估 long-only 左尾。"""
-        self.cache["A"] = self.cache["A"].iloc[:40].copy()
+        self.cache["1101"] = self.cache["1101"].iloc[:40].copy()
         with mock.patch.object(config, "BT_DELIST_RECOVERY", None):
             with self.assertRaisesRegex(RuntimeError, "拒絕假設可用最後收盤"):
                 self._run()
 
     def test_explicit_delisting_recovery_is_audited(self):
-        self.cache["A"] = self.cache["A"].iloc[:40].copy()
+        self.cache["1101"] = self.cache["1101"].iloc[:40].copy()
         with mock.patch.object(config, "BT_DELIST_RECOVERY", 0.0):
             r = self._run()
         self.assertEqual(r["summary"]["delisting"]["recovery_assumption"], 0.0)

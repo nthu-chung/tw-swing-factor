@@ -27,6 +27,7 @@ import pandas as pd
 
 import backtest
 import config
+from _offline_registry import common_stocks
 
 
 try:
@@ -180,8 +181,8 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
 
     def test_normal_rank_churn_is_suppressed_off_decision_day(self):
         d = _decide(
-            _policy(), ranks={"HELD": 99, "NEW": 1},
-            holdings=(("HELD", 0.10, 100.0, 100.0, 10),),
+            _policy(), ranks={"1104": 99, "1105": 1},
+            holdings=(("1104", 0.10, 100.0, 100.0, 10),),
             is_decision_day=False,
         )
         actions = _frame(d, "actions")
@@ -200,17 +201,17 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
                                1.0, places=9)
 
     def test_scores_do_not_change_equal_slot_weights(self):
-        signals = _signals({"A": 1, "B": 2})
-        signals.loc[signals["stock_id"] == "A", "raw_score"] = 1_000.0
-        signals.loc[signals["stock_id"] == "B", "raw_score"] = 0.001
+        signals = _signals({"1101": 1, "1102": 2})
+        signals.loc[signals["stock_id"] == "1101", "raw_score"] = 1_000.0
+        signals.loc[signals["stock_id"] == "1102", "raw_score"] = 0.001
         d = _policy().decide(
             as_of=pd.Timestamp("2026-01-09"), signals=signals,
             holdings=_holdings(), equity=1_000_000,
             regime="risk_on", is_decision_day=True,
         )
         weights = _frame(d, "targets").set_index("stock_id")["target_weight"]
-        self.assertAlmostEqual(weights["A"], 0.10)
-        self.assertAlmostEqual(weights["B"], 0.10)
+        self.assertAlmostEqual(weights["1101"], 0.10)
+        self.assertAlmostEqual(weights["1102"], 0.10)
 
     def test_capital_changes_notional_not_target_weights(self):
         p = _policy()
@@ -254,33 +255,33 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
 
     def test_weight_above_single_name_cap_is_trimmed_to_cap(self):
         d = _decide(
-            _policy(), ranks={"A": 1},
-            holdings=(("A", 0.16, 100.0, 160.0, 20),),
+            _policy(), ranks={"1101": 1},
+            holdings=(("1101", 0.16, 100.0, 160.0, 20),),
         )
         actions = _frame(d, "actions").set_index("stock_id")
         targets = _frame(d, "targets").set_index("stock_id")
-        self.assertEqual(actions.loc["A", "action"], "resize")
-        self.assertEqual(actions.loc["A", "reason_code"], "concentration_cap")
-        self.assertAlmostEqual(targets.loc["A", "target_weight"], 0.15)
+        self.assertEqual(actions.loc["1101", "action"], "resize")
+        self.assertEqual(actions.loc["1101", "reason_code"], "concentration_cap")
+        self.assertAlmostEqual(targets.loc["1101", "target_weight"], 0.15)
 
 
 @unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategies.position_policy")
 class RiskTimingAndAuditTest(unittest.TestCase):
     def test_close_confirmed_stop_creates_exit_even_off_weekly_decision_day(self):
         d = _decide(
-            _policy(), ranks={"A": 1},
-            holdings=(("A", 0.10, 100.0, 91.9, 5),),
+            _policy(), ranks={"1101": 1},
+            holdings=(("1101", 0.10, 100.0, 91.9, 5),),
             is_decision_day=False,
         )
         actions = _frame(d, "actions").set_index("stock_id")
-        self.assertEqual(actions.loc["A", "action"], "exit")
-        self.assertEqual(actions.loc["A", "reason_code"], "risk_stop")
-        self.assertGreater(pd.Timestamp(actions.loc["A", "earliest_execution"]),
+        self.assertEqual(actions.loc["1101", "action"], "exit")
+        self.assertEqual(actions.loc["1101", "reason_code"], "risk_stop")
+        self.assertGreater(pd.Timestamp(actions.loc["1101", "earliest_execution"]),
                            pd.Timestamp("2026-01-09"))
 
     def test_intraday_low_without_close_break_must_not_trigger_manual_stop(self):
-        signals = _signals({"A": 1})
-        holdings = _holdings((("A", 0.10, 100.0, 93.0, 5),))
+        signals = _signals({"1101": 1})
+        holdings = _holdings((("1101", 0.10, 100.0, 93.0, 5),))
         # `intraday_low` 是刻意附加的欄位：v1 手動停損不得用它假裝已成交。
         holdings["intraday_low"] = 80.0
         d = _policy().decide(
@@ -290,23 +291,23 @@ class RiskTimingAndAuditTest(unittest.TestCase):
         )
         actions = _frame(d, "actions")
         risk_exits = actions[
-            (actions["stock_id"] == "A") &
+            (actions["stock_id"] == "1101") &
             (actions["reason_code"] == "risk_stop")
         ]
         self.assertTrue(risk_exits.empty)
 
     def test_max_hold_is_an_audited_exit_reason(self):
         d = _decide(
-            _policy(), ranks={"A": 1},
-            holdings=(("A", 0.10, 100.0, 110.0, 120),),
+            _policy(), ranks={"1101": 1},
+            holdings=(("1101", 0.10, 100.0, 110.0, 120),),
             is_decision_day=True,
         )
         actions = _frame(d, "actions").set_index("stock_id")
-        self.assertEqual(actions.loc["A", "action"], "exit")
-        self.assertEqual(actions.loc["A", "reason_code"], "max_hold")
+        self.assertEqual(actions.loc["1101", "action"], "exit")
+        self.assertEqual(actions.loc["1101", "reason_code"], "max_hold")
 
     def test_decision_is_complete_and_auditable(self):
-        d = _decide(_policy(), ranks={"A": 1, "B": 2})
+        d = _decide(_policy(), ranks={"1101": 1, "1102": 2})
         self.assertTrue(d.snapshot_complete)
         actions = _frame(d, "actions")
         targets = _frame(d, "targets")
@@ -318,7 +319,7 @@ class RiskTimingAndAuditTest(unittest.TestCase):
 
     def test_appending_future_signals_does_not_change_past_decision(self):
         p = _policy()
-        base = _signals({"A": 1, "B": 2, "C": 3})
+        base = _signals({"1101": 1, "1102": 2, "1103": 3})
         d1 = p.decide(
             as_of=pd.Timestamp("2026-01-09"), signals=base,
             holdings=_holdings(), equity=1_000_000,
@@ -385,6 +386,8 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
     def _run(self, *, policy, signals, prices, initial_capital=1_000_000):
         symbols = sorted(prices)
         with (
+            # signal_frame 也過證券別閘門(fail-closed),測試代號要宣告證券別。
+            common_stocks(*symbols),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
             mock.patch.object(
@@ -412,15 +415,15 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         signals = _signal_frame(
             decision_dates,
             [
-                {"A": 1, "B": 2},
-                {"A": 21, "B": 2, "C": 1},
+                {"1101": 1, "1102": 2},
+                {"1101": 21, "1102": 2, "1103": 1},
             ],
         )
-        prices = {sid: _flat_prices(dates) for sid in ("A", "B", "C")}
+        prices = {sid: _flat_prices(dates) for sid in ("1101", "1102", "1103")}
         result = self._run(policy=_policy(), signals=signals, prices=prices)
 
         trades = result["trades"]
-        a = trades[(trades["stock_id"] == "A") &
+        a = trades[(trades["stock_id"] == "1101") &
                    (trades["exit_reason"] == "rank_decay")]
         self.assertEqual(len(a), 1)
         self.assertEqual(pd.Timestamp(a.iloc[0]["exit_date"]), dates[6])
@@ -428,7 +431,7 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
 
         decisions = pd.DataFrame(result["decision_log"])
         row = decisions[(decisions["date"] == decision_dates[1]) &
-                        (decisions["stock_id"] == "A")]
+                        (decisions["stock_id"] == "1101")]
         self.assertEqual(row.iloc[0]["action"], "exit")
         self.assertEqual(row.iloc[0]["reason_code"], "rank_decay")
 
@@ -444,7 +447,7 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         decision_dates = [dates[0], dates[5]]
         signals = _signal_frame(
             decision_dates,
-            [{"A": 1}, {"A": 3, "C": 1}],
+            [{"1101": 1}, {"1101": 3, "1103": 1}],
         )
         one_slot = _policy(
             entry_rank=1, exit_rank=2,
@@ -452,14 +455,14 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
             risk_on_slots=1, caution_slots=0, risk_off_slots=0,
         )
         prices = {
-            "A": _flat_prices(dates, locked_down_on=dates[6], unlock_on=dates[7]),
-            "C": _flat_prices(dates),
+            "1101": _flat_prices(dates, locked_down_on=dates[6], unlock_on=dates[7]),
+            "1103": _flat_prices(dates),
         }
         result = self._run(policy=one_slot, signals=signals, prices=prices)
         orders = pd.DataFrame(result["order_log"])
 
         locked_sell = orders[
-            (orders["date"] == dates[6]) & (orders["stock_id"] == "A") &
+            (orders["date"] == dates[6]) & (orders["stock_id"] == "1101") &
             (orders["side"] == "sell")
         ]
         self.assertEqual(len(locked_sell), 1)
@@ -467,7 +470,7 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         self.assertIn("limit", str(locked_sell.iloc[0]["reason"]).lower())
 
         imaginary_buy = orders[
-            (orders["date"] == dates[6]) & (orders["stock_id"] == "C") &
+            (orders["date"] == dates[6]) & (orders["stock_id"] == "1103") &
             (orders["side"] == "buy") & (orders["status"] == "filled")
         ]
         self.assertTrue(
@@ -476,11 +479,11 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         )
 
         filled_sell = orders[
-            (orders["date"] == dates[7]) & (orders["stock_id"] == "A") &
+            (orders["date"] == dates[7]) & (orders["stock_id"] == "1101") &
             (orders["side"] == "sell") & (orders["status"] == "filled")
         ]
         filled_buy = orders[
-            (orders["date"] == dates[7]) & (orders["stock_id"] == "C") &
+            (orders["date"] == dates[7]) & (orders["stock_id"] == "1103") &
             (orders["side"] == "buy") & (orders["status"] == "filled")
         ]
         self.assertEqual(len(filled_sell), 1)
@@ -492,15 +495,16 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
 
     def test_legacy_picks_path_remains_available_when_policy_is_absent(self):
         dates = list(pd.bdate_range("2026-01-05", periods=9))
-        prices = {"A": _flat_prices(dates)}
-        picks = {d: [("A", 1.0, "A")] for d in dates[:-1]}
+        prices = {"1101": _flat_prices(dates)}
+        picks = {d: [("1101", 1.0, "1101")] for d in dates[:-1]}
         with (
+            common_stocks("1101"),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price", return_value=prices["A"].copy()),
+            mock.patch.object(backtest.data, "fetch_price", return_value=prices["1101"].copy()),
         ):
             result = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, rebalance_every=5, top_n=1,
+                symbols=["1101"], sample=False, rebalance_every=5, top_n=1,
                 picks_by_date=picks, static_universe_comparator=True,
             )
         self.assertIn("summary", result)

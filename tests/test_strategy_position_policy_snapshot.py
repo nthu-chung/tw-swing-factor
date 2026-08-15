@@ -29,6 +29,7 @@ import pandas as pd
 
 import backtest
 import config
+from _offline_registry import common_stocks
 from strategies.position_policy import (
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
@@ -78,64 +79,64 @@ class SnapshotCompletenessDefaultTest(unittest.TestCase):
     """缺少 `snapshot_complete` 欄 = 完整性未知 = False,不是 True。"""
 
     def test_missing_flag_reports_snapshot_incomplete(self):
-        d = _decide(_signals({"A": 1, "B": 2}))
+        d = _decide(_signals({"1101": 1, "1102": 2}))
         self.assertIs(d.snapshot_complete, False)
 
     def test_missing_flag_must_not_sell_holding_absent_from_snapshot(self):
         """原 bug 的直接重現:B 不在今天的訊號裡就被 not_ranked 賣掉。"""
-        d = _decide(_signals({"A": 1}),
-                    holdings=(("B", 0.10, 100.0, 101.0, 20),))
+        d = _decide(_signals({"1101": 1}),
+                    holdings=(("1102", 0.10, 100.0, 101.0, 20),))
         acts = _actions(d)
-        self.assertEqual(acts.loc["B", "action"], "hold")
-        self.assertNotIn("B", d.exits())
+        self.assertEqual(acts.loc["1102", "action"], "hold")
+        self.assertNotIn("1102", d.exits())
         self.assertNotIn("not_ranked", set(d.actions["reason_code"]))
 
     def test_declared_complete_snapshot_still_exits_by_not_ranked(self):
         """明確宣告完整時,退出規則必須照舊生效(修正沒有把功能關掉)。"""
-        d = _decide(_signals({"A": 1}, complete=True),
-                    holdings=(("B", 0.10, 100.0, 101.0, 20),))
+        d = _decide(_signals({"1101": 1}, complete=True),
+                    holdings=(("1102", 0.10, 100.0, 101.0, 20),))
         acts = _actions(d)
-        self.assertEqual(acts.loc["B", "action"], "exit")
-        self.assertEqual(acts.loc["B", "reason_code"], "not_ranked")
+        self.assertEqual(acts.loc["1102", "action"], "exit")
+        self.assertEqual(acts.loc["1102", "reason_code"], "not_ranked")
         self.assertIs(d.snapshot_complete, True)
 
     def test_flag_false_on_any_row_makes_whole_snapshot_incomplete(self):
-        signals = _signals({"A": 1, "B": 2}, complete=True)
-        signals.loc[signals["stock_id"] == "B", "snapshot_complete"] = False
-        d = _decide(signals, holdings=(("C", 0.10, 100.0, 101.0, 20),))
+        signals = _signals({"1101": 1, "1102": 2}, complete=True)
+        signals.loc[signals["stock_id"] == "1102", "snapshot_complete"] = False
+        d = _decide(signals, holdings=(("1103", 0.10, 100.0, 101.0, 20),))
         self.assertIs(d.snapshot_complete, False)
-        self.assertEqual(_actions(d).loc["C", "action"], "hold")
+        self.assertEqual(_actions(d).loc["1103", "action"], "hold")
 
     def test_empty_signal_frame_is_incomplete_and_keeps_holdings(self):
         """舊版空表直接 `return (..., True)`,等於一次把整個組合清空。"""
         empty = pd.DataFrame(columns=["stock_id", "rank", "raw_score", "eligible"])
-        d = _decide(empty, holdings=(("A", 0.10, 100.0, 101.0, 20),))
+        d = _decide(empty, holdings=(("1101", 0.10, 100.0, 101.0, 20),))
         self.assertIs(d.snapshot_complete, False)
-        self.assertEqual(_actions(d).loc["A", "action"], "hold")
+        self.assertEqual(_actions(d).loc["1101", "action"], "hold")
         self.assertEqual(d.exits(), {})
 
     def test_no_snapshot_on_or_before_as_of_is_incomplete(self):
         """訊號全在未來 → 截至 as_of 沒有任何有效快照,同樣是 unknown。"""
-        future = _signals({"A": 1}, complete=True, date="2026-02-01")
-        d = _decide(future, holdings=(("B", 0.10, 100.0, 101.0, 20),),
+        future = _signals({"1101": 1}, complete=True, date="2026-02-01")
+        d = _decide(future, holdings=(("1102", 0.10, 100.0, 101.0, 20),),
                     as_of="2026-01-09")
         self.assertIs(d.snapshot_complete, False)
-        self.assertEqual(_actions(d).loc["B", "action"], "hold")
+        self.assertEqual(_actions(d).loc["1102", "action"], "hold")
         self.assertTrue(d.targets["target_weight"].le(0.10 + 1e-12).all())
 
     def test_none_signals_is_incomplete(self):
-        d = _decide(None, holdings=(("A", 0.10, 100.0, 101.0, 20),))
+        d = _decide(None, holdings=(("1101", 0.10, 100.0, 101.0, 20),))
         self.assertIs(d.snapshot_complete, False)
-        self.assertEqual(_actions(d).loc["A", "action"], "hold")
+        self.assertEqual(_actions(d).loc["1101", "action"], "hold")
 
     def test_incompleteness_does_not_suppress_risk_exits(self):
         """unknown 只擋「因為沒看到而賣」,不擋停損等每日強制退出。"""
-        d = _decide(_signals({"A": 1}),
-                    holdings=(("B", 0.10, 100.0, 91.0, 5),),
+        d = _decide(_signals({"1101": 1}),
+                    holdings=(("1102", 0.10, 100.0, 91.0, 5),),
                     is_decision_day=False)
         acts = _actions(d)
-        self.assertEqual(acts.loc["B", "action"], "exit")
-        self.assertEqual(acts.loc["B", "reason_code"], "risk_stop")
+        self.assertEqual(acts.loc["1102", "action"], "exit")
+        self.assertEqual(acts.loc["1102", "reason_code"], "risk_stop")
 
 
 class LatestSnapshotDayOnlyTest(unittest.TestCase):
@@ -149,16 +150,16 @@ class LatestSnapshotDayOnlyTest(unittest.TestCase):
 
     def test_stock_only_in_older_snapshot_is_not_a_valid_candidate(self):
         """舊版會沿用 STALE 在上一個快照的 rank,把它當成今天的 top-10 買進。"""
-        signals = self._two_snapshots({"A": 1, "STALE": 2}, {"A": 1},
+        signals = self._two_snapshots({"1101": 1, "STALE": 2}, {"1101": 1},
                                       complete=True)
         d = _decide(signals, as_of="2026-01-09")
         entered = set(d.actions.loc[d.actions["action"] == "enter", "stock_id"])
-        self.assertEqual(entered, {"A"})
+        self.assertEqual(entered, {"1101"})
         self.assertNotIn("STALE", d.target_map())
 
     def test_stale_rank_does_not_shield_holding_from_not_ranked(self):
         """已持有的 STALE 掉出最新快照 → 完整語意下必須 not_ranked 退出。"""
-        signals = self._two_snapshots({"A": 1, "STALE": 2}, {"A": 1},
+        signals = self._two_snapshots({"1101": 1, "STALE": 2}, {"1101": 1},
                                       complete=True)
         d = _decide(signals, holdings=(("STALE", 0.10, 100.0, 101.0, 20),),
                     as_of="2026-01-09")
@@ -168,7 +169,7 @@ class LatestSnapshotDayOnlyTest(unittest.TestCase):
 
     def test_stale_holding_is_not_sold_when_completeness_unknown(self):
         """A1 與 A2 疊在一起:掉出最新快照 + 沒有完整性旗標 → 不得賣。"""
-        signals = self._two_snapshots({"A": 1, "STALE": 2}, {"A": 1})
+        signals = self._two_snapshots({"1101": 1, "STALE": 2}, {"1101": 1})
         d = _decide(signals, holdings=(("STALE", 0.10, 100.0, 101.0, 20),),
                     as_of="2026-01-09")
         self.assertIs(d.snapshot_complete, False)
@@ -179,39 +180,39 @@ class LatestSnapshotDayOnlyTest(unittest.TestCase):
     def test_completeness_comes_from_latest_snapshot_only(self):
         """較舊快照宣告完整,不能替最新那個沒宣告的快照背書。"""
         signals = pd.concat([
-            _signals({"A": 1, "B": 2}, complete=True, date="2026-01-02"),
-            _signals({"A": 1}, date="2026-01-09"),
+            _signals({"1101": 1, "1102": 2}, complete=True, date="2026-01-02"),
+            _signals({"1101": 1}, date="2026-01-09"),
         ], ignore_index=True)
-        d = _decide(signals, holdings=(("B", 0.10, 100.0, 101.0, 20),),
+        d = _decide(signals, holdings=(("1102", 0.10, 100.0, 101.0, 20),),
                     as_of="2026-01-09")
         self.assertIs(d.snapshot_complete, False)
-        self.assertEqual(_actions(d).loc["B", "action"], "hold")
+        self.assertEqual(_actions(d).loc["1102", "action"], "hold")
 
     def test_latest_snapshot_rank_wins_over_older_snapshot_rank(self):
-        signals = self._two_snapshots({"A": 1, "B": 2}, {"A": 25, "B": 1},
+        signals = self._two_snapshots({"1101": 1, "1102": 2}, {"1101": 25, "1102": 1},
                                       complete=True)
-        d = _decide(signals, holdings=(("A", 0.10, 100.0, 101.0, 20),),
+        d = _decide(signals, holdings=(("1101", 0.10, 100.0, 101.0, 20),),
                     as_of="2026-01-09")
         acts = _actions(d)
-        self.assertEqual(acts.loc["A", "action"], "exit")
-        self.assertEqual(acts.loc["A", "reason_code"], "rank_decay")
-        self.assertEqual(float(acts.loc["A", "decision_rank"]), 25.0)
+        self.assertEqual(acts.loc["1101", "action"], "exit")
+        self.assertEqual(acts.loc["1101", "reason_code"], "rank_decay")
+        self.assertEqual(float(acts.loc["1101", "decision_rank"]), 25.0)
 
     def test_future_snapshot_does_not_change_past_decision(self):
         signals = pd.concat([
-            _signals({"A": 1, "B": 2}, complete=True, date="2026-01-09"),
-            _signals({"A": 30, "B": 31}, complete=True, date="2026-02-01"),
+            _signals({"1101": 1, "1102": 2}, complete=True, date="2026-01-09"),
+            _signals({"1101": 30, "1102": 31}, complete=True, date="2026-02-01"),
         ], ignore_index=True)
         d = _decide(signals, as_of="2026-01-09")
-        self.assertEqual(set(d.target_map()), {"A", "B"})
+        self.assertEqual(set(d.target_map()), {"1101", "1102"})
         self.assertEqual(
-            float(_actions(d).loc["A", "decision_rank"]), 1.0)
+            float(_actions(d).loc["1101", "decision_rank"]), 1.0)
 
     def test_duplicate_stock_in_one_snapshot_day_fails_closed(self):
         """同一快照日兩個 rank:舊版靜默取最後一列,決策取決於列順序。"""
         signals = pd.concat([
-            _signals({"A": 1}, complete=True, date="2026-01-09"),
-            _signals({"A": 9}, complete=True, date="2026-01-09"),
+            _signals({"1101": 1}, complete=True, date="2026-01-09"),
+            _signals({"1101": 9}, complete=True, date="2026-01-09"),
         ], ignore_index=True)
         with self.assertRaises(ValueError):
             _decide(signals, as_of="2026-01-09")
@@ -230,6 +231,8 @@ class EngineSnapshotCompletenessTest(unittest.TestCase):
 
     def _run(self, signals, prices):
         with (
+            # signal_frame 也過證券別閘門(fail-closed),測試代號要宣告證券別。
+            common_stocks(*sorted(prices)),
             mock.patch.object(backtest, "_assert_price_integrity",
                               lambda *a, **k: None),
             mock.patch.object(backtest, "_load_disposition_days",
@@ -252,23 +255,23 @@ class EngineSnapshotCompletenessTest(unittest.TestCase):
 
     def _signal_frame(self, dates, *, complete):
         rows = []
-        for d, ranks in ((dates[0], {"A": 1, "B": 2}), (dates[5], {"A": 1})):
+        for d, ranks in ((dates[0], {"1101": 1, "1102": 2}), (dates[5], {"1101": 1})):
             frame = _signals(ranks, complete=complete, date=d)
             rows.append(frame)
         return pd.concat(rows, ignore_index=True)
 
     def test_undeclared_completeness_keeps_the_vanished_holding(self):
         dates = list(pd.bdate_range("2026-01-05", periods=9))
-        prices = {sid: _flat_prices(dates) for sid in ("A", "B")}
+        prices = {sid: _flat_prices(dates) for sid in ("1101", "1102")}
         result = self._run(self._signal_frame(dates, complete=None), prices)
 
         orders = pd.DataFrame(result["order_log"])
         filled_buys = orders[(orders["side"] == "buy") &
                              (orders["status"] == "filled")]
         # 先確認 B 真的買到了,否則「沒有賣出」是空跑出來的。
-        self.assertIn("B", set(filled_buys["stock_id"]))
+        self.assertIn("1102", set(filled_buys["stock_id"]))
         self.assertNotIn(
-            "B", set(orders.loc[orders["side"] == "sell", "stock_id"]),
+            "1102", set(orders.loc[orders["side"] == "sell", "stock_id"]),
             "沒有宣告完整性的快照不得因為 B 消失就送出賣單")
         trades = result["trades"]
         reasons = set(trades["exit_reason"]) if not trades.empty else set()
@@ -278,11 +281,11 @@ class EngineSnapshotCompletenessTest(unittest.TestCase):
 
     def test_declared_completeness_exits_the_vanished_holding(self):
         dates = list(pd.bdate_range("2026-01-05", periods=9))
-        prices = {sid: _flat_prices(dates) for sid in ("A", "B")}
+        prices = {sid: _flat_prices(dates) for sid in ("1101", "1102")}
         result = self._run(self._signal_frame(dates, complete=True), prices)
 
         trades = result["trades"]
-        b_exit = trades[(trades["stock_id"] == "B") &
+        b_exit = trades[(trades["stock_id"] == "1102") &
                         (trades["exit_reason"] == "not_ranked")]
         self.assertEqual(len(b_exit), 1)
         self.assertEqual(pd.Timestamp(b_exit.iloc[0]["exit_date"]), dates[6])

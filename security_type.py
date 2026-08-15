@@ -62,14 +62,36 @@ fail-closed
 
 排除統計
 --------
-每次排除都記進 process 級紀錄簿,`exclusion_summary()` 會被回測 summary 寫成
-`universe.excluded_by_security_type` —— 「這份績效用的是哪一種池」必須看得出來,
-而不是靠記得當時跑的是修正前還是修正後的程式碼。
+「這份績效用的是哪一種池」必須看得出來,而不是靠記得當時跑的是修正前還是修正後
+的程式碼 —— 所以排除紀錄要進回測 summary 的 `universe.excluded_by_security_type`。
+
+原 bug(2026-08-15 修,第二輪):統計原本只有一本 **module 級全域** 紀錄簿
+`_EXCLUSIONS`,`reset_exclusion_log()` 的說明還寫著「一個 process = 一次研究執行,
+不該清」。那個假設對兩種真實用法都是錯的:
+
+  - **同一 process 連續跑兩次回測**:第二次的 summary 會把第一次擋掉的證券
+    一起算進去(實測連續呼叫兩次 `backtest_portfolio`,第二次的
+    `excluded_by_security_type.total` 仍含第一次的紀錄);
+  - **平行 GA / 參數搜尋**:多個 candidate 共用同一本紀錄簿,誰的統計是誰的
+    分不出來(= `CROSS_SECTIONAL_STRATEGY_RESEARCH_SPEC.md` §14 攻擊 16 的
+    「平行 search 透過全域狀態互相污染」)。
+
+修法與 §5.7「引擎應使用 immutable request,不得靠暫時改寫全域狀態傳遞參數」
+同一條原則:排除統計改成**每次 backtest request 自己的 `ExclusionCollector`**
+(隨 request 建立、隨結果回傳)。`exclusion_scope()` 把 collector 掛到
+`contextvars`(每個 thread / asyncio task 各自一份,平行搜尋天然隔離),
+`record_exclusion()` 只往「當下這個 request 的 collector」寫。
+
+`_EXCLUSIONS` 全域紀錄簿保留,但降級成**純觀察用途**(想知道整個 process 到目前
+為止擋過什麼時可以看),**不得**再當成任何 summary 數字的來源。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+import contextlib
+import contextvars
+from typing import (Any, Dict, Iterable, Iterator, List, Mapping, Optional,
+                    Sequence, Tuple)
 
 import pandas as pd
 
@@ -286,26 +308,12 @@ def reset_registry() -> None:
 
 
 # ── 排除統計:結果要說得出「這份池是哪一種池」──────────────────────────────
-_EXCLUSIONS: List[Dict[str, str]] = []
 _SAMPLE_CAP = 20
+EXCLUSION_RULE_ID = "listed_common_stock_whitelist_v1"
 
 
-def reset_exclusion_log() -> None:
-    """清空排除紀錄簿(測試用;正式流程一個 process = 一次研究執行,不該清)。"""
-    _EXCLUSIONS.clear()
-
-
-def record_exclusion(stock_id: str, reason: str, source: str) -> None:
-    _EXCLUSIONS.append({"stock_id": str(stock_id), "reason": str(reason),
-                        "source": str(source)})
-
-
-def exclusion_log() -> List[Dict[str, str]]:
-    return [dict(e) for e in _EXCLUSIONS]
-
-
-def exclusion_summary() -> Dict[str, Any]:
-    """給回測 summary 的 `excluded_by_security_type`。
+def summarize_exclusions(rows: Sequence[Mapping[str, str]]) -> Dict[str, Any]:
+    """把排除紀錄攤成 summary 用的統計。
 
     去重以 (stock_id, reason, source) 為單位:同一檔在同一個來源被排除幾次是
     實作細節(例如逐日快照會重複命中),要看的是「被擋掉的是哪些、哪一類」。
@@ -314,7 +322,7 @@ def exclusion_summary() -> Dict[str, Any]:
     by_reason: Dict[str, int] = {}
     by_source: Dict[str, Dict[str, int]] = {}
     samples: Dict[str, List[str]] = {}
-    for e in _EXCLUSIONS:
+    for e in rows:
         key = (e["stock_id"], e["reason"], e["source"])
         if key in seen:
             continue
@@ -331,8 +339,116 @@ def exclusion_summary() -> Dict[str, Any]:
         "by_reason": dict(sorted(by_reason.items())),
         "by_source": {k: dict(sorted(v.items())) for k, v in sorted(by_source.items())},
         "sample_ids": {k: sorted(v) for k, v in sorted(samples.items())},
-        "rule": "listed_common_stock_whitelist_v1",
+        "rule": EXCLUSION_RULE_ID,
     }
+
+
+class ExclusionCollector:
+    """一次 backtest request 自己的排除紀錄簿。
+
+    為什麼要是物件而不是全域 list:全域紀錄簿在「同一 process 連續跑兩次回測」
+    會讓第二次的 summary 含第一次的排除數(實測重現),在平行 GA 搜尋則讓每個
+    candidate 的統計互相污染 —— 兩者都會讓「這份績效用的是哪一種池」這個問題
+    得到錯誤答案,而錯誤方向不是隨機的(統計看起來永遠比實際更「有在擋」)。
+
+    生命週期 = 一個 request:由 `backtest_portfolio` 建立、寫進 summary、
+    隨結果回傳,不跨 request 累積。
+    """
+
+    __slots__ = ("_rows", "label")
+
+    def __init__(self, label: str = "") -> None:
+        self._rows: List[Dict[str, str]] = []
+        self.label = str(label)
+
+    def record(self, stock_id: Any, reason: str, source: str) -> None:
+        self._rows.append({"stock_id": str(stock_id), "reason": str(reason),
+                           "source": str(source)})
+
+    def log(self) -> List[Dict[str, str]]:
+        return [dict(e) for e in self._rows]
+
+    def summary(self) -> Dict[str, Any]:
+        return summarize_exclusions(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __repr__(self) -> str:                              # pragma: no cover
+        return f"<ExclusionCollector label={self.label!r} n={len(self._rows)}>"
+
+
+#: 「當下這個 request 的 collector」。用 contextvars 而不是 module 變數:
+#: 每個 thread / asyncio task 自帶一份,平行搜尋不會互相看見對方的紀錄。
+_ACTIVE_COLLECTOR: "contextvars.ContextVar[Optional[ExclusionCollector]]" = (
+    contextvars.ContextVar("security_type_exclusion_collector", default=None))
+
+
+def active_collector() -> Optional[ExclusionCollector]:
+    """當下 request 的 collector;沒有開 scope 時回 None(不自己造一個)。"""
+    return _ACTIVE_COLLECTOR.get()
+
+
+@contextlib.contextmanager
+def exclusion_scope(collector: Optional[ExclusionCollector] = None,
+                    *, label: str = "") -> Iterator[ExclusionCollector]:
+    """把一段執行(池建構 + 回測)的排除紀錄收進同一本 request 級紀錄簿。
+
+    典型用法(池建構與回測要算同一個 request 才看得到完整統計):
+
+        with security_type.exclusion_scope() as coll:
+            symbols = uni.get_universe()          # 這裡擋掉的也算這個 request
+            res = backtest.backtest_portfolio(symbols=symbols, ...)
+        res["summary"]["universe"]["excluded_by_security_type"]  # 只含本次
+
+    `backtest_portfolio` 沒有被 scope 包住時會自己開一個 —— 沒有 scope 的呼叫
+    絕不會退回全域紀錄簿(那正是跨回測污染的來源)。
+    """
+    coll = ExclusionCollector(label=label) if collector is None else collector
+    token = _ACTIVE_COLLECTOR.set(coll)
+    try:
+        yield coll
+    finally:
+        _ACTIVE_COLLECTOR.reset(token)
+
+
+#: process 級觀察用紀錄簿。**只給人工觀察**(「這個 process 到目前為止擋過什麼」),
+#: 不得成為任何 summary 數字的來源 —— 它會跨 request 累積,這正是原 bug。
+_EXCLUSIONS: List[Dict[str, str]] = []
+
+
+def reset_exclusion_log() -> None:
+    """清空 process 級**觀察用**紀錄簿。
+
+    注意:summary 的數字來自 request 級 `ExclusionCollector`,不是這裡,所以
+    忘了清這本不會再污染任何結果。
+    """
+    _EXCLUSIONS.clear()
+
+
+def record_exclusion(stock_id: Any, reason: str, source: str, *,
+                     collector: Optional[ExclusionCollector] = None) -> None:
+    """記一筆排除:寫進 request 級 collector(顯式 > 當下 scope),並留一份觀察用。"""
+    target = collector if collector is not None else _ACTIVE_COLLECTOR.get()
+    if target is not None:
+        target.record(stock_id, reason, source)
+    _EXCLUSIONS.append({"stock_id": str(stock_id), "reason": str(reason),
+                        "source": str(source)})
+
+
+def exclusion_log() -> List[Dict[str, str]]:
+    """process 級觀察用紀錄簿的內容(非 summary 來源)。"""
+    return [dict(e) for e in _EXCLUSIONS]
+
+
+def exclusion_summary() -> Dict[str, Any]:
+    """process 級觀察用統計。
+
+    **不要**拿這個當回測 summary 的 `excluded_by_security_type` —— 它跨 request
+    累積,連續跑兩次回測時第二次會含第一次的數字。summary 請用該次 request 的
+    `ExclusionCollector.summary()`。
+    """
+    return summarize_exclusions(_EXCLUSIONS)
 
 
 # ── 對外的過濾入口 ────────────────────────────────────────────────────────
@@ -369,11 +485,16 @@ def eligibility(stock_id: Any, registry: Optional[Registry] = None) -> str:
 
 
 def filter_ids(ids: Iterable[Any], *, registry: Optional[Registry] = None,
-               source: str, on_unknown: str = "raise") -> List[str]:
+               source: str, on_unknown: str = "raise",
+               collector: Optional[ExclusionCollector] = None) -> List[str]:
     """過濾一組代號,保留可進池的普通股(順序不變、去重)。
 
-    這是三個池建構點(`universe` / `pit_universe` / `current_watchlist`)共用的
-    唯一實作 —— 「哪些證券可以進池」只能有一個答案。
+    這是四個進池點(`universe` / `pit_universe` / `current_watchlist` /
+    回測引擎的外部 picks 閘門)共用的唯一實作 —— 「哪些證券可以進池」只能有
+    一個答案。
+
+    `collector`:把排除記進指定的 request 級紀錄簿;不給就記進當下
+    `exclusion_scope()` 的那一本。
     """
     _check_on_unknown(on_unknown)
     reg = default_registry() if registry is None else registry
@@ -391,23 +512,25 @@ def filter_ids(ids: Iterable[Any], *, registry: Optional[Registry] = None,
             continue
         if reason in UNKNOWN_REASONS:
             unknown.append((sid, reason))
-        record_exclusion(sid, reason, source)
+        record_exclusion(sid, reason, source, collector=collector)
     if unknown and on_unknown == "raise":
         _raise_unknown(unknown, source)
     return kept
 
 
 def filter_stock_info(info: pd.DataFrame, *, source: str,
-                      on_unknown: str = "raise") -> List[str]:
+                      on_unknown: str = "raise",
+                      collector: Optional[ExclusionCollector] = None) -> List[str]:
     """直接對 TaiwanStockInfo 表過濾,回傳可進池的代號(排序、去重)。"""
     registry = build_registry(info)
     kept = filter_ids(registry.keys(), registry=registry, source=source,
-                      on_unknown=on_unknown)
+                      on_unknown=on_unknown, collector=collector)
     return sorted(kept)
 
 
 def eligible_mask(stock_ids: pd.Series, *, registry: Optional[Registry] = None,
-                  source: str, on_unknown: str = "raise") -> pd.Series:
+                  source: str, on_unknown: str = "raise",
+                  collector: Optional[ExclusionCollector] = None) -> pd.Series:
     """pandas 版:回傳與輸入同 index 的布林遮罩(給逐列表格用)。"""
     _check_on_unknown(on_unknown)
     reg = default_registry() if registry is None else registry
@@ -416,7 +539,7 @@ def eligible_mask(stock_ids: pd.Series, *, registry: Optional[Registry] = None,
     unknown = [(sid, r) for sid, r in reasons.items() if r in UNKNOWN_REASONS]
     for sid, reason in reasons.items():
         if reason:
-            record_exclusion(sid, reason, source)
+            record_exclusion(sid, reason, source, collector=collector)
     if unknown and on_unknown == "raise":
         _raise_unknown(unknown, source)
     return ids.map(lambda s: not reasons.get(s, REASON_NOT_IN_REGISTRY))
@@ -425,7 +548,8 @@ def eligible_mask(stock_ids: pd.Series, *, registry: Optional[Registry] = None,
 def filter_frame(frame: pd.DataFrame, *, source: str,
                  id_column: str = "stock_id",
                  registry: Optional[Registry] = None,
-                 on_unknown: str = "raise") -> pd.DataFrame:
+                 on_unknown: str = "raise",
+                 collector: Optional[ExclusionCollector] = None) -> pd.DataFrame:
     """過濾逐列表格(交易所快照 / 行情表),只留可進池的普通股。"""
     if frame is None or len(frame) == 0:
         return frame
@@ -433,5 +557,5 @@ def filter_frame(frame: pd.DataFrame, *, source: str,
         raise SecurityTypeError(
             f"[fail-closed] {source}:表格沒有 {id_column} 欄,無法判定證券別")
     mask = eligible_mask(frame[id_column], registry=registry, source=source,
-                         on_unknown=on_unknown)
+                         on_unknown=on_unknown, collector=collector)
     return frame[mask.to_numpy()].reset_index(drop=True)

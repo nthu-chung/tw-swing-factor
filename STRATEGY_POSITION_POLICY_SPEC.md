@@ -415,6 +415,41 @@ rank 一律禁止。同一個快照日出現重複 `stock_id` 時 fail-closed ra
   **要讓 `not_ranked` 生效，signal frame 必須自己宣告完整性。** 這個方向是刻意的：
   賣錯股票要有明確依據，缺資訊時不動作。
 
+## 9C. 證券別閘門與每次 request 的排除統計（2026-08-15，owner 驗收後補）
+
+### 9C.1 `signal_frame` 進引擎前必須通過證券別閘門
+
+普通股白名單原本只裝在 `backtest._prepare_panel()` 裡，而 policy 路徑與
+`picks_by_date` 路徑**正好都不經過 panel**。實測：把已知 DR 代號 `9103` 放進外部
+picks，回測照樣建立持倉（`summary["open_positions_end"] == 1`），而
+`summary["universe"]["excluded_by_security_type"]` 是 `{"total": 0, ...}` ——
+結果反而背書「這份池沒有洩漏」。
+
+現在兩條外部訊號路徑都在進引擎前過同一份 `security_type.filter_ids`：
+
+- 已知的非普通股（興櫃 / DR / 創新板 / ETF / ETN / 受益證券 / 特別股）→ 整列從
+  `signal_frame`（或該日的 picks）剔除並記進排除紀錄簿；
+- 證券別**判不出來**（不在 TaiwanStockInfo、欄位空白、沒見過的產業別）→
+  `SecurityTypeError` fail-closed。缺資訊不得預設放行。
+- `signal_frame` 被擋光 → `ValueError`，不得靜默跑出一份沒有標的的績效。
+
+剔除整列而不是把 `eligible` 標成 `False`：`eligible=False` 的語意是「訊號那端說
+今天不合格」，和「這根本不是上市櫃普通股」不同，混在一起之後 summary 分不出被擋
+掉的是哪一種。
+
+### 9C.2 排除統計是 request 級，不是 process 級
+
+統計原本存在 module 級全域 list，且 `reset_exclusion_log()` 明文假設「一個
+process = 一次研究執行」。那對「同一 process 連續跑兩次回測」（第二次的 summary
+含第一次的排除數，已重現）與「平行 GA 搜尋」都是錯的。
+
+現在 `backtest_portfolio` 每次 request 開一本 `security_type.ExclusionCollector`
+（隨 request 建立、隨 summary 回傳），與 §4.1「資金情境是 immutable request，
+不寫回全域 config」同一條原則。呼叫端要把**池建構**的排除也算進同一份結果時，
+用 `security_type.exclusion_scope()` 把兩段包起來，或顯式傳
+`exclusion_collector=`。`security_type.exclusion_summary()`（process 全域）降級成
+純觀察用途，不得再當 summary 數字的來源。
+
 ## 10. 完成報告邊界
 
 實作者完成後只可聲稱：

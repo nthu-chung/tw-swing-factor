@@ -41,6 +41,7 @@ import market_filter_eval
 import provenance
 import regime_strategy_lab
 import universe as uni
+from _offline_registry import common_stocks
 from evaluation.splits import build_evaluation_split
 from universes import MonthlyPITUniverseProvider
 
@@ -90,7 +91,7 @@ class _PanelEnv:
 def _pit_history() -> pd.DataFrame:
     rows = []
     for d in pd.bdate_range("2026-01-01", "2026-03-31"):
-        big, small = ("B", "A") if d.month == 2 else ("A", "B")
+        big, small = ("1102", "1101") if d.month == 2 else ("1101", "1102")
         rows.append({"date": d, "stock_id": big, "turnover": 9e8})
         rows.append({"date": d, "stock_id": small, "turnover": 1e6})
     return pd.DataFrame(rows)
@@ -271,7 +272,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         不可被 legacy 池檔的日期蓋掉。"""
         with _PoolFiles(), _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, dynamic_enabled=True,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
                 universe_top_n=10, rebalance_every=5, top_n=2,
                 universe_provider=_provider(top_n=2))
         u = res["summary"]["universe"]
@@ -328,18 +329,20 @@ class _ExternalPicksRun:
     def __init__(self):
         self.price = _factor_frame("2026-01-01", "2026-02-27")
         self.dates = list(self.price["date"])
-        self.picks = {d: [("A", 80.0, "A")] for d in self.dates}
+        self.picks = {d: [("1101", 80.0, "1101")] for d in self.dates}
 
     def run(self, **kwargs):
         price = self.price.copy()
+        # 外部 picks 路徑有證券別閘門(fail-closed),代號要顯式宣告證券別。
         with (
+            common_stocks("1101"),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
             mock.patch.object(backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
         ):
             return backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=self.picks, **kwargs)
 
 
@@ -528,7 +531,7 @@ class EvaluationSplitProvenanceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.uni, "get_universe", return_value=["A"]),
+                mock.patch.object(backtest.uni, "get_universe", return_value=["1101"]),
                 mock.patch.object(backtest, "backtest_portfolio",
                                   side_effect=fake_portfolio),
                 mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
@@ -573,7 +576,7 @@ class ConfigRestoreLeakTest(unittest.TestCase):
         config.MARKET_FILTER_RULE = "ma200"
         with mock.patch.object(regime_strategy_lab.backtest, "backtest_portfolio",
                                return_value={"summary": {}}) as bt:
-            regime_strategy_lab._run(["A"], {"d": []}, filt=True)
+            regime_strategy_lab._run(["1101"], {"d": []}, filt=True)
         bt.assert_called_once()
         self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
         self.assertFalse(config.MARKET_FILTER_ENABLED)
@@ -584,7 +587,7 @@ class ConfigRestoreLeakTest(unittest.TestCase):
         with mock.patch.object(regime_strategy_lab.backtest, "backtest_portfolio",
                                side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
-                regime_strategy_lab._run(["A"], {"d": []}, filt=True)
+                regime_strategy_lab._run(["1101"], {"d": []}, filt=True)
         self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
 
     def test_market_filter_eval_restores_rule_and_weight(self):
@@ -633,7 +636,7 @@ class ConfigRestoreLeakTest(unittest.TestCase):
 
         with (
             mock.patch.object(market_filter_eval.uni, "get_research_candidates",
-                              return_value=["A"]),
+                              return_value=["1101"]),
             mock.patch.object(market_filter_eval, "_split", return_value=fake_split),
             mock.patch.object(market_filter_eval, "_run", side_effect=_run),
             mock.patch.object(market_filter_eval, "_report", lambda *_a, **_k: None),

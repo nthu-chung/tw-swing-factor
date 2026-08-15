@@ -97,7 +97,8 @@ jsonl（與那份指紋）是**稽核紀錄不是資料產物**，已加進 `.gi
 pool as-of、dynamic universe 設定、price dataset 與自建還原及
 `data.integrity_bypassed`、`universe.future_pool_bypassed`、
 `universe.excluded_by_security_type`（被證券別白名單擋掉的檔數與理由——修正證券別
-過濾會改變候選池組成，沒有這一欄就分不出兩份結果用的是哪一種池）、
+過濾會改變候選池組成，沒有這一欄就分不出兩份結果用的是哪一種池；這一欄只算**本次
+request**，不跨回測累積，否則第二次回測會借到第一次的排除數）、
 `return_convention`（個股序列與基準序列各自含不含息、基準用哪個指數資料集，以及
 仍以價格指數為基準的 `known_residuals`——沒有這一欄，「超額報酬 +X%」事後無從判斷
 分子分母是不是同一把尺）、漲跌停／處置／
@@ -217,6 +218,12 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
   `current_watchlist`、`build_universe` 與引擎邊界共用這一份；證券別缺失時
   fail-closed（`on_unknown` 只有 `raise` / `exclude`，沒有 `allow`），排除統計進
   `summary["universe"]["excluded_by_security_type"]`。
+  引擎的兩條**繞過 panel** 的外部訊號路徑（`picks_by_date` 與 policy 的
+  `signal_frame`）在進引擎前也走同一份判定——只補 summary 擋不住任何東西
+  （實測：DR 代號 9103 注入外部 picks 仍成功建倉，而排除數顯示 0）。
+  排除統計是**每次 backtest request 自己的** `ExclusionCollector`
+  （`exclusion_scope()` 用 contextvars 綁定），不是 process 全域累積；
+  `exclusion_summary()` 降級成純觀察用途，不得當 summary 數字的來源。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
   `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
 - `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked

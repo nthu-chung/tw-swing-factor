@@ -10,6 +10,7 @@ import pandas as pd
 
 import backtest
 import config
+from _offline_registry import common_stocks
 from execution.costs import OrderSizeMode, TaiwanStockCostModel, size_long_order
 from execution.taiwan_rules import (
     PriceDirection,
@@ -134,8 +135,10 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
             "close": 100.0,
             "volume": 1_000_000,
         })
-        picks = {d: [("A", 1.0, "A")] for d in dates[:-1]}
+        picks = {d: [("1101", 1.0, "1101")] for d in dates[:-1]}
         with (
+            # 外部 picks 路徑的證券別閘門是 fail-closed,代號要顯式宣告證券別。
+            common_stocks("1101"),
             mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
             mock.patch.object(backtest.data, "fetch_price", return_value=prices.copy()),
@@ -149,7 +152,7 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
             mock.patch.object(config, "BT_STOP_LOSS", 1.0),
         ):
             return backtest.backtest_portfolio(
-                symbols=["A"], sample=False, rebalance_every=2, top_n=1,
+                symbols=["1101"], sample=False, rebalance_every=2, top_n=1,
                 picks_by_date=picks,
             )
 

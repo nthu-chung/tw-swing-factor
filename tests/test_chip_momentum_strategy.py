@@ -8,9 +8,10 @@ import numpy as np
 import pandas as pd
 
 import chip_momentum_strategy as s19
+from _offline_registry import use_common_stocks
 
 
-def _panel(n_days=90, sids=("A", "B", "C"), seed=0):
+def _panel(n_days=90, sids=("1101", "1102", "1103"), seed=0):
     rng = np.random.default_rng(seed)
     rows = []
     dates = pd.bdate_range("2025-01-01", periods=n_days)
@@ -67,13 +68,13 @@ class SignalCausalityTest(unittest.TestCase):
 class PicksGateTest(unittest.TestCase):
     def test_gates_exclude_non_members_and_non_trend(self):
         p = _panel(n_days=40)
-        p.loc[p["stock_id"] == "A", "in_dynamic_universe"] = False
-        p.loc[p["stock_id"] == "B", "trend_ok"] = False
+        p.loc[p["stock_id"] == "1101", "in_dynamic_universe"] = False
+        p.loc[p["stock_id"] == "1102", "trend_ok"] = False
         picks = s19.build_picks(p, s19.build_signal(p))
         chosen = {sid for lst in picks.values() for sid, _, _ in lst}
-        self.assertNotIn("A", chosen)
-        self.assertNotIn("B", chosen)
-        self.assertIn("C", chosen)
+        self.assertNotIn("1101", chosen)
+        self.assertNotIn("1102", chosen)
+        self.assertIn("1103", chosen)
 
     def test_picks_sorted_descending(self):
         p = _panel(n_days=40)
@@ -101,7 +102,7 @@ class BaselineTest(unittest.TestCase):
         p = _panel(n_days=60)
         # 讓 A 中間有一段不是成員(價格照樣連續上漲)
         mid = p["date"].between(p["date"].quantile(0.3), p["date"].quantile(0.7))
-        p.loc[(p["stock_id"] == "A") & mid, "in_dynamic_universe"] = False
+        p.loc[(p["stock_id"] == "1101") & mid, "in_dynamic_universe"] = False
         b = s19.equal_weight_baseline(p)
         self.assertIn("sharpe", b)
         # 隨機漫步 + 小漂移不可能出現這種年化
@@ -122,6 +123,8 @@ class FrozenParamsTest(unittest.TestCase):
     def test_portfolio_config_is_restored_after_run(self):
         """run_once 會暫改 config,必須還原,否則污染同一 process 的其他回測。"""
         import config
+        # run_once 走外部 picks 路徑,證券別閘門 fail-closed → 代號要顯式宣告。
+        use_common_stocks(self, "1101", "1102", "1103")
         p = _panel(n_days=30)
         before = (config.BT_MAX_POSITIONS, config.BT_MA_EXIT, config.BT_TREND_STOP_LOSS)
         s19.run_once(p, s19.build_signal(p), symbols=[], start=None, end=None)

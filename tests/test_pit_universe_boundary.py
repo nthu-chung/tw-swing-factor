@@ -21,6 +21,8 @@ import pandas as pd
 
 import backtest
 import config
+import security_type
+from _offline_registry import common_stock_registry
 from strategies import s19_chip_momentum as _s19
 from universes import MonthlyPITUniverseProvider, historical_pit_universe
 
@@ -34,7 +36,7 @@ _SPEC = _s19.SPEC
 def _pit_history() -> pd.DataFrame:
     rows = []
     for d in pd.bdate_range("2026-01-01", "2026-03-31"):
-        big, small = ("B", "A") if d.month == 2 else ("A", "B")
+        big, small = ("1102", "1101") if d.month == 2 else ("1101", "1102")
         rows.append({"date": d, "stock_id": big, "turnover": 9e8})
         rows.append({"date": d, "stock_id": small, "turnover": 1e6})
     return pd.DataFrame(rows)
@@ -58,10 +60,15 @@ def _factor_frame() -> pd.DataFrame:
 
 
 class _PanelEnv:
-    """把 `_prepare_panel` 需要的資料層換成離線假資料(絕不打網路)。"""
+    """把 `_prepare_panel` 需要的資料層換成離線假資料(絕不打網路)。
+
+    也宣告測試代號的證券別:外部 picks 路徑的證券別閘門是 fail-closed,
+    判不出證券別就 raise(缺資訊不得預設放行)。
+    """
 
     def __enter__(self):
         price = _factor_frame()
+        security_type.set_registry(common_stock_registry("1101", "1102"))
         self._patches = [
             mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
             mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
@@ -87,6 +94,7 @@ class _PanelEnv:
     def __exit__(self, *exc):
         for p in reversed(self._patches):
             p.stop()
+        security_type.reset_registry()
         return False
 
 
@@ -99,25 +107,25 @@ class MissingProviderFailsClosedTest(unittest.TestCase):
         """
         with self.assertRaisesRegex(RuntimeError, "PIT 候選池 provider"):
             backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, dynamic_enabled=True,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
             )
 
     def test_prepare_panel_and_factor_ic_share_the_same_gate(self):
         """直接呼叫 _prepare_panel / factor_ic 的研究腳本也要被同一道閘門擋。"""
         with self.assertRaisesRegex(RuntimeError, "PIT 候選池 provider"):
             backtest._prepare_panel(
-                ["A", "B"], 0.0, None, None, dynamic_enabled=True,
+                ["1101", "1102"], 0.0, None, None, dynamic_enabled=True,
             )
         with self.assertRaisesRegex(RuntimeError, "PIT 候選池 provider"):
             backtest.factor_ic(
-                symbols=["A", "B"], sample=False, dynamic_enabled=True,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
             )
 
     def test_error_message_points_at_the_pit_entry_point(self):
         """錯誤訊息必須給出正式入口,而不是引導去開未來池逃生門。"""
         with self.assertRaises(RuntimeError) as ctx:
             backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
             )
         msg = str(ctx.exception)
         self.assertIn("historical_pit_universe", msg)
@@ -128,13 +136,13 @@ class MissingProviderFailsClosedTest(unittest.TestCase):
         """關掉 dynamic universe 也是 legacy 單日池,同樣必須顯式宣告成對照組。"""
         with self.assertRaisesRegex(RuntimeError, "static_universe_comparator=True"):
             backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, dynamic_enabled=False,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=False,
             )
 
     def test_sample_smoke_is_still_allowed_but_labeled(self):
         """sample smoke test 不需要 provider,但不可冒充正式證據。"""
         symbols, provider, prov = backtest._resolve_universe_source(
-            ["A"], sample=True, dynamic_enabled=True, universe_provider=None,
+            ["1101"], sample=True, dynamic_enabled=True, universe_provider=None,
             static_universe_comparator=False, caller="t",
         )
         self.assertIsNone(provider)
@@ -151,7 +159,7 @@ class ProviderConsistencyTest(unittest.TestCase):
         """
         with self.assertRaisesRegex(ValueError, "不在 PIT 候選池"):
             backtest._resolve_universe_source(
-                ["A", "ZZZZ"], sample=False, dynamic_enabled=True,
+                ["1101", "ZZZZ"], sample=False, dynamic_enabled=True,
                 universe_provider=_provider(top_n=2),
                 static_universe_comparator=False, caller="t",
             )
@@ -159,11 +167,11 @@ class ProviderConsistencyTest(unittest.TestCase):
     def test_subset_is_allowed_and_counted(self):
         """只允許縮小(資料品質黑名單),而且要把扣掉幾檔記進 metadata。"""
         symbols, provider, prov = backtest._resolve_universe_source(
-            ["A"], sample=False, dynamic_enabled=True,
+            ["1101"], sample=False, dynamic_enabled=True,
             universe_provider=_provider(top_n=2),
             static_universe_comparator=False, caller="t",
         )
-        self.assertEqual(symbols, ["A"])
+        self.assertEqual(symbols, ["1101"])
         self.assertEqual(prov["candidate_symbols_excluded"], 1)
         self.assertTrue(prov["candidate_pool_pit"])
 
@@ -182,7 +190,7 @@ class DynamicWithProviderRunsTest(unittest.TestCase):
         provider = _provider(top_n=1)
         with _PanelEnv():
             panel = backtest._prepare_panel(
-                ["A", "B"], 0.0, None, None, dynamic_enabled=True,
+                ["1101", "1102"], 0.0, None, None, dynamic_enabled=True,
                 universe_top_n=10, keep_non_members=True,
                 universe_provider=provider,
             )
@@ -195,15 +203,15 @@ class DynamicWithProviderRunsTest(unittest.TestCase):
         # 2 月只有 A 是候選(用完整 1 月建),3 月只有 B(用完整 2 月建)。
         feb = panel[panel["date"].between("2026-02-01", "2026-02-27")]
         mar = panel[panel["date"].between("2026-03-01", "2026-03-31")]
-        self.assertEqual(set(feb.loc[feb["in_candidate_pool"], "stock_id"]), {"A"})
-        self.assertEqual(set(mar.loc[mar["in_candidate_pool"], "stock_id"]), {"B"})
-        self.assertEqual(set(mar.loc[mar["in_dynamic_universe"], "stock_id"]), {"B"})
+        self.assertEqual(set(feb.loc[feb["in_candidate_pool"], "stock_id"]), {"1101"})
+        self.assertEqual(set(mar.loc[mar["in_candidate_pool"], "stock_id"]), {"1102"})
+        self.assertEqual(set(mar.loc[mar["in_dynamic_universe"], "stock_id"]), {"1102"})
 
     def test_summary_marks_pit_run_as_formal_evidence_eligible(self):
         provider = _provider(top_n=2)
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, dynamic_enabled=True,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
                 universe_top_n=10, rebalance_every=5, top_n=2,
                 universe_provider=provider,
             )
@@ -219,7 +227,7 @@ class StaticComparatorTest(unittest.TestCase):
         顯式打開才放行。"""
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A", "B"], sample=False, dynamic_enabled=True,
+                symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
                 universe_top_n=10, rebalance_every=5, top_n=2,
                 static_universe_comparator=True,
             )
@@ -258,7 +266,7 @@ class StaticComparatorTest(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.uni, "get_universe", return_value=["A"]),
+                mock.patch.object(backtest.uni, "get_universe", return_value=["1101"]),
                 mock.patch.object(backtest, "backtest_portfolio",
                                   side_effect=fake_portfolio),
                 mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
@@ -277,10 +285,10 @@ class ExternalPicksProvenanceTest(unittest.TestCase):
         provider 的真實 metadata,不能只寫 external_picks_by_date。"""
         provider = _provider(top_n=2)
         dates = pd.bdate_range("2026-03-02", "2026-03-20")
-        picks = {d: [("A", 80.0, "A")] for d in dates}
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=picks,
                 universe_provider=provider,
             )
@@ -295,10 +303,10 @@ class ExternalPicksProvenanceTest(unittest.TestCase):
     def test_external_picks_without_provider_cannot_claim_pit(self):
         """沒傳 provider 時引擎無法驗證候選池 → 誠實標記,不猜。"""
         dates = pd.bdate_range("2026-03-02", "2026-03-20")
-        picks = {d: [("A", 80.0, "A")] for d in dates}
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=picks,
             )
         u = res["summary"]["universe"]
@@ -320,11 +328,11 @@ class ExternalPicksMustRespectTheCandidateMaskTest(unittest.TestCase):
     def test_picks_outside_the_monthly_pool_fail_closed(self):
         provider = _provider(top_n=1)          # 2 月池=[A]、3 月池=[B]
         dates = pd.bdate_range("2026-03-02", "2026-03-20")
-        picks = {d: [("A", 80.0, "A")] for d in dates}   # A 在三月池外
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}   # A 在三月池外
         with _PanelEnv():
             with self.assertRaisesRegex(ValueError, "PIT 候選池外"):
                 backtest.backtest_portfolio(
-                    symbols=["A"], sample=False, dynamic_enabled=True,
+                    symbols=["1101"], sample=False, dynamic_enabled=True,
                     rebalance_every=5, top_n=1, picks_by_date=picks,
                     universe_provider=provider,
                 )
@@ -336,10 +344,10 @@ class ExternalPicksMustRespectTheCandidateMaskTest(unittest.TestCase):
         """
         provider = _provider(top_n=2)
         dates = pd.bdate_range("2026-01-05", "2026-01-20")   # 2 月才有第一份池
-        picks = {d: [("A", 80.0, "A")] for d in dates}
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=picks,
                 universe_provider=provider,
             )
@@ -351,10 +359,10 @@ class ExternalPicksMustRespectTheCandidateMaskTest(unittest.TestCase):
     def test_compliant_picks_keep_the_pit_flag_and_record_the_check(self):
         provider = _provider(top_n=2)          # A、B 每個月都在池裡
         dates = pd.bdate_range("2026-03-02", "2026-03-20")
-        picks = {d: [("A", 80.0, "A")] for d in dates}
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}
         with _PanelEnv():
             res = backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=picks,
                 universe_provider=provider, strategy_spec=_SPEC,
             )
@@ -377,10 +385,10 @@ class ExternalPicksNeedStrategyProvenanceTest(unittest.TestCase):
     def _run(self, **extra):
         provider = _provider(top_n=2)
         dates = pd.bdate_range("2026-03-02", "2026-03-20")
-        picks = {d: [("A", 80.0, "A")] for d in dates}
+        picks = {d: [("1101", 80.0, "1101")] for d in dates}
         with _PanelEnv():
             return backtest.backtest_portfolio(
-                symbols=["A"], sample=False, dynamic_enabled=True,
+                symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=picks,
                 universe_provider=provider, **extra,
             )
@@ -407,7 +415,7 @@ class HistoricalPITEntryPointTest(unittest.TestCase):
         from_cache.assert_called_once_with(
             top_n=7, min_obs=config.DYNAMIC_UNIVERSE_MONTHLY_MIN_OBS)
         kwargs = pit.backtest_kwargs()
-        self.assertEqual(kwargs["symbols"], ["A", "B"])
+        self.assertEqual(kwargs["symbols"], ["1101", "1102"])
         self.assertIs(kwargs["universe_provider"], provider)
         self.assertFalse(kwargs["sample"])
         self.assertTrue(kwargs["dynamic_enabled"])
@@ -424,9 +432,9 @@ class HistoricalPITEntryPointTest(unittest.TestCase):
         provider = _provider(top_n=2)
         with mock.patch.object(MonthlyPITUniverseProvider, "from_cache",
                                return_value=provider):
-            pit = historical_pit_universe(exclude=["B"])
-        self.assertEqual(pit.symbols, ["A"])
-        self.assertEqual(pit.excluded, ("B",))
+            pit = historical_pit_universe(exclude=["1102"])
+        self.assertEqual(pit.symbols, ["1101"])
+        self.assertEqual(pit.excluded, ("1102",))
         self.assertEqual(pit.metadata()["candidate_symbols_excluded"], 1)
 
     def test_empty_after_blacklist_fails_closed(self):
@@ -434,7 +442,7 @@ class HistoricalPITEntryPointTest(unittest.TestCase):
         with mock.patch.object(MonthlyPITUniverseProvider, "from_cache",
                                return_value=provider):
             with self.assertRaisesRegex(ValueError, "拒絕降級"):
-                historical_pit_universe(exclude=["A", "B"])
+                historical_pit_universe(exclude=["1101", "1102"])
 
 
 class FormalEntriesDoNotUseStaticPoolTest(unittest.TestCase):

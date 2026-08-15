@@ -549,16 +549,95 @@ def _future_pool_provenance(pool_asof: Optional[str], snapshot: str, *,
     }
 
 
-def _security_type_provenance() -> Dict[str, Any]:
-    """證券別過濾在這次執行中擋掉了什麼(進 `summary["universe"]`)。
+def _security_type_provenance(
+        collector: Optional[security_type.ExclusionCollector] = None
+        ) -> Dict[str, Any]:
+    """證券別過濾在**這一次 request** 中擋掉了什麼(進 `summary["universe"]`)。
 
     為什麼一定要進 summary:2026-08-15 之前 `universe._is_normal_stock` 收了
     `market_type` 卻沒用,興櫃(381 檔通過)、DR、創新板一路混進候選池;興櫃沒有
     ±10% 漲跌停(2026-05 單日 |ret|>10.5% 佔比是上市的 ~100 倍、最大 +57.17%),
     偏誤方向是系統性灌高動能策略的 Sharpe。修掉之後候選池組成會變 —— 兩份結果
     如果沒有任何欄位分得出「用的是哪一種池」,舊數字就會被誤當成同一件事的重跑。
+
+    為什麼**不**讀 `security_type.exclusion_summary()`(原 bug,同日第二輪修):
+    那是 process 級全域紀錄簿,同一 process 連續跑兩次回測時,第二次的 summary
+    會含第一次擋掉的證券(實測重現);平行 GA 搜尋則是每個 candidate 互相污染。
+    數字只能來自這一次 request 自己的 collector(規格 §5.7 的 immutable request
+    原則、§14 攻擊 16)。沒有 collector 時給空統計 —— 「沒量到」不可以借用別人的
+    數字來填。
     """
-    return {"excluded_by_security_type": security_type.exclusion_summary()}
+    coll = (security_type.active_collector() if collector is None else collector)
+    if coll is None:
+        return {"excluded_by_security_type":
+                security_type.ExclusionCollector().summary()}
+    return {"excluded_by_security_type": coll.summary()}
+
+
+# ── 外部訊號入口的證券別閘門 ───────────────────────────────────────────────
+def _eligible_external_ids(ids, *, source: str,
+                           collector=None) -> set:
+    """外部訊號帶進來的代號裡,哪些是可以持有的上市櫃普通股。
+
+    原 bug(2026-08-15 修,第二輪):普通股白名單只裝在 `_prepare_panel()` 裡,
+    而 `picks_by_date` 與 `StrategyPositionPolicy` 這兩條路徑**正好都不經過
+    panel**。`backtest_portfolio` 當時只做 `universe_info.update(
+    _security_type_provenance())` —— 那是把統計寫進 summary,不是閘門。
+    重現:用已知 DR 代號 9103 注入外部 picks,回測照樣建立持倉
+    (`summary["open_positions_end"] == 1`),而 `excluded_by_security_type.total`
+    是 0 —— summary 反而背書「這份池沒有洩漏」。
+
+    未來最重要的研究入口(外部 `make_signals` / policy)因此可以把興櫃、DR、
+    創新板送進一份宣稱「普通股池」的回測,而興櫃沒有 ±10% 漲跌停,偏誤方向是
+    系統性灌高動能策略的 Sharpe。
+
+    判定共用 `security_type.filter_ids`(不另寫第二份規則,兩份遲早分岔):
+      - 已知的非普通股(興櫃 / DR / 創新板 / ETF / ETN / 受益證券 / 特別股)
+        → 從訊號裡剔除,並記進 request 級排除紀錄簿(summary 數字因此是真的);
+      - 證券別**判不出來**(不在 TaiwanStockInfo、欄位空白、沒見過的產業別)
+        → `on_unknown="raise"` fail-closed。缺資訊不得預設放行,那正是原 bug
+        的另一種形態。
+    """
+    return set(security_type.filter_ids(ids, source=source, on_unknown="raise",
+                                        collector=collector))
+
+
+def _gate_external_picks(picks_by_date: Dict, *, collector=None) -> Dict:
+    """對 `picks_by_date` 施加證券別閘門(見 `_eligible_external_ids`)。
+
+    刻意**保留**被清空的日期(值變成空 list)而不是刪掉整個 key:`min/max
+    (picks_by_date)` 決定評估窗上下界,少掉一天等於偷偷改了評估區間。
+    """
+    all_ids = {str(sid) for picks in picks_by_date.values()
+               for sid, *_rest in (picks or ())}
+    if not all_ids:
+        return picks_by_date
+    kept = _eligible_external_ids(sorted(all_ids),
+                                  source="backtest.picks_by_date",
+                                  collector=collector)
+    if len(kept) == len(all_ids):
+        return picks_by_date
+    return {d: [p for p in (picks or ()) if str(p[0]) in kept]
+            for d, picks in picks_by_date.items()}
+
+
+def _gate_signal_frame(signal_frame, *, collector=None):
+    """對 policy 路徑的 `signal_frame` 施加同一道證券別閘門。
+
+    整列剔除(而不是只把 `eligible` 標成 False):`eligible=False` 的語意是
+    「訊號那端說今天不合格」,和「這根本不是上市櫃普通股、任何一天都不該被持有」
+    不同,混在一起之後 summary 分不出被擋掉的是哪一種。
+    """
+    frame = pd.DataFrame(signal_frame)
+    if len(frame) == 0 or "stock_id" not in frame.columns:
+        return signal_frame
+    ids = frame["stock_id"].astype(str)
+    kept = _eligible_external_ids(sorted(dict.fromkeys(ids)),
+                                  source="backtest.signal_frame",
+                                  collector=collector)
+    if len(kept) == ids.nunique():
+        return signal_frame
+    return frame[ids.isin(kept).to_numpy()].reset_index(drop=True)
 
 
 def _apply_future_pool_downgrade(universe_meta: Dict[str, Any]) -> None:
@@ -848,7 +927,31 @@ def build_research_panel(symbols: Optional[List[str]] = None, *,
 
     候選池的意圖仍由 `_resolve_universe_source` 強制(PIT provider / 顯式
     static comparator / sample),這裡只決定稠密度。
+
+    證券別排除統計(`panel.attrs["universe"]["excluded_by_security_type"]`)只算
+    **這一次呼叫**:沒有外層 `security_type.exclusion_scope()` 時自己開一本,
+    不會沿用 process 全域紀錄簿(那會讓第二次建 panel 借到第一次的數字)。
     """
+    with security_type.exclusion_scope(
+            security_type.active_collector(), label="build_research_panel"):
+        return _build_research_panel(
+            symbols, start_date=start_date, end_date=end_date,
+            dynamic_enabled=dynamic_enabled, universe_top_n=universe_top_n,
+            universe_provider=universe_provider, sample=sample,
+            static_universe_comparator=static_universe_comparator,
+            members_only=members_only)
+
+
+def _build_research_panel(symbols: Optional[List[str]] = None, *,
+                          start_date: Optional[str] = None,
+                          end_date: Optional[str] = None,
+                          dynamic_enabled: Optional[bool] = None,
+                          universe_top_n: Optional[int] = None,
+                          universe_provider=None,
+                          sample: bool = False,
+                          static_universe_comparator: bool = False,
+                          members_only: bool = False) -> pd.DataFrame:
+    """`build_research_panel` 的本體(排除紀錄簿由外層開好)。"""
     return _prepare_panel(
         symbols,
         0.0,                      # min_score_for_trade:引擎歷史殘留參數,panel 不用它
@@ -917,7 +1020,33 @@ def market_riskoff_map(rule: Optional[str] = None) -> Dict:
 
 
 # ── (1) 整體回測：事件驅動 + 每日權益曲線 ───────────────────────────────
-def backtest_portfolio(symbols: Optional[List[str]] = None,
+def backtest_portfolio(*args, exclusion_collector=None, **kwargs) -> Dict:
+    """`_backtest_portfolio` 的公開入口:替這一次 request 開一本排除紀錄簿。
+
+    參數與說明全部在 `_backtest_portfolio`(這裡只多一個 `exclusion_collector`)。
+
+    為什麼要有這層(2026-08-15 修,第二輪):證券別排除統計原本存在 module 級
+    全域 list,`reset_exclusion_log()` 還寫著「一個 process = 一次研究執行,
+    不該清」。那個假設對「同一 process 連續跑兩次回測」與「平行 GA 搜尋」都是錯的
+    —— 實測連續呼叫兩次,第二次的 `excluded_by_security_type` 仍含第一次的紀錄,
+    等於用別人的排除數替這份績效背書。改成每次 request 自己的
+    `ExclusionCollector`(隨 request 建立、隨 summary 回傳),與
+    `CROSS_SECTIONAL_STRATEGY_RESEARCH_SPEC.md` §5.7「immutable request,
+    不得靠改寫全域狀態傳遞參數」同一條原則。
+
+    `exclusion_collector`:呼叫端想把**池建構**的排除也算進這次 request 時傳進來
+    (或改用 `security_type.exclusion_scope()` 把兩段包在一起);不傳就用當下
+    scope 的那一本,沒有 scope 就開一本新的 —— 絕不退回全域紀錄簿。
+    """
+    collector = (security_type.active_collector()
+                 if exclusion_collector is None else exclusion_collector)
+    if collector is None:
+        collector = security_type.ExclusionCollector(label="backtest_portfolio")
+    with security_type.exclusion_scope(collector):
+        return _backtest_portfolio(*args, **kwargs)
+
+
+def _backtest_portfolio(symbols: Optional[List[str]] = None,
                        sample: bool = True,
                        start_date: Optional[str] = None,
                        end_date: Optional[str] = None,
@@ -1010,6 +1139,20 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             raise ValueError(
                 "MARKET_FILTER_ENABLED 與 strategy_position_policy 互斥:"
                 "曝險調整由 policy 的 regime slots 表達,兩套同時作用會重複降曝險")
+    # ── 外部訊號的證券別閘門(兩條繞過 panel 的路徑都要真的擋)──────────────
+    # 這裡是**閘門**,不是統計:被擋掉的代號從訊號裡消失,不可能建立持倉。
+    # 舊版只在 summary 補一行 provenance,所以 9103(DR)注入外部 picks 照樣成交。
+    _security_exclusions = security_type.active_collector()
+    if external_picks and picks_by_date:
+        picks_by_date = _gate_external_picks(picks_by_date,
+                                             collector=_security_exclusions)
+    if policy_enabled:
+        signal_frame = _gate_signal_frame(signal_frame,
+                                          collector=_security_exclusions)
+        if len(pd.DataFrame(signal_frame)) == 0:
+            raise ValueError(
+                "[fail-closed] signal_frame 的標的全部被證券別閘門擋掉"
+                "(非上市櫃普通股);沒有可持有的標的就沒有可回測的策略")
     symbols, universe_provider, universe_provenance = _resolve_universe_source(
         symbols, sample=sample, dynamic_enabled=dynamic_enabled,
         universe_provider=universe_provider,
@@ -1216,9 +1359,11 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             **_dynamic_universe_settings(dynamic_enabled, universe_top_n),
             **universe_provenance,
         })
-    # 證券別統計是「這份池是哪一種池」的唯一線索,兩條路徑都要蓋(external picks
-    # 路徑沒有 panel.attrs,panel 路徑則要更新成 summary 當下的最新統計)。
-    universe_info.update(_security_type_provenance())
+    # 證券別統計是「這份池是哪一種池」的唯一線索,三條路徑都要蓋(external picks
+    # 與 policy 路徑沒有 panel.attrs,panel 路徑則要更新成 request 當下的最新統計)。
+    # 真正的閘門在上面 `_gate_external_picks` / `_gate_signal_frame` —— 這一行只是
+    # 把那道閘門擋掉的數字寫進結果,單靠它擋不住任何東西(那正是原 bug)。
+    universe_info.update(_security_type_provenance(_security_exclusions))
 
     # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
     filter_on = bool(getattr(config, "MARKET_FILTER_ENABLED", False))
@@ -1843,6 +1988,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     # ── 結算：用每日淨值算正確的績效指標 ────────────────────────────
     if not trades and len(positions) == 0:
         empty = {"error": "回測期間無任何交易（可能門檻太高或樣本太少）", "n_trades": 0}
+        # 「一筆都沒成交」很可能正是證券別閘門擋光了外部訊號(例如整組 picks 都是
+        # DR/興櫃)。少了這份統計就只剩一句「門檻太高或樣本太少」,查不到真因。
+        empty.update(_security_type_provenance(_security_exclusions))
         if policy_enabled:
             # policy 路徑「一筆都沒成交」本身常常就是結論(全被處置禁倉/一字漲停/
             # 現金不足擋掉)。沒有這幾份紀錄就只剩一句無法追查的錯誤字串。
