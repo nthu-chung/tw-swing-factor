@@ -480,6 +480,32 @@ def _fmt(df: pd.DataFrame) -> str:
     return "\n".join([h, s] + rows)
 
 
+def _record_os_reveal(spec: StrategySpec, *, is_window, os_start, os_end,
+                      n_phases: int) -> Dict:
+    """把「這次報告看了哪一段 OS」記進 append-only 的 holdout 台帳。
+
+    S19 的 OS 早就不是乾淨 holdout(評估窗洩漏 → 參數選擇間接看過 OS),
+    這個狀態由 `evaluation.holdout.KNOWN_CONSUMED_HOLDOUTS` 宣告,重跑報告
+    不會把它洗回 clean;台帳只是把「又看了一次」也記下來。
+    """
+    import freeze_manifest       # 延後 import:freeze_manifest → strategies → 本模組
+    from evaluation import holdout as holdout_ledger
+
+    rec = holdout_ledger.record_reveal(
+        strategy_hash=freeze_manifest.rules_hash(freeze_manifest.rules_payload(spec)),
+        strategy_name=spec.name,
+        os_start=os_start, os_end=os_end,
+        source="strategies.s19_chip_momentum.main", segment="OS",
+        is_window=is_window,
+        split_mode=config.EVAL_SPLIT_MODE,
+        context={"n_phases": n_phases,
+                 "report": "outputs/CHIP_MOMENTUM_REPORT.md"},
+    )
+    print(f"[S19] holdout 台帳 #{rec['seq']}:{rec['holdout_status']}"
+          f"(previously_seen={rec['holdout_previously_seen']})")
+    return rec
+
+
 def main():
     panel, symbols = build_panel()
     cut, os_start = is_os_split(panel)
@@ -489,6 +515,9 @@ def main():
 
     is_sweep = evaluate_sweep(panel, symbols, dates[0], cut)
     os_sweep = evaluate_sweep(panel, symbols, os_start, dates[-1])
+    _record_os_reveal(SPEC, is_window=[dates[0], cut],
+                      os_start=os_start, os_end=dates[-1],
+                      n_phases=len(os_sweep))
     is_df, os_df = is_sweep.rows, os_sweep.rows
     b_is = equal_weight_baseline(panel, dates[0], cut)
     b_os = equal_weight_baseline(panel, os_start, dates[-1])

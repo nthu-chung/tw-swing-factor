@@ -36,6 +36,7 @@ import provenance
 import universe as uni
 # 相位掃描只有一份實作(evaluation/phases.py)。正式 IS/OS、S19 的 evaluate 與
 # forward_test 都走它;這裡不再自己寫 `for phase in range(...)`。
+from evaluation import holdout as holdout_ledger
 from evaluation.phases import combine as phase_combine
 from evaluation.phases import sweep_phases
 from factor_engine import panel_density
@@ -1488,6 +1489,27 @@ def _print_ic(ic_df: pd.DataFrame):
     print("      |t|>2 才算顯著；小集合常 insufficient，需擴大 universe 才算數。")
 
 
+def _run_full_rules_hash(**engine: Any) -> str:
+    """`run_full` 這條路徑的規則識別碼(holdout 台帳的 `strategy_hash`)。
+
+    為什麼不是 manifest 的 `rules_sha256_16`:`run_full` 不吃凍結的
+    `StrategySpec` —— 它跑的是 config 的 `FACTOR_WEIGHTS` 合成分數 + CLI 傳進來
+    的投組參數。所以識別碼取「凍結時會凍的那一整組 config」+「這次的引擎參數」,
+    兩者都是會改變 OS 數字的東西。雜湊本身走
+    `evaluation.holdout.rules_fingerprint`(和 `freeze_manifest.rules_hash` 同一份
+    實作),換規則就換 hash,台帳才分得出「同一套規則又看了一次」與「另一套規則
+    第一次看」。
+    """
+    # 延後 import:freeze_manifest 會經 strategies 反向指回 backtest,模組層
+    # import 會繞成環。這裡一次 run_full 只呼叫一次,成本可以忽略。
+    import freeze_manifest
+    return holdout_ledger.rules_fingerprint({
+        "config": freeze_manifest.frozen_config(),
+        "strategy": None,               # 這條路徑沒有策略單元規格
+        "engine": dict(sorted(engine.items())),
+    })
+
+
 def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
              pool: Optional[int] = None,
              dynamic_enabled: Optional[bool] = None,
@@ -1634,6 +1656,50 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
         print(f"  {segment} 相位摘要：Sharpe 中位 {st['sharpe_median']:.2f} / "
               f"最小 {st['sharpe_min']:.2f}；MaxDD 最差 "
               f"{st['worst_max_drawdown']:.1%}{debug}")
+
+    # ── holdout 揭露:跑出 OS 數字 = 看過那段 holdout,一律 append 進台帳 ──
+    # OS 邊界隨快照滑動(見 evaluation/holdout.py 的說明),沒有台帳的話,
+    # 「上次已經當 OS 看過」這件事下次就查不到,重疊區間會被當成 fresh OOS 再報一次。
+    os_sweep = sweeps.get("OS")
+    holdout_record = None
+    if os_sweep is not None and not os_sweep.empty:
+        holdout_record = holdout_ledger.record_reveal(
+            strategy_hash=_run_full_rules_hash(
+                top_n=int(top_n), rebalance_every=int(rebalance_every),
+                dynamic_enabled=bool(effective_dynamic),
+                universe_top_n=int(universe_top_n),
+                static_universe_comparator=bool(static_flag),
+                sample=bool(sample),
+            ),
+            # run_full 沒有策略單元(走 config 的合成分數),所以不套任何策略名的
+            # 既成 consumed 宣告 —— 那些宣告是綁在具名策略上的。
+            strategy_name=None,
+            os_start=split.os_window[0], os_end=split.os_window[1],
+            source="backtest.run_full", segment="OS",
+            is_window=split.is_window,
+            embargo_trading_days=split.n_embargo,
+            split_mode=split.mode,
+            context={
+                "sample": bool(sample),
+                "top_n": int(top_n),
+                "rebalance_every": int(rebalance_every),
+                "dynamic_enabled": bool(effective_dynamic),
+                "static_universe_comparator": bool(static_flag),
+                "single_phase_debug": bool(single_phase_debug),
+                "n_phases": segment_stats["OS"].get("n_phases"),
+                # smoke sample、static 對照組、單相位 debug 都不是正式證據,
+                # 但它們**仍然看過那段資料**,所以照樣入帳、只是標出來。
+                "formal_evidence_eligible": not (sample or static_flag
+                                                 or single_phase_debug),
+            },
+        )
+        seen = ("⚠ 這段 OS 先前已被同一套規則看過"
+                f"(重疊 {holdout_record['previously_seen_days']} 天,"
+                f"真正沒看過的起點 {holdout_record['fresh_os_start']})"
+                if holdout_record["holdout_previously_seen"]
+                else "這套規則第一次揭露這段 OS")
+        print(f"  holdout 台帳 #{holdout_record['seq']}："
+              f"{holdout_record['holdout_status']}｜{seen}")
     print("=" * 94)
 
     ic_results = {}
@@ -1671,6 +1737,8 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
     return {"split": split.to_dict(), "phases": phase_df,
             "phase_stats": segment_stats,
             "single_phase_debug": bool(single_phase_debug),
+            # 這次揭露 OS 的台帳紀錄(previously_seen 代表這段不是 fresh holdout)。
+            "holdout": holdout_record,
             "results": results}, ic_results
 
 

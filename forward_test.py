@@ -33,6 +33,14 @@ Forward-only 樣本外測試(唯一能產生真 clean OOS 的路徑)
 `universes.historical_pit_universe()` 取)→ 附基準 → 寫**不可覆寫**的輸出 +
 append-only ledger。
 
+2026-08-15(P1-3)另外補上:**holdout 使用紀錄**。forward 窗也是 holdout,而且
+是最不能被重複宣稱的那一種 —— 第二次跑同一段 forward 只是重現,不是新的樣本外。
+每次成功的 forward 會 append 一列進 `outputs/holdout_ledger.jsonl`
+(`evaluation/holdout.py`,帶雜湊鏈防靜默改寫),重疊到已看過的區間就標
+`holdout_previously_seen=True` 並在 payload 裡把 `fresh_oos` 設成 False。
+兩份 ledger 語意分工:`forward_test_runs.jsonl` 記「跑出什麼」(帶 Sharpe),
+`holdout_ledger.jsonl` 記「看過哪一段」(刻意不放績效數字)。
+
 2026-08-15(P1-1)另外修掉:相位聚合原本是這支自己寫的第三份實作,
 `single_phase_debug` 用 `len(df) == 1` 反推 —— 那是拿**結果**當**意圖**:
 20 相位掃描只有一相位有結果時會被誤標成 debug,而再平衡天數真的是 1 的正式
@@ -57,6 +65,7 @@ import pandas as pd
 
 import config
 import freeze_manifest
+from evaluation import holdout as holdout_ledger
 from evaluation.phases import PhaseSweep
 
 LEDGER_NAME = "forward_test_runs.jsonl"
@@ -196,6 +205,41 @@ def run(manifest_path: Optional[str] = None, *,
         print("[forward] ⚠ forward 交易數過少,統計檢定力不足,持續累積再看。")
 
     run_at = now or datetime.now()
+
+    # 同名輸出不可覆寫:forward 紀錄是 append-only(否則可以重跑到好看再留)。
+    # 這一步刻意排在寫 holdout 台帳**之前**:被擋下來的重跑什麼都沒揭露,
+    # 不該在台帳留下一筆「看過」。
+    out = _output_path(freeze_date, label, str(m.get("rules_sha256_16")),
+                       run_at.strftime("%Y%m%dT%H%M%S"))
+    if out.exists():
+        raise FileExistsError(
+            f"[fail-closed] {out.name} 已存在,拒絕覆寫 forward 紀錄"
+            "(forward 是 append-only:重跑請保留每一次的結果)"
+        )
+
+    # forward 窗也是 holdout —— 而且是最不能被重複宣稱的那一種:第二次跑同一段
+    # forward 只是重現,不是新的樣本外。實際評估到的右界取「資料最後一天」,
+    # 不用 `end=None` 蒙混過去(台帳上一段沒有右界的區間等於沒有紀錄)。
+    revealed_end = pd.Timestamp(panel["date"].max())
+    if end:
+        revealed_end = min(revealed_end, pd.Timestamp(end))
+    holdout = holdout_ledger.record_reveal(
+        strategy_hash=str(m.get("rules_sha256_16")),
+        strategy_name=spec.name,
+        os_start=start, os_end=revealed_end,
+        source="forward_test.run", segment="forward",
+        label=label, manifest=str(manifest_path),
+        split_mode="forward_after_freeze_date",
+        context={"freeze_date": freeze_date, "output": out.name,
+                 "n_phases": stats.get("n_phases")},
+        now=run_at,
+    )
+    if holdout["holdout_previously_seen"]:
+        print("[forward] ⚠ 這段 forward 窗與已被看過的 holdout 重疊"
+              f"({holdout['holdout_status']}, 重疊 "
+              f"{holdout['previously_seen_days']} 天):這次**不是** fresh OOS,"
+              f"真正沒看過的起點是 {holdout['fresh_os_start']}。")
+
     payload = {
         "manifest": str(manifest_path),
         "manifest_schema": m.get("manifest_schema"),
@@ -216,20 +260,20 @@ def run(manifest_path: Optional[str] = None, *,
         "phases": phases.to_dict(orient="records"),
         "benchmark_equal_weight_hold": benchmark,
         "excess_sharpe_vs_benchmark_median": excess,
+        # holdout 使用紀錄跟著結果走:讀這份檔案的人不必去翻台帳,就看得到
+        # 這段 forward 窗是不是第一次被這套規則揭露。
+        "holdout": holdout,
+        "manifest_holdout_boundaries": m.get("holdout"),
+        "fresh_oos": bool(holdout["fresh_oos_claim_allowed"]),
         "evidence_note": (
             "forward-only 期間的結果。相位中位數/最小值與基準都在同一份檔案裡;"
             "交易數不足時不構成 edge 證據,也不自動升級任何策略的證據等級。"
+            + ("" if holdout["fresh_oos_claim_allowed"] else
+               f"｜此窗與已消耗的 holdout 重疊({holdout['holdout_status']}),"
+               "只能當重現,不得宣稱 fresh OOS。")
         ),
     }
 
-    # 同名輸出不可覆寫:forward 紀錄是 append-only 的(否則可以重跑到好看再留)。
-    out = _output_path(freeze_date, label, str(m.get("rules_sha256_16")),
-                       run_at.strftime("%Y%m%dT%H%M%S"))
-    if out.exists():
-        raise FileExistsError(
-            f"[fail-closed] {out.name} 已存在,拒絕覆寫 forward 紀錄"
-            "(forward 是 append-only:重跑請保留每一次的結果)"
-        )
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
                    encoding="utf-8")
     ledger = config.OUTPUT_DIR / LEDGER_NAME
@@ -243,9 +287,16 @@ def run(manifest_path: Optional[str] = None, *,
             "sharpe_min": stats["sharpe_min"],
             "benchmark_sharpe": benchmark.get("sharpe"),
             "output": out.name,
+            # 指向 holdout 台帳的那一列。兩份 ledger 語意不重疊:這份記
+            # 「跑出什麼」,holdout 台帳記「看過哪一段」。
+            "holdout_ledger_seq": holdout["seq"],
+            "holdout_previously_seen": holdout["holdout_previously_seen"],
         }, ensure_ascii=False, default=str) + "\n")
     print(f"[forward] 已存:{out}")
     print(f"[forward] 已追加紀錄:{ledger}")
+    print(f"[forward] holdout 台帳 #{holdout['seq']}:"
+          f"{holdout['holdout_status']}｜"
+          f"{holdout_ledger.ledger_path()}")
     return payload
 
 

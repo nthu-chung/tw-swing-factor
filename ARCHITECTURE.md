@@ -47,6 +47,27 @@
 `summary["eval_audit"]` 稽核評估窗上界，`days_beyond_last_pick` 必須為 0，
 否則 IS 會借用 OS 的績效。
 
+第三條評估邊界是 **holdout 只有第一次是 holdout**：`evaluation/holdout.py` 是
+append-only 的揭露台帳（`outputs/holdout_ledger.jsonl`）。`backtest.run_full`
+的 OS 段、`s19.main` 與 `forward_test.run` 每次跑出 OS／forward 數字就 append
+一列，記 strategy hash、OS 起訖、reveal time 與 git commit；重疊到看過的區間就
+標 `holdout_previously_seen=True`、`fresh_oos_claim_allowed=False`，並回報
+`fresh_os_start`（這次真正還沒被看過的起點）。沒有它會怎樣：IS/OS 切點完全由
+凍結資料自身的首尾日決定（`splits.py` 錨在 `dts[-1]`），而資料視窗兩端隨
+`SNAPSHOT_END_DATE` 滑動（`start = end - HISTORY_DAYS`）——實測快照 2026-06-22
+的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 之後 OS 起點變成 2026-01-05，
+**2025-11-19~2026-01-04 從 OS 變成 IS**，同一段資料會被第二次當成 holdout 報成
+fresh OOS。三個設計點各對應一種會讓台帳失效的失敗模式：比對用**區間交集**
+（滑動窗永遠不會日期字串相等）、每列帶 `prev_sha256` 形成雜湊鏈（既有列被靜默
+改寫或抽掉就讀不出來——這正是它存在的意義）、寫入時取排他檔案鎖（併發揭露不會
+雙方都讀到空台帳而各自宣稱 fresh）。台帳**刻意不放績效數字**：它回答「這段未來
+資料被誰看過幾次」，`outputs/forward_test_runs.jsonl` 才記「那次跑出什麼」，兩份
+用 `strategy_hash`／`output` 對照、語意不重疊。台帳上線前就已消耗的 holdout
+（S19 的 OS）寫在 `KNOWN_CONSUMED_HOLDOUTS` 常數而不是某台機器的 jsonl——
+`outputs/` 不進版控，狀態只存在檔案裡的話，換一台 clone 就變回 clean。
+覆蓋範圍要誠實：目前只有上述三個入口入帳，`validate_oos.py`、`factor_scan.py`
+等 research-only 腳本仍未接（它們的 OS 本來就標成 pseudo-OOS）。
+
 回測 `summary` 是這條流程的**可稽核產出物**：一個數字必須自己說得出它是怎麼算
 出來的，否則報告寫下去之後沒有人能重建它。強制內容為 factor weights（
 `params.factor_weights` 與 `factor_weights_applied`）、全部策略與投組參數（含
@@ -71,9 +92,15 @@ print 一行就放行，現在會記事件並把 `formal_evidence_eligible` 降�
 MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 34 個而 config 有 92 個，
 `BT_ORDER_SIZE_MODE`、漲跌停／處置模型、IS-OS／embargo 全部漏凍；S19 的 10 檔／
 20 日更是在 manifest 產生**之後**才被寫進 config，改成 3 檔／5 日 `rules_sha256_16`
-一個字都不會變。`forward_test.py` 只接受 `manifest_schema=2` 且通過
-`validate_manifest` 的 manifest（legacy／不完整／被改過一律 raise），套用凍結規格後
-跑滿所有相位、附等權基準，輸出不可覆寫並追加 append-only ledger。
+一個字都不會變。manifest 另外固定記錄 **holdout 邊界**（`manifest["holdout"]`：
+切割規則 + 有交易日曆時解出來的 IS／embargo／OS 日期）——只凍切割**參數**是不夠的，
+同一組參數在不同快照下解出不同的 OS。這段刻意**不進 `rules`／hash**：解出來的
+日期是資料的函數，進 hash 會讓同一套規則在推進快照後變成另一套規則（與
+`SNAPSHOT_END_DATE` 同理）。`forward_test.py` 只接受 `manifest_schema=3` 且通過
+`validate_manifest` 的 manifest（legacy／不完整／缺 holdout 邊界／被改過一律
+raise），套用凍結規格後跑滿所有相位、附等權基準，輸出不可覆寫並追加兩份
+append-only 紀錄：執行紀錄 `forward_test_runs.jsonl` 與揭露紀錄
+`holdout_ledger.jsonl`。
 
 兩層之間唯一的介面是 `picks_by_date`，所以因子層可以整層抽換而不動執行層。
 
@@ -115,6 +142,10 @@ MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 3
 - `evaluation/phases.py`：統一相位掃描與聚合（`sweep_phases` / `PhaseSweep` /
   `phase_stats`）。正式 IS/OS、策略 `evaluate_sweep` 與 forward 共用這一份；
   呼叫端只提供「一個相位怎麼跑」，掃滿與中位／最小／最差 MaxDD 由它負責。
+- `evaluation/holdout.py`：append-only 的 holdout 揭露台帳（雜湊鏈 + 檔案鎖）與
+  `KNOWN_CONSUMED_HOLDOUTS`（台帳上線前就已消耗的 holdout，例如 S19 的 OS）。
+  `rules_fingerprint()` 是規則雜湊的唯一實作，`freeze_manifest.rules_hash` 轉呼叫
+  它——台帳的 `strategy_hash` 與 manifest 的 `rules_sha256_16` 必須是同一個東西。
 - `provenance.py`：git 狀態的單一實作（回測 `summary["provenance"]` 與
   `freeze_manifest` 共用；dirty 工作樹 = 對不到 commit = 無法重現，必須看得見）。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；

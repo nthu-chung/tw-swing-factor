@@ -163,6 +163,8 @@
 | 相位掃描只有一份實作（§7） | `evaluation/phases.py` 的 `sweep_phases()`／`PhaseSweep.stats()`：正式 IS/OS（`backtest.run_full`）、`s19.evaluate_sweep` 與 `forward_test` 共用；`tests/test_phase_sweep.py` 用 AST 掃描禁止再手寫 `for phase in range(...)` | 原本三份各自為政：`run_full` 掃 `rebalance_every`（CLI 預設 5）、S19 掃 20、`forward_test` 自己第三份聚合，MaxDD 欄名還分成 `max_drawdown`／`max_dd` |
 | 結果必須自帶 provenance（§6/§7） | `backtest_portfolio` 的 `summary`：`params.factor_weights`／`params.strategy`（`StrategySpec`）／`universe` 的 PIT rule・pool size・**真實** pool as-of・dynamic 設定／`data` 的 dataset・自建還原・`integrity_bypassed`／`universe.future_pool_bypassed`／漲跌停・處置・張數・成本／`evaluation` 的 IS・embargo・OS 固定日期／phase／`provenance.git_state()`／`eval_audit` | 過去 pool as-of 取的是**每日 top-N（100）**那份檔案，而實際候選池是 top300：top100 的 `as_of=2026-06-20`（≤ 快照，看起來合規）、top300 的 `as_of=2026-08-03`（未來池），同一份 metadata 的 `candidate_source` 卻寫著 top300。`SWING_ALLOW_FUTURE_POOL` 只 print 不留欄位；`FACTOR_WEIGHTS` 與 git commit 完全不在結果裡 —— 換一組權重重跑，兩份報告分不出來 |
 | 全域參數改寫必須還原（§6） | `market_filter_eval` / `regime_strategy_lab` 的 try/finally 完整還原；summary 另記 `market_filter.config_rule` 等**實際生效值** | `regime_strategy_lab` 只還原 `MARKET_FILTER_ENABLED`，把 `MARKET_FILTER_RULE` 永久留在 `vol`；`market_filter_eval` 收尾用 `_set_filter(*orig)`，而它在 `enabled=False` 時不碰 rule/weight，跑完停在 `('ma60', 0.5)` —— 同 process 後續回測全帶著別人的參數 |
+| holdout 只有第一次是 holdout（§1/§7） | `evaluation/holdout.py` 的 append-only 台帳 `outputs/holdout_ledger.jsonl`（雜湊鏈防靜默改寫 + 排他檔案鎖）；`backtest.run_full` 的 OS 段、`s19.main`、`forward_test.run` 每次揭露都 append：strategy hash、OS 起訖、reveal time、git commit | 重疊到看過的區間 → `holdout_previously_seen=True`、`fresh_oos_claim_allowed=False`，並回報 `fresh_os_start`。原本完全沒有這個紀錄，而 IS/OS 切點錨在資料尾端、資料視窗又隨 `SNAPSHOT_END_DATE` 滑動：快照 2026-06-22 的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 後 OS 起點變成 2026-01-05 —— 2025-11-19~2026-01-04 **從 OS 變成 IS**，同一段資料會被第二次報成 fresh OOS |
+| 凍結必須釘住 holdout 邊界（§8） | `freeze_manifest.holdout_boundaries()` 寫進 `manifest["holdout"]`（不進 `rules`／hash）；`validate_manifest` 缺這段即判不可靠，未解析成日期時出警告 | 只凍 `EVAL_SPLIT_MODE`／`IS_OS_SPLIT`／`EMBARGO_DAYS` 這些**參數**是不夠的：同一組參數在不同快照下解出不同的 OS 區間 |
 | 單相位只能 debug（§7） | `single_phase_debug` 由呼叫端的**意圖**傳入並標進 summary／`phase_stats`；forward 收到 debug 掃描直接 raise | 舊版 `forward_test` 用 `len(df) == 1` 反推旗標 —— 拿結果當意圖：20 相位只有 1 個有結果會被誤標成 debug，再平衡天數為 1 的正式全相位掃描也會被誤標 |
 
 ## 10. 標準操作流程（指令級）
@@ -217,14 +219,23 @@ SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
 .venv/bin/python forward_test.py                       # 只驗證凍結後的 forward 窗
 #   → outputs/forward_test_<freeze_date>_<label>_<hash>_<run_stamp>.json
 #     + append-only outputs/forward_test_runs.jsonl(每次重跑都留紀錄,不可覆寫)
+#     + append-only outputs/holdout_ledger.jsonl(揭露紀錄:誰在何時看過哪一段)
+```
+
+manifest 另外釘住 **holdout 邊界**(`manifest["holdout"]`):切割規則 + 有交易日曆時
+解出來的 IS／embargo／OS 日期。只凍切割參數不夠 —— OS 區間錨在資料尾端,而資料
+視窗隨快照滑動。要一起釘住日期就把全期回測的交易日曆傳進去:
+
+```python
+freeze_manifest.run("<標籤>", calendar=res["equity_curve"]["date"])
 ```
 規則凍結後**不得回頭調參**（§8）。forward 交易數太少時持續累積，別急著下結論。
 
 forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（2026-08-15 修）：
 
-- manifest 必須是 `manifest_schema=2` 且通過 `freeze_manifest.validate_manifest`。
-  legacy 格式、缺 load-bearing 參數、缺策略規格、或 `rules` 被事後改過（hash 對不上）
-  一律 **raise 拒用**，不得冒充可靠凍結版本。
+- manifest 必須是 `manifest_schema=3` 且通過 `freeze_manifest.validate_manifest`。
+  legacy 格式、缺 load-bearing 參數、缺策略規格、缺 holdout 邊界、或 `rules` 被事後
+  改過（hash 對不上）一律 **raise 拒用**，不得冒充可靠凍結版本。
 - 套用凍結規則時 config 若已無該參數（改名/移除）→ raise。舊版是 `if hasattr` 靜默
   略過，等於那個凍結值再也沒被套用，而 forward 仍宣稱自己跑的是凍結規則。
 - 候選池走策略的 `build_panel()` → `universes.historical_pit_universe()`；每個相位的
@@ -235,6 +246,10 @@ forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（202
   最糟的那一個（帶號取 min，不是中位或平均）。
 - 掃描帶 `single_phase_debug=True`（只跑 phase 0）時 forward **直接 raise**：單相位
   是一條路徑不是分布，同一訊號換相位 Sharpe 實測從 -0.09 擺到 +1.09。
+- 每次成功的 forward 都會 append 進 `outputs/holdout_ledger.jsonl`。窗與已看過的
+  區間重疊時**不擋**（重現既有結果是正當需求），但結果會標 `fresh_oos=False`、
+  `holdout_previously_seen=True`，並在 `evidence_note` 註明只能當重現 ——
+  **這種結果不得被引用成新的樣本外證據**。台帳被事後改寫時讀取端直接 raise。
 
 ### E. 每次宣稱前的例行稽核
 ```bash

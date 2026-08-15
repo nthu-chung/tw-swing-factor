@@ -27,6 +27,20 @@ manifest 一旦寫出就**不可覆寫**(避免偷改規則再宣稱樣本外)�
    停損是模組常數,投組那半還是在 manifest 產生**之後**才被寫進 config。
    修法:`strategies/spec.py` 的 `StrategySpec` 進 manifest 的 `rules["strategy"]`。
 
+2026-08-15 再修(schema 2 → 3):manifest 沒有釘住 holdout 邊界
+--------------------------------------------------------------
+manifest 只凍了切割的**參數**(`EVAL_SPLIT_MODE`/`IS_OS_SPLIT`/`EMBARGO_DAYS`…),
+沒有記下它們解出來的**日期**。而 IS/OS 切點完全由凍結資料自身的首尾日決定
+(`evaluation/splits.py` 錨在 `dts[-1]`),資料視窗兩端又隨 `SNAPSHOT_END_DATE`
+滑動(`start = end - HISTORY_DAYS`)。實測快照 2026-06-22 的 OS 是
+2025-11-19~2026-06-18,推進到 2026-08-06 之後 OS 起點變成 2026-01-05 ——
+2025-11-19~2026-01-04 這段**從 OS 變成 IS**,而同一份 manifest 的參數一個字都
+沒變。所以邊界必須跟著 manifest 一起釘住(`manifest["holdout"]`),揭露時再由
+`evaluation/holdout.py` 的 append-only 台帳記「這段被誰在何時看過」。
+
+`holdout` 刻意**不進 `rules` / hash**:解出來的日期是資料的函數,放進 hash 會讓
+同一套規則在不同快照下變成不同規則(SNAPSHOT_END_DATE 不進 hash 是同一個理由)。
+
 輸出:outputs/FROZEN_MANIFEST_<freeze_date>_<label>.json(immutable)。
 用法:.venv/bin/python freeze_manifest.py --label momentum_only_v1
       .venv/bin/python freeze_manifest.py --strategy s19_chip_momentum --label s19_v1
@@ -34,7 +48,6 @@ manifest 一旦寫出就**不可覆寫**(避免偷改規則再宣稱樣本外)�
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -44,11 +57,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import config
 import provenance
+from evaluation import holdout as holdout_ledger
+from evaluation.splits import build_evaluation_split
 from strategies.spec import KNOWN_STRATEGIES, StrategySpec, load_spec
 
-# manifest 格式版本。schema < 2 的 manifest 缺策略參數與大半 load-bearing 設定,
-# 屬 legacy/不完整,forward 必須拒用(見 validate_manifest)。
-MANIFEST_SCHEMA = 2
+# manifest 格式版本。schema < 3 的 manifest 缺策略參數、大半 load-bearing 設定,
+# 或缺 holdout 邊界,屬 legacy/不完整,forward 必須拒用(見 validate_manifest)。
+MANIFEST_SCHEMA = 3
 
 DEFAULT_STRATEGY = "s19_chip_momentum"
 
@@ -152,8 +167,72 @@ def rules_payload(spec: StrategySpec) -> Dict[str, Any]:
 
 
 def rules_hash(rules: Dict[str, Any]) -> str:
-    payload = json.dumps(rules, ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    """規則 hash。實作在 `evaluation.holdout.rules_fingerprint`(唯一一份)。
+
+    為什麼要共用:holdout 台帳記的 `strategy_hash` 必須和 manifest 的
+    `rules_sha256_16` 是同一個東西,否則「這段 OS 是哪一套規則看的」對不起來。
+    """
+    return holdout_ledger.rules_fingerprint(rules)
+
+
+# ── holdout(IS / embargo / OS)邊界 ──────────────────────────────────────
+HOLDOUT_SLIDING_NOTE = (
+    "IS/OS 切點由凍結資料自身的首尾日決定(evaluation/splits.py 錨在 dts[-1]),"
+    "而資料視窗兩端隨 SNAPSHOT_END_DATE 滑動(start = end - HISTORY_DAYS)。"
+    "實測:快照 2026-06-22 的 OS 是 2025-11-19~2026-06-18;推進到 2026-08-06 之後"
+    "OS 起點變成 2026-01-05 —— 2025-11-19~2026-01-04 從 OS 變成 IS。"
+    "所以邊界要釘在 manifest 裡,揭露紀錄見 outputs/holdout_ledger.jsonl。"
+)
+
+
+def holdout_boundaries(calendar: Optional[Any] = None) -> Dict[str, Any]:
+    """凍結時的 IS / embargo / OS 邊界。
+
+    `calendar` = 凍結資料的交易日序列(例如全期回測 `equity_curve["date"]`)。
+    有它才解得出**日期**;沒有就只記切割**規則**並標 `resolved=False` ——
+    這裡刻意不去抓資料:freeze 是離線動作,為了解一組日期而觸發全市場抓取
+    會讓凍結本身變成一件昂貴又可能失敗的事。未解析時 `validate_manifest`
+    會出警告(看得見,而不是假裝邊界已經釘住)。
+    """
+    out: Dict[str, Any] = {
+        "boundaries_schema": 1,
+        "split_mode": getattr(config, "EVAL_SPLIT_MODE", None),
+        "is_os_split": getattr(config, "IS_OS_SPLIT", None),
+        "is_weeks": getattr(config, "IS_WEEKS", None),
+        "os_weeks": getattr(config, "OS_WEEKS", None),
+        "embargo_days": getattr(config, "EMBARGO_DAYS", None),
+        "minimum_embargo_days": getattr(config, "BT_IC_HORIZON", None),
+        "history_days": getattr(config, "HISTORY_DAYS", None),
+        "snapshot_end_at_freeze": getattr(config, "SNAPSHOT_END_DATE", ""),
+        "resolved": False,
+        "is_window": None,
+        "os_window": None,
+        "embargo_trading_days": None,
+        "n_is": None,
+        "n_os": None,
+        "n_total": None,
+        "note": HOLDOUT_SLIDING_NOTE,
+    }
+    if calendar is None:
+        out["unresolved_reason"] = (
+            "凍結時沒有提供交易日曆,只釘住切割規則;實際 OS 日期由揭露當下的"
+            "資料視窗決定,會記進 holdout 台帳"
+        )
+        return out
+    split = build_evaluation_split(
+        calendar, minimum_embargo_days=getattr(config, "BT_IC_HORIZON", 0)
+    )
+    d = split.to_dict()
+    out.update({
+        "resolved": True,
+        "is_window": list(split.is_window),
+        "os_window": list(split.os_window),
+        "embargo_trading_days": d["n_embargo"],
+        "n_is": d["n_is"],
+        "n_os": d["n_os"],
+        "n_total": d["n_total"],
+    })
+    return out
 
 
 def _git_state() -> Dict[str, Any]:
@@ -178,8 +257,13 @@ def manifest_filename(freeze_date: str, label: str) -> str:
 
 def build_manifest(label: str, spec: Optional[StrategySpec] = None, *,
                    strategy: str = DEFAULT_STRATEGY,
-                   freeze_date: Optional[str] = None) -> Dict[str, Any]:
-    """組出 manifest。`rules_sha256_16` 只由 `rules` 決定(label 不在內)。"""
+                   freeze_date: Optional[str] = None,
+                   calendar: Optional[Any] = None) -> Dict[str, Any]:
+    """組出 manifest。`rules_sha256_16` 只由 `rules` 決定(label、holdout 不在內)。
+
+    `calendar` 傳入凍結資料的交易日序列時,`holdout` 段會帶解出來的 IS/embargo/OS
+    **日期**;不傳就只釘住切割規則(見 `holdout_boundaries`)。
+    """
     manifest_filename(freeze_date or "0000-00-00", label)   # 先驗 label
     spec = spec if spec is not None else load_spec(strategy)
     freeze_date = freeze_date or datetime.now().strftime("%Y-%m-%d")
@@ -192,6 +276,9 @@ def build_manifest(label: str, spec: Optional[StrategySpec] = None, *,
         "rules_sha256_16": rules_hash(rules),
         "strategy_name": spec.name,
         "rules": rules,
+        # holdout 邊界不進 rules/hash:解出來的日期是**資料**的函數,進 hash 會
+        # 讓同一套規則在不同快照下變成不同規則(與 SNAPSHOT_END_DATE 同理)。
+        "holdout": holdout_boundaries(calendar),
         "frozen_config_key_count": len(rules["config"]),
         "not_frozen": dict(sorted(NOT_FROZEN.items())),
         "note": (
@@ -254,6 +341,25 @@ def validate_manifest(m: Any) -> ManifestStatus:
     if not m.get("freeze_date"):
         problems.append("缺 freeze_date")
 
+    # holdout 邊界:少了它,forward 事後無法說明「當時凍住的 OS 是哪一段」,
+    # 而 OS 邊界會隨快照滑動(見 HOLDOUT_SLIDING_NOTE)。
+    hold = m.get("holdout")
+    if not isinstance(hold, dict):
+        problems.append(
+            "缺 holdout 段:manifest 必須固定記錄 IS／embargo／OS 邊界"
+            "(OS 切點隨資料視窗滑動,只記切割參數等於沒記)"
+        )
+    else:
+        missing_hold = [k for k in ("split_mode", "embargo_days", "resolved")
+                        if k not in hold]
+        if missing_hold:
+            problems.append(f"holdout 段缺 {missing_hold}")
+        elif not hold.get("resolved"):
+            warnings.append(
+                "holdout 邊界未解析成日期(凍結時沒給交易日曆):只釘住切割規則,"
+                "實際 OS 區間以揭露時寫進 holdout 台帳的為準"
+            )
+
     rules = m.get("rules")
     if not isinstance(rules, dict):
         problems.append("缺 rules")
@@ -297,9 +403,11 @@ def validate_manifest(m: Any) -> ManifestStatus:
         )
 
     ok = not problems
-    reliability = ("reliable" if ok else "incomplete_or_legacy")
-    if ok and warnings:
-        reliability = "reliable_but_git_state_unverifiable"
+    # 警告有兩種來源(git 狀態、holdout 未解析),所以標籤只說「有警告」:
+    # 沿用舊的 `reliable_but_git_state_unverifiable` 會在 holdout 未解析時
+    # 指著錯的原因,而誤導性的標籤比籠統的標籤更糟。細節一律看 warnings。
+    reliability = ("incomplete_or_legacy" if not ok
+                   else ("reliable_with_warnings" if warnings else "reliable"))
     return ManifestStatus(ok, reliability, problems, warnings, spec, missing)
 
 
@@ -328,8 +436,9 @@ def apply_rules(m: Dict[str, Any]) -> StrategySpec:
     return status.spec
 
 
-def run(label: str, *, strategy: str = DEFAULT_STRATEGY) -> Optional[Path]:
-    m = build_manifest(label, strategy=strategy)
+def run(label: str, *, strategy: str = DEFAULT_STRATEGY,
+        calendar: Optional[Any] = None) -> Optional[Path]:
+    m = build_manifest(label, strategy=strategy, calendar=calendar)
     path = manifest_path(m)
     if path.exists():
         print(f"⚠ {path.name} 已存在且不可覆寫(immutable)。"
@@ -349,6 +458,15 @@ def run(label: str, *, strategy: str = DEFAULT_STRATEGY) -> Optional[Path]:
           f"{len(m['rules']['strategy']['portfolio'])} 投組")
     print(f"  資料快照@凍結 = {m['data_snapshot_at_freeze']}｜"
           f"git = {m['git_commit'][:10]}(dirty={m['git_dirty']})")
+    h = m["holdout"]
+    if h.get("resolved"):
+        print(f"  holdout 邊界:IS {h['is_window'][0]}~{h['is_window'][1]}｜"
+              f"embargo {h['embargo_trading_days']} 交易日｜"
+              f"OS {h['os_window'][0]}~{h['os_window'][1]}")
+    else:
+        print(f"  holdout 邊界:只釘住規則(mode={h['split_mode']}, "
+              f"embargo={h['embargo_days']});日期未解析,揭露時記進 "
+              f"{holdout_ledger.LEDGER_NAME}")
     print(f"  → {path}")
     if status.warnings:
         print("  ⚠ " + "；".join(status.warnings))
