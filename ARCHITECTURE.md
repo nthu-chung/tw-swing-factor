@@ -212,12 +212,70 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 - `execution/tradability.py`：回測使用的一字漲跌停與處置禁倉資料載入。
 - `execution/taiwan_rules.py`：普通股 tick、精確 10% 漲跌停與首五日例外介面。
 - `execution/costs.py`：研究小數股、整張、零股代理及券商成本。
+- `strategies/position_policy.py`：`StrategyPositionPolicy` v1（下一節說明責任邊界）。
 
 根目錄的 `operators.py`、`factors.py`、`evaluation_split.py`、
 `chip_momentum_strategy.py` 暫時保留為相容入口（薄轉發，不含邏輯；
 `tests/test_package_migration.py` 用 `assertIs` 釘住它們指向新實作，
 避免相容層悄悄長出第二份行為）。既有研究腳本不必在同一次搬遷全部修改；
 新程式應直接使用新的套件路徑。
+
+## StrategyPositionPolicy 的責任邊界
+
+`strategies/position_policy.py` 是訊號層與事件引擎之間新增的一層。它存在的理由
+不是「多一個抽象」，而是原本這三件事沒有地方擋：退出理由不可稽核（`exit_reason`
+只有引擎內建那幾種，策略自己的「排名掉出去了」無處可放）、desired 與 realized
+混為一談（跌停賣不掉、現金不夠只是「跳過」，回測看起來永遠想買就買到）、資金
+情境被寫進全域 `config`（100 萬與 50 萬情境互相污染）。完整行為規格見
+[STRATEGY_POSITION_POLICY_SPEC.md](./STRATEGY_POSITION_POLICY_SPEC.md)。
+
+```text
+Strategy.make_signals → StrategyPositionPolicy → Event Backtest Engine
+                        (desired state)          (realized state)
+```
+
+| 這一層**負責** | 這一層**不負責** |
+|---|---|
+| 進場 / 續抱 / 退出 / 集中度 resize 的決定與 `reason_code` | 猜成交價、算股數、判斷買不買得到 |
+| 目標權重與 `target_cash_weight`（等權資金槽，候選不足保留現金） | 現金餘額、券商成本、整張／零股湊單 |
+| regime 層級對應的可用 slots（10 / 5 / 0） | regime 分類公式（外部提供，且必須帶 PIT provenance） |
+| 「最早可成交時間」的宣告（T 日收盤 → T+1） | 實際成交日與成交價（引擎依交易日曆與 K 棒決定） |
+
+**不得在 policy 內另做一套 execution。** 台股成本、tick、漲跌停、處置禁新倉、
+整張／零股、價格完整性 fail-closed 與下市處理全部**重用**既有元件
+（`execution/`、`backtest._assert_price_integrity`、`_limit_lock`、
+`size_long_order`、stale/delist 處理）。引擎裡每天的順序是固定的：
+
+```text
+執行昨天形成的退出意圖 → 只把實際成交的 proceeds 加進現金
+→ 集中度修剪 → 用真實現金嘗試進場 → 收盤 MTM → policy 形成明天的 desired state
+```
+
+倒過來就會出現「A 一字跌停賣不掉，卻已經用它的賣出款買了 B」——曝險與績效
+憑空多一份，而且從 summary 完全看不出來。賣不掉的部位留在 realized holdings
+繼續 MTM，退出意圖不清掉，下一個交易日再試。
+
+三個容易看漏的邊界：
+
+1. **決策日來自 `signal_frame` 的快照日期**，引擎不自己算「每 N 個交易日」或
+   星期幾。舊的 `rebalance_every` / `rebalance_phase` 是交易日計數，一旦訊號那端
+   用的是「每週最後一個交易日」，有假日的週兩者就會錯開，而錯開的方向剛好是
+   「用還沒發生的訊號」或「漏掉整週」。快照日不是交易日一律 raise。
+2. **`initial_capital` / `order_size_mode` / `minimum_commission` 是 immutable
+   request**，只影響該次呼叫，**不寫回 `config`**。要比較 100 萬研究情境與 50 萬
+   個人情境，兩次呼叫互不污染。
+3. **policy 關閉時 legacy `picks_by_date` 路徑逐位元不變**：回傳結構
+   （`summary` / `trades` / `equity_curve`）不長新 key，`decision_log`、
+   `order_log`、`summary["strategy_position_policy"]` 只在 policy 開啟時出現。
+   相位掃描（`evaluation/phases.py`）與 IS/embargo/OS、PIT、holdout、provenance
+   閘門一律照舊套用。
+
+稽核輸出（規格 §7）：`decision_log`（每次 snapshot 的 actions 與 reason codes）、
+`order_log`（送進引擎的意圖與未成交原因）、`target_portfolio`（每個決策日的完整
+desired weights 與 cash）、`summary["strategy_position_policy"]`（規則、rules
+hash、資金情境、desired vs realized 差異統計、每種 exit reason 的次數／持有期／
+realized return）。**這些是流程與可稽核性的改善，不是任何策略有效的證據**——本次
+產生的回測數字不得用來宣稱 edge，也沒有任何策略因此通過 clean OOS／forward。
 
 ## 工程閘門（與研究正確性同層）
 

@@ -844,6 +844,33 @@ def build_research_panel(symbols: Optional[List[str]] = None, *,
     )
 
 
+# ── StrategyPositionPolicy 的訊號快照 ───────────────────────────────────────
+def _prepare_signal_snapshots(signal_frame):
+    """把長表 `date/stock_id/rank` 切成 `{快照日 -> 當日完整排名}`。
+
+    **決策日就是快照日,引擎不自己算星期幾。** 舊的 `rebalance_every/phase` 是
+    「每 N 個交易日」,一旦訊號那端用的是「每週最後一個交易日」,兩者在有假日的
+    週就會錯開,而錯開的方向剛好是「用還沒發生的訊號」或「漏掉整週」。決策頻率
+    的語意屬於訊號產生端(規格 §3.1),所以由 signal_frame 表達,引擎只負責照做。
+
+    回傳 `(snapshots, sorted_dates)`。
+    """
+    frame = pd.DataFrame(signal_frame).copy()
+    missing = {"date", "stock_id", "rank"} - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"[fail-closed] signal_frame 缺欄位 {sorted(missing)};"
+            "至少要有 date / stock_id / rank")
+    frame["date"] = pd.to_datetime(frame["date"])
+    dupes = frame.duplicated(subset=["date", "stock_id"]).sum()
+    if dupes:
+        raise ValueError(
+            f"[fail-closed] signal_frame 有 {dupes} 筆重複的 (date, stock_id);"
+            "同一天同一檔兩個 rank,決策結果會取決於列順序")
+    snapshots = {d: g.reset_index(drop=True) for d, g in frame.groupby("date")}
+    return snapshots, sorted(snapshots)
+
+
 # ── 市場濾網 / 擇時 overlay：大盤(TAIEX) risk-off 判定（全因果）──────────
 def market_riskoff_map(rule: Optional[str] = None) -> Dict:
     """
@@ -886,7 +913,13 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                        static_universe_comparator: bool = False,
                        evaluation_split_info=None,
                        segment: Optional[str] = None,
-                       strategy_spec=None) -> Dict:
+                       strategy_spec=None,
+                       signal_frame=None,
+                       strategy_position_policy=None,
+                       regime_by_date: Optional[Mapping] = None,
+                       initial_capital: Optional[float] = None,
+                       order_size_mode: Optional[str] = None,
+                       minimum_commission: Optional[float] = None) -> Dict:
     """
     事件驅動投組回測（修正版）。
 
@@ -911,6 +944,20 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
       - `strategy_spec`:`strategies.spec.StrategySpec`。引擎自己只知道 config 那半
         參數;走 external picks 的策略(S19)其訊號視窗與權重在 spec 裡,不傳就
         不會出現在 summary,那份績效等於少了決定它的一半規則。
+
+    StrategyPositionPolicy 路徑(第三條,見 STRATEGY_POSITION_POLICY_SPEC.md):
+      - `signal_frame`:長表 `date / stock_id / rank`(可含 `raw_score` /
+        `eligible` / `snapshot_complete`)。**決策日由這張表的快照日期定義**,
+        引擎不自己算「每五列」或星期幾 —— 假日週會讓那種推法整段錯位。
+      - `strategy_position_policy`:`strategies.position_policy.StrategyPositionPolicy`。
+        傳了就改走 desired-state 迴圈(T 日收盤決策 → T+1 開盤成交),與
+        `picks_by_date` 互斥。沒傳時本函式的行為與此次改動前**完全相同**。
+      - `initial_capital` / `order_size_mode` / `minimum_commission`:immutable
+        request 參數。過去要換資金情境只能就地改全域 `config`,兩個情境會互相
+        污染(而且改壞了不會有人發現)。這三個參數只影響本次呼叫,**不寫回 config**;
+        不傳就沿用 config 值(legacy 行為不變)。
+      - `regime_by_date`:`{date -> "risk_on"/"caution"/"risk_off"}`,必須是外部
+        已帶 PIT provenance 的判定。引擎不算 regime 公式(規格 §8)。
     """
     dynamic_enabled = (
         config.DYNAMIC_UNIVERSE_ENABLED
@@ -925,11 +972,27 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         )
     # 候選池來源:不再從 symbols is None 猜意圖(舊版那條安全預設從未觸發過)。
     external_picks = picks_by_date is not None
+    policy_enabled = strategy_position_policy is not None
+    if policy_enabled:
+        if external_picks:
+            raise ValueError(
+                "strategy_position_policy 與 picks_by_date 互斥:兩者都在決定"
+                "「今天要持有什麼」,同時給等於有兩套投組規則,結果無法歸因")
+        if signal_frame is None or len(signal_frame) == 0:
+            raise ValueError(
+                "[fail-closed] strategy_position_policy 需要 signal_frame"
+                "(date / stock_id / rank);沒有排名快照就沒有決策日,"
+                "引擎不會自己推算星期幾")
+        if bool(getattr(config, "MARKET_FILTER_ENABLED", False)):
+            raise ValueError(
+                "MARKET_FILTER_ENABLED 與 strategy_position_policy 互斥:"
+                "曝險調整由 policy 的 regime slots 表達,兩套同時作用會重複降曝險")
     symbols, universe_provider, universe_provenance = _resolve_universe_source(
         symbols, sample=sample, dynamic_enabled=dynamic_enabled,
         universe_provider=universe_provider,
         static_universe_comparator=static_universe_comparator,
-        caller="backtest_portfolio", external_picks=external_picks,
+        caller="backtest_portfolio",
+        external_picks=external_picks or policy_enabled,
     )
     if symbols is None:
         symbols = uni.get_universe(sample=sample)
@@ -985,7 +1048,45 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     # picks_by_date 可由外部注入（例如 sector_rotation：族群輪動選股）。外部注入時
     # 跳過 composite/趨勢過濾（呼叫端自理），並用價格快取的交易日曆當 all_dates，
     # 避免重建整個 panel（省時、且不受 FACTOR_WEIGHTS 影響）。
-    if not external_picks:
+    signal_snapshots: Dict[Any, pd.DataFrame] = {}
+    if policy_enabled:
+        # policy 路徑沒有 panel,但同一道未還原價 fail-closed 閘門仍要生效。
+        _assert_price_integrity(symbols)
+        signal_snapshots, decision_dates = _prepare_signal_snapshots(signal_frame)
+        cal = sorted(set().union(*[set(p["date"]) for p in price_cache.values()])) \
+            if price_cache else []
+        lo = min(decision_dates)
+        all_dates = [d for d in cal if d >= lo]
+        if start_date:
+            all_dates = [d for d in all_dates if d >= pd.to_datetime(start_date)]
+        hard_end = pd.to_datetime(end_date) if end_date else None
+        # 評估窗上界:與 external picks 分支**刻意不同**。那裡的 picks 是逐日的,
+        # 所以「最後一個訊號日」就是訊號用完的那一天;這裡的 snapshot 是每週一
+        # 次,把窗截到最後一個快照日會系統性砍掉每段 IS/OS 的最後一週(而且是
+        # 部位還開著的那一週)。policy 路徑因此以呼叫端顯式宣告的 `end_date`
+        # 為準 —— 那條線本來就是 evaluation/splits 畫出來的邊界。沒給 end_date
+        # 時仍退回保守作法(截到最後快照日),避免無聲跑到資料末端。
+        if hard_end is not None:
+            all_dates = [d for d in all_dates if d <= hard_end]
+        elif not let_positions_run:
+            bound = max(decision_dates)
+            if any(d > bound for d in all_dates):
+                print(f"[backtest] policy 路徑未指定 end_date,評估窗截到最後一個"
+                      f"訊號快照日 {str(bound)[:10]}。正式 IS/OS 請顯式傳 end_date。")
+            all_dates = [d for d in all_dates if d <= bound]
+        if not all_dates:
+            return {"error": "policy 路徑在指定期間內沒有交易日,無法回測"}
+        # 快照日必須真的是市場交易日,否則那一天永遠不會被走到 —— 決策日靜默
+        # 消失,而回測會照跑完並產出一組「訊號從來沒被執行過」的績效。
+        in_window = [s for s in decision_dates
+                     if all_dates[0] <= s <= all_dates[-1]]
+        orphans = [s for s in in_window if s not in set(all_dates)]
+        if orphans:
+            raise ValueError(
+                f"[fail-closed] signal_frame 有 {len(orphans)} 個快照日不是價格資料"
+                f"裡的交易日(例:{[str(x)[:10] for x in orphans[:3]]});"
+                "那些決策日會被靜默略過")
+    elif not external_picks:
         panel = _prepare_panel(
             symbols, config.MIN_COMPOSITE, start_date, end_date,
             dynamic_enabled=dynamic_enabled,
@@ -1038,10 +1139,20 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     # universe 資訊:external picks 路徑沒有 panel,給一個安全的 metadata（避免
     # summary 讀 panel.attrs 時 UnboundLocalError）。誠實標籤沿用同一組。
     _asof = getattr(config, "SNAPSHOT_END_DATE", "") or "live"
-    if external_picks:
+    # policy 路徑的候選來源是 signal_frame 的排名快照;PIT 驗證要驗的東西一樣,
+    # 所以把它攤成 picks 形狀交給同一支 `_verify_external_picks_are_pit`,
+    # 不另外寫第二份候選池驗證(兩份遲早分岔)。
+    _pit_check_picks = picks_by_date
+    if policy_enabled:
+        _pit_check_picks = {
+            d: [(sid, float("nan"), sid) for sid in snap["stock_id"]]
+            for d, snap in signal_snapshots.items()
+        }
+    if external_picks or policy_enabled:
         universe_info = {
             "enabled": dynamic_enabled, "direction": "long_only",
-            "candidate_source": "external_picks_by_date",
+            "candidate_source": ("strategy_position_policy_signal_frame"
+                                 if policy_enabled else "external_picks_by_date"),
             "survivorship_free": False, "industry_pit": False,
             "industry_asof": _asof,
             # 候選池 as-of 沒有 provider 就是**不知道**(picks 由呼叫端決定)。
@@ -1055,7 +1166,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         # pool as-of 會在結果裡被寫成 "external_picks_by_date" 這種空白標籤,
         # 之後沒人能從 summary 判斷這段績效的候選池到底是不是 PIT。
         if universe_provider is not None:
-            universe_info["picks_source"] = "external_picks_by_date"
+            universe_info["picks_source"] = universe_info["candidate_source"]
             universe_info.update(universe_provider.metadata())
             universe_info["candidate_pool_asof_source"] = "universe_provider"
         universe_info.update(_future_pool_provenance(
@@ -1066,7 +1177,7 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
         # 這一步排在 `universe_provenance` 之後,因為它蓋掉的正是那組樂觀標籤。
         if universe_provider is not None:
             universe_info.update(_verify_external_picks_are_pit(
-                picks_by_date, universe_provider,
+                _pit_check_picks, universe_provider,
                 dates_in_scope=all_dates, caller="backtest_portfolio"))
         # 候選池是 PIT 還不夠:picks 背後的訊號規則若沒有 provenance,這份績效
         # 一樣無法被重現或被稽核(見下方 `strategy_spec` 的說明)。
@@ -1096,13 +1207,21 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
     disp_days = _load_disposition_days(all_dates)   # {sid -> set(處置交易日)}
     _prev_riskoff = False
 
-    # 投組狀態
-    initial_capital = float(getattr(config, "BT_INITIAL_CAPITAL", 1_000_000.0))
+    # 投組狀態。資金情境是 **immutable request**:傳進來就只影響這一次執行,
+    # 不寫回 config —— 過去要比較 100 萬研究情境與 50 萬個人情境只能就地改全域
+    # 參數,兩次執行會互相污染,而且還原漏了不會有任何欄位看得出來(規格 §4.1)。
+    initial_capital = float(
+        getattr(config, "BT_INITIAL_CAPITAL", 1_000_000.0)
+        if initial_capital is None else initial_capital)
+    if initial_capital <= 0:
+        raise ValueError("initial_capital 必須為正數")
     order_size_mode = OrderSizeMode(
-        getattr(config, "BT_ORDER_SIZE_MODE", OrderSizeMode.RESEARCH_FRACTIONAL.value))
+        getattr(config, "BT_ORDER_SIZE_MODE", OrderSizeMode.RESEARCH_FRACTIONAL.value)
+        if order_size_mode is None else order_size_mode)
     cost_model = TaiwanStockCostModel(
         commission_rate=config.BT_FEE,
-        minimum_commission=getattr(config, "BT_MIN_COMMISSION", 0.0),
+        minimum_commission=(getattr(config, "BT_MIN_COMMISSION", 0.0)
+                            if minimum_commission is None else minimum_commission),
         sell_tax_rate=config.BT_TAX,
     )
     equity = initial_capital
@@ -1117,7 +1236,390 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             return None, None
         return price_cache[sid].iloc[idx], idx
 
+    def _mark_to_market(di, d) -> float:
+        """收盤淨值 = 現金 + 各部位市值。
+
+        缺 bar(停牌/被清理列)時延用「最後一次已知收盤」,不回退成本價——回退成本
+        會讓權益曲線在缺 bar 日假跳到成本、隔日跳回,灌大波動/回撤;且下市股不會
+        被凍結在成本價(那在 survivorship-free 重跑時會變成忽略下市虧損的樂觀偏誤)。
+        """
+        mtm = cash
+        for sid, pos in positions.items():
+            bar, _ = _price_row(sid, d)
+            if bar is not None:
+                pos["last_close"] = float(bar["close"])
+                pos["last_bar_di"] = di        # 記最後有 bar 的日,供缺bar殭屍出場計齡
+            mtm += pos["shares"] * pos["last_close"]
+        return mtm
+
+    # ── StrategyPositionPolicy 路徑的 desired / realized 狀態 ────────────────
+    decision_log: List[dict] = []
+    order_log: List[dict] = []
+    target_portfolio: List[dict] = []
+    desired_targets: Dict[str, float] = {}      # sid -> target_weight(決策日更新)
+    desired_notional: Dict[str, float] = {}     # sid -> 決策當下淨值算出的目標金額
+    exit_intents: Dict[str, str] = {}           # sid -> reason_code(成交前不清掉)
+    resize_intents: Dict[str, float] = {}       # sid -> 目標金額(concentration cap)
+    policy_audit: Dict[str, int] = {
+        "limit_down_exit_delays": 0,        # 一字跌停賣不掉,部位留在 realized
+        "limit_up_entry_skips": 0,          # 一字漲停買不到
+        "halted_or_missing_bar_delays": 0,  # 停牌/缺 bar 無法成交
+        "insufficient_cash_entry_skips": 0, # 現金不足(通常正是前一項的下游)
+        "lot_rounding_entry_skips": 0,      # 資金不足一個合法交易單位
+        "disposition_entry_blocks": 0,      # 處置期間禁新倉
+        "invalid_price_skips": 0,
+        "n_desired_exits": 0, "n_realized_exits": 0,
+        "n_desired_entries": 0, "n_realized_entries": 0,
+        "n_desired_resizes": 0, "n_realized_resizes": 0,
+        "n_decision_days": 0, "n_policy_snapshots": 0,
+        "n_snapshot_incomplete_days": 0,
+    }
+    _policy_decision_dates = set(decision_dates) if policy_enabled else set()
+    _policy_snapshot_dates = sorted(signal_snapshots) if policy_enabled else []
+    # regime 由外部(帶 PIT provenance)決定;給了就必須逐日給滿。缺哪天就當
+    # risk_on 放行,等於在資料缺口上偷偷恢復滿曝險 —— 那正是最該擋的方向。
+    _regime_map: Dict[Any, str] = {}
+    if policy_enabled and regime_by_date:
+        _regime_map = {pd.Timestamp(k): str(v) for k, v in regime_by_date.items()}
+        gaps = [d for d in all_dates if d not in _regime_map]
+        if gaps:
+            raise ValueError(
+                f"[fail-closed] regime_by_date 缺 {len(gaps)} 個交易日"
+                f"(例:{[str(x)[:10] for x in gaps[:3]]});缺值不得當成 risk_on")
+
+    def _order(d, sid, side, status, reason, *, shares=0.0, price=float("nan"),
+               intended_notional=float("nan"), action="", reason_code=""):
+        """order_log 一列 = 一個「送進事件引擎的意圖」及它的下場。
+
+        沒有這份紀錄時,跌停賣不掉、現金不足、湊不到一張全都只是「跳過」,回測
+        看起來永遠是想買就買到 —— 而那正是最會灌水的一塊(規格 §7)。
+        """
+        order_log.append({
+            "date": d, "stock_id": sid, "side": side, "status": status,
+            "reason": reason, "shares": float(shares), "price": float(price),
+            "intended_notional": float(intended_notional),
+            "action": action, "reason_code": reason_code,
+        })
+
+    def _record_exit_trade(sid, pos, d, exit_price, reason, days_held, shares=None):
+        """結算(整筆或部分)退出並把 proceeds 加進現金。回傳 proceeds。"""
+        nonlocal cash
+        shares = float(pos["shares"]) if shares is None else float(shares)
+        portion = shares / float(pos["shares"]) if pos["shares"] else 1.0
+        cost_part = float(pos["cost"]) * portion
+        proceeds = float(cost_model.sell_proceeds(shares, exit_price))
+        cash += proceeds
+        gross = (exit_price - pos["entry_price"]) / pos["entry_price"]
+        net = proceeds / cost_part - 1.0 if cost_part else float("nan")
+        trades.append({
+            "stock_id": sid, "name": pos["name"],
+            "signal_date": pos["signal_date"],
+            "entry_date": pos["entry_date"], "exit_date": d,
+            "entry_price": round(pos["entry_price"], 2),
+            "exit_price": round(exit_price, 2),
+            "shares": shares,
+            "entry_cost": round(cost_part, 2),
+            "exit_proceeds": round(proceeds, 2),
+            "hold_bars": days_held,
+            "gross_ret": round(gross, 4),
+            "ret": round(net, 4),
+            "exit_reason": reason,
+            "composite": round(pos["composite"], 2),
+        })
+        return proceeds
+
+    def _policy_settle_desired(di, d):
+        """T 日形成的 desired state,在 T+1(也就是今天)嘗試成交。
+
+        順序是規格 §6 的不變式,不可對調:**先退出 → 只把實際成交的 proceeds 加進
+        現金 → 再用真實現金進場**。倒過來就會出現「A 一字跌停賣不掉,卻已經用它
+        的賣出款買了 B」——曝險與績效憑空多一份,而且看不出來。
+        """
+        nonlocal cash, n_limit_skip, n_disp_skip, n_lot_skip, n_stale_exits
+
+        # (a) 退出:賣不掉就留在 realized holdings 繼續 MTM,意圖不清掉。
+        for sid in list(positions.keys()):
+            reason = exit_intents.get(sid)
+            if reason is None:
+                continue
+            pos = positions[sid]
+            bar, idx = _price_row(sid, d)
+            if bar is None:
+                stale = di - pos.get("last_bar_di", pos.get("entry_di", di))
+                if stale >= config.BT_STALE_EXIT_DAYS:
+                    recovery = getattr(config, "BT_DELIST_RECOVERY", None)
+                    if recovery is None:
+                        raise RuntimeError(
+                            f"{sid} 已連續 {stale} 個市場交易日無 bar（疑似長停牌/下市）；"
+                            "沒有正式清算資料，拒絕假設可用最後收盤賣出。"
+                            "可用 SWING_DELIST_RECOVERY=0~1 做明確敏感度測試")
+                    exit_price = pos["last_close"] * float(recovery)
+                    _record_exit_trade(sid, pos, d, exit_price, "stale_delisted",
+                                       di - pos.get("entry_di", di))
+                    _order(d, sid, "sell", "filled", "stale_delisted_recovery",
+                           shares=pos["shares"], price=exit_price,
+                           action="exit", reason_code=reason)
+                    del positions[sid]
+                    exit_intents.pop(sid, None)
+                    n_stale_exits += 1
+                    policy_audit["n_realized_exits"] += 1
+                else:
+                    _order(d, sid, "sell", "unfilled", "halted_no_bar",
+                           action="exit", reason_code=reason)
+                    policy_audit["halted_or_missing_bar_delays"] += 1
+                continue
+            if idx <= pos["entry_idx"]:
+                # 進場當天不出場(T 日收盤才形成的意圖不可能在同一天成交)。
+                _order(d, sid, "sell", "unfilled", "same_day_as_entry",
+                       action="exit", reason_code=reason)
+                continue
+            if config.BT_MODEL_LIMIT_LOCK and idx > 0:
+                pc = price_cache[sid]["close"].iloc[idx - 1]
+                if _limit_lock(bar, float(pc)) == "down":
+                    _order(d, sid, "sell", "unfilled", "limit_down_lock",
+                           action="exit", reason_code=reason)
+                    policy_audit["limit_down_exit_delays"] += 1
+                    continue
+            exit_price = float(bar["open"])
+            if not np.isfinite(exit_price) or exit_price <= 0:
+                _order(d, sid, "sell", "unfilled", "invalid_open_price",
+                       action="exit", reason_code=reason)
+                policy_audit["invalid_price_skips"] += 1
+                continue
+            days_held = idx - pos["entry_idx"]
+            proceeds = _record_exit_trade(sid, pos, d, exit_price, reason, days_held)
+            _order(d, sid, "sell", "filled", reason, shares=pos["shares"],
+                   price=exit_price, intended_notional=proceeds,
+                   action="exit", reason_code=reason)
+            del positions[sid]
+            exit_intents.pop(sid, None)
+            resize_intents.pop(sid, None)
+            policy_audit["n_realized_exits"] += 1
+
+        # (b) 單檔超過集中度上限 → 部分減碼(規格 §4.2 唯一的 resize 來源)。
+        for sid in list(resize_intents.keys()):
+            if sid not in positions or sid in exit_intents:
+                resize_intents.pop(sid, None)
+                continue
+            pos = positions[sid]
+            bar, idx = _price_row(sid, d)
+            if bar is None or idx <= pos["entry_idx"]:
+                _order(d, sid, "sell", "unfilled", "halted_no_bar",
+                       action="resize", reason_code="concentration_cap")
+                policy_audit["halted_or_missing_bar_delays"] += 1
+                continue
+            if config.BT_MODEL_LIMIT_LOCK and idx > 0:
+                pc = price_cache[sid]["close"].iloc[idx - 1]
+                if _limit_lock(bar, float(pc)) == "down":
+                    _order(d, sid, "sell", "unfilled", "limit_down_lock",
+                           action="resize", reason_code="concentration_cap")
+                    policy_audit["limit_down_exit_delays"] += 1
+                    continue
+            px = float(bar["open"])
+            target_value = float(resize_intents[sid])
+            if not np.isfinite(px) or px <= 0:
+                policy_audit["invalid_price_skips"] += 1
+                continue
+            excess = float(pos["shares"]) * px - target_value
+            unit = (getattr(config, "BT_REGULAR_LOT_SHARES", 1000)
+                    if order_size_mode == OrderSizeMode.REGULAR_LOT else 1)
+            if order_size_mode == OrderSizeMode.RESEARCH_FRACTIONAL:
+                sell_shares = max(0.0, excess / px)
+            else:
+                sell_shares = float(int(max(0.0, excess / px) // unit) * unit)
+            sell_shares = min(sell_shares, float(pos["shares"]))
+            if sell_shares <= 0:
+                _order(d, sid, "sell", "unfilled", "lot_rounding",
+                       action="resize", reason_code="concentration_cap")
+                resize_intents.pop(sid, None)
+                continue
+            _record_exit_trade(sid, pos, d, px, "concentration_cap",
+                               idx - pos["entry_idx"], shares=sell_shares)
+            _order(d, sid, "sell", "filled", "concentration_cap",
+                   shares=sell_shares, price=px, intended_notional=target_value,
+                   action="resize", reason_code="concentration_cap")
+            portion_left = 1.0 - sell_shares / float(pos["shares"])
+            pos["cost"] = float(pos["cost"]) * portion_left
+            pos["shares"] = float(pos["shares"]) - sell_shares
+            resize_intents.pop(sid, None)
+            policy_audit["n_realized_resizes"] += 1
+            if pos["shares"] <= 0:
+                del positions[sid]
+
+        # (c) 進場:只用**已經在手上**的現金,不預支未實現的賣出款。
+        for sid, target_w in sorted(desired_targets.items(),
+                                    key=lambda kv: (-kv[1], kv[0])):
+            if sid in positions or sid in exit_intents:
+                continue
+            notional = float(desired_notional.get(sid, target_w * equity))
+            if disp_days and d in disp_days.get(sid, ()):
+                n_disp_skip += 1
+                policy_audit["disposition_entry_blocks"] += 1
+                _order(d, sid, "buy", "unfilled", "disposition_no_new_position",
+                       intended_notional=notional, action="enter",
+                       reason_code="new_top_k")
+                continue
+            bar, idx = _price_row(sid, d)
+            if bar is None or idx == 0:
+                _order(d, sid, "buy", "unfilled", "no_bar",
+                       intended_notional=notional, action="enter",
+                       reason_code="new_top_k")
+                policy_audit["halted_or_missing_bar_delays"] += 1
+                continue
+            if config.BT_MODEL_LIMIT_LOCK:
+                if _limit_lock(bar, float(price_cache[sid]["close"].iloc[idx - 1])) == "up":
+                    n_limit_skip += 1
+                    policy_audit["limit_up_entry_skips"] += 1
+                    _order(d, sid, "buy", "unfilled", "limit_up_lock",
+                           intended_notional=notional, action="enter",
+                           reason_code="new_top_k")
+                    continue
+            entry_price = float(bar["open"])
+            if not np.isfinite(entry_price) or entry_price <= 0:
+                policy_audit["invalid_price_skips"] += 1
+                _order(d, sid, "buy", "unfilled", "invalid_open_price",
+                       intended_notional=notional, action="enter",
+                       reason_code="new_top_k")
+                continue
+            alloc = min(notional, cash)
+            shares, total_cost = (0.0, 0.0)
+            if alloc > 0:
+                shares, total_cost = size_long_order(
+                    alloc, entry_price, mode=order_size_mode, costs=cost_model,
+                    regular_lot_shares=getattr(config, "BT_REGULAR_LOT_SHARES", 1000))
+            if shares <= 0:
+                # 現金不足與湊不到一個交易單位是兩種不同的失敗,分開記:前者
+                # 多半是「前面有一筆賣單沒成交」的下游效應,後者是資金情境問題。
+                if alloc < notional - 1e-9:
+                    policy_audit["insufficient_cash_entry_skips"] += 1
+                    why = "insufficient_cash"
+                else:
+                    n_lot_skip += 1
+                    policy_audit["lot_rounding_entry_skips"] += 1
+                    why = "lot_rounding"
+                _order(d, sid, "buy", "unfilled", why,
+                       intended_notional=notional, action="enter",
+                       reason_code="new_top_k")
+                continue
+            cash -= total_cost
+            positions[sid] = {
+                "name": sid, "composite": float(policy_scores.get(sid, np.nan)),
+                "signal_date": all_dates[di - 1] if di > 0 else d,
+                "entry_date": d, "entry_idx": idx, "entry_price": entry_price,
+                "cost": total_cost, "shares": shares,
+                "ma_exit_today": np.nan, "pending_ma_exit": False,
+                "last_close": entry_price,
+                "entry_di": di, "last_bar_di": di,
+            }
+            _order(d, sid, "buy", "filled", "new_top_k", shares=shares,
+                   price=entry_price, intended_notional=notional,
+                   action="enter", reason_code="new_top_k")
+            policy_audit["n_realized_entries"] += 1
+
+    def _policy_decide_at_close(di, d):
+        """T 日收盤:用截至今天可得的排名快照形成 desired state。"""
+        nonlocal desired_targets, desired_notional
+        asof_snapshot = None
+        for s in _policy_snapshot_dates:
+            if s <= d:
+                asof_snapshot = s
+            else:
+                break
+        if asof_snapshot is None:
+            return
+        # 已經成交或已消失的部位不該留下殘餘意圖(否則 fail-closed 檢查會被
+        # 一個不存在的 key 蒙混過去)。
+        for sid in [s for s in exit_intents if s not in positions]:
+            exit_intents.pop(sid, None)
+        is_decision_day = d in _policy_decision_dates
+        rows = []
+        for sid, pos in positions.items():
+            rows.append({
+                "stock_id": sid,
+                "weight": (pos["shares"] * pos["last_close"] / equity
+                           if equity > 0 else 0.0),
+                "entry_price": pos["entry_price"],
+                "close": pos["last_close"],
+                "holding_days": di - pos.get("entry_di", di),
+                # 引擎手上還有沒有沒成交的退出意圖 —— policy 用它分辨
+                # 「今天才跌破停損」與「早就跌破、只是賣不掉」。
+                "exit_pending": sid in exit_intents,
+            })
+        holdings_frame = pd.DataFrame(rows, columns=[
+            "stock_id", "weight", "entry_price", "close", "holding_days",
+            "exit_pending"])
+        regime = _regime_map.get(d, "risk_on")
+        next_exec = (all_dates[di + 1] if di + 1 < len(all_dates)
+                     else pd.Timestamp(d) + pd.Timedelta(days=1))
+        decision = strategy_position_policy.decide(
+            as_of=d, signals=signal_snapshots[asof_snapshot],
+            holdings=holdings_frame, equity=float(equity), regime=regime,
+            is_decision_day=is_decision_day, next_execution=next_exec)
+
+        policy_audit["n_policy_snapshots"] += 1
+        if is_decision_day:
+            policy_audit["n_decision_days"] += 1
+        if not decision.snapshot_complete:
+            policy_audit["n_snapshot_incomplete_days"] += 1
+        for row in decision.actions.to_dict(orient="records"):
+            decision_log.append({
+                "date": d, "regime": regime,
+                "is_decision_day": bool(is_decision_day),
+                "snapshot_asof": asof_snapshot,
+                "snapshot_complete": bool(decision.snapshot_complete),
+                **row,
+            })
+        for sid, score in zip(signal_snapshots[asof_snapshot]["stock_id"],
+                              signal_snapshots[asof_snapshot].get(
+                                  "raw_score", pd.Series(dtype=float))):
+            policy_scores[str(sid)] = float(score) if pd.notna(score) else np.nan
+
+        new_exits = decision.exits()
+        if is_decision_day:
+            desired_targets = decision.target_map()
+            desired_notional = decision.notional_map()
+            policy_audit["n_desired_entries"] += sum(
+                1 for sid in desired_targets if sid not in positions)
+            target_portfolio.append({
+                "date": d, "regime": regime,
+                "equity": float(equity),
+                "target_cash_weight": float(decision.target_cash_weight),
+                "targets": decision.targets.to_dict(orient="records"),
+                "fingerprint": decision.fingerprint,
+            })
+        else:
+            # 非決策日只允許移除(強制/風險退出),不得新增排名換股。
+            for sid in new_exits:
+                desired_targets.pop(sid, None)
+                desired_notional.pop(sid, None)
+        for sid, reason in new_exits.items():
+            if sid in positions and sid not in exit_intents:
+                # 已存在的意圖不覆寫:reason_code 要指向**當初做決定的那一天**,
+                # 否則一筆賣不掉的排名退出會在跌停第二天被改寫成 risk_stop。
+                exit_intents[sid] = reason
+                policy_audit["n_desired_exits"] += 1
+        for row in decision.actions.itertuples():
+            if str(row.action) == "resize":
+                resize_intents[str(row.stock_id)] = float(row.target_weight) * float(equity)
+                policy_audit["n_desired_resizes"] += 1
+        # snapshot 不完整時不得把「沒出現在名單裡的持股」當成 target 0
+        # (規格 §6)。policy 已經負責不產生那種退出,這裡再驗一次結果。
+        for sid in positions:
+            if sid not in desired_targets and sid not in exit_intents:
+                raise RuntimeError(
+                    f"[fail-closed] {sid} 既不在 target portfolio 也沒有退出意圖:"
+                    "desired state 不完整,拒絕讓部位靜默留在帳上")
+
+    policy_scores: Dict[str, float] = {}
+
     for di, d in enumerate(all_dates):
+        if policy_enabled:
+            _policy_settle_desired(di, d)
+            equity = _mark_to_market(di, d)
+            equity_curve.append((d, equity))
+            _policy_decide_at_close(di, d)
+            continue
+
         # ── 0) 市場濾網：用「訊號日(前一日)收盤」的 regime 決定今日目標曝險 ──
         riskoff = False
         target_positions = max_positions
@@ -1293,22 +1795,19 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
                 }
 
         # ── 3) 收盤 mark-to-market：投組淨值 = 現金 + 各部位市值 ──────
-        # 缺 bar(停牌/被清理列)時延用「最後一次已知收盤」,不回退成本價——回退成本
-        # 會讓權益曲線在缺 bar 日假跳到成本、隔日跳回,灌大波動/回撤;且下市股不會
-        # 被凍結在成本價(那在 survivorship-free 重跑時會變成忽略下市虧損的樂觀偏誤)。
-        mtm = cash
-        for sid, pos in positions.items():
-            bar, _ = _price_row(sid, d)
-            if bar is not None:
-                pos["last_close"] = float(bar["close"])
-                pos["last_bar_di"] = di        # 記最後有 bar 的日,供缺bar殭屍出場計齡
-            mtm += pos["shares"] * pos["last_close"]
-        equity = mtm
+        equity = _mark_to_market(di, d)
         equity_curve.append((d, equity))
 
     # ── 結算：用每日淨值算正確的績效指標 ────────────────────────────
     if not trades and len(positions) == 0:
-        return {"error": "回測期間無任何交易（可能門檻太高或樣本太少）", "n_trades": 0}
+        empty = {"error": "回測期間無任何交易（可能門檻太高或樣本太少）", "n_trades": 0}
+        if policy_enabled:
+            # policy 路徑「一筆都沒成交」本身常常就是結論(全被處置禁倉/一字漲停/
+            # 現金不足擋掉)。沒有這幾份紀錄就只剩一句無法追查的錯誤字串。
+            empty["decision_log"] = decision_log
+            empty["order_log"] = order_log
+            empty["desired_realized_audit"] = dict(policy_audit)
+        return empty
 
     eq = pd.DataFrame(equity_curve, columns=["date", "equity"]).set_index("date")
     daily_ret = eq["equity"].pct_change().dropna()
@@ -1465,20 +1964,75 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             "trend_guard": bool(getattr(config, "TREND_GUARD_ENABLED", False)),
             "stale_exit_days": getattr(config, "BT_STALE_EXIT_DAYS", None),
             "let_positions_run": bool(let_positions_run),
-            "picks_source": ("external_picks_by_date" if external_picks
+            "picks_source": ("strategy_position_policy" if policy_enabled
+                             else "external_picks_by_date" if external_picks
                              else "engine_composite"),
             # 因子權重:最決定性的研究參數,過去完全不在 summary 裡 —— 同一份
             # 報告換一組權重重跑,兩份結果長得一模一樣,沒有任何欄位區分得出來。
             "factor_weights": dict(getattr(config, "FACTOR_WEIGHTS", {}) or {}),
             # external picks 時引擎不算 composite,權重當下沒有作用:記下來但
             # 標明沒生效,免得日後把它讀成「這組權重產生了這個績效」。
-            "factor_weights_applied": not external_picks,
+            "factor_weights_applied": not (external_picks or policy_enabled),
             # 策略單元自己的訊號/投組規格(呼叫端傳 StrategySpec 才有)。
             "strategy": (strategy_spec.rules()
                          if hasattr(strategy_spec, "rules") else strategy_spec),
         },
     }
-    return {"summary": summary, "trades": tdf, "equity_curve": eq.reset_index()}
+    result = {"summary": summary, "trades": tdf, "equity_curve": eq.reset_index()}
+    if not policy_enabled:
+        # policy 關閉時**一個新 key 都不加**:legacy summary/trades/回傳結構要能
+        # 逐位元對得起來,否則「行為不變」只能靠讀 code 相信(規格 §7 的相容要求)。
+        return result
+
+    # ── StrategyPositionPolicy 的稽核輸出(規格 §7)────────────────────────
+    # 規則、desired state、realized state 與「為什麼沒成交」都要能由結果重建。
+    signal_lo, signal_hi = _policy_snapshot_dates[0], _policy_snapshot_dates[-1]
+    exit_stats: Dict[str, Dict[str, float]] = {}
+    if not tdf.empty:
+        for reason, grp in tdf.groupby("exit_reason"):
+            exit_stats[str(reason)] = {
+                "n": int(len(grp)),
+                "avg_hold_bars": round(float(grp["hold_bars"].mean()), 2),
+                "avg_realized_ret": round(float(grp["ret"].mean()), 4),
+                "median_realized_ret": round(float(grp["ret"].median()), 4),
+                "win_rate": round(float((grp["ret"] > 0).mean()), 4),
+            }
+    summary["eval_audit"].update({
+        "signal_window": [str(signal_lo)[:10], str(signal_hi)[:10]],
+        "n_decision_days": int(policy_audit["n_decision_days"]),
+        # policy 路徑的評估窗上界由呼叫端的 end_date 決定(見上方說明),所以
+        # 「跑超過最後一個快照日幾天」必須誠實記下來讓人檢查,不是零就好。
+        "days_beyond_last_signal_snapshot": int(
+            sum(1 for x in all_dates if x > signal_hi)),
+        "end_date_declared": bool(end_date),
+    })
+    summary["strategy_position_policy"] = {
+        "enabled": True,
+        "rules": strategy_position_policy.rules(),
+        "rules_hash": strategy_position_policy.rules_hash(),
+        # 決策頻率的語意在訊號那端;引擎照 snapshot 日期走,不自己推星期幾。
+        "decision_day_source": "signal_frame_snapshot_dates",
+        "n_decision_days": int(policy_audit["n_decision_days"]),
+        "n_policy_snapshots": int(policy_audit["n_policy_snapshots"]),
+        "regime_source": ("caller_regime_by_date" if regime_by_date
+                          else "default_risk_on_no_external_regime"),
+        "regime_pit_provenance": bool(regime_by_date),
+        "desired_realized_audit": dict(policy_audit),
+        "exit_reason_stats": exit_stats,
+        "capital_scenario": {
+            "initial_capital": initial_capital,
+            "order_size_mode": order_size_mode.value,
+            "minimum_commission": float(cost_model.minimum_commission),
+            "source": "immutable_backtest_request",
+        },
+        "snapshot_complete_all_days": bool(
+            policy_audit["n_snapshot_incomplete_days"] == 0),
+        "target_portfolio": target_portfolio,
+    }
+    result["decision_log"] = decision_log
+    result["order_log"] = order_log
+    result["target_portfolio"] = target_portfolio
+    return result
 
 
 # ── (2) 逐因子 IC 分析 ──────────────────────────────────────────────────
