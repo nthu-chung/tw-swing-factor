@@ -240,8 +240,22 @@ class MigrateCacheRangeTest(unittest.TestCase):
         path.write_bytes(b"placeholder")
         return path
 
+    def _touch_frame(self, name: str, days: int) -> Path:
+        """寫一份**內容與檔名將宣告的範圍相符**的真快取。
+
+        2026-08-15 第三輪審查後,遷移腳本會開檔驗證內容跨度(原本只看檔名,
+        連 `b"placeholder"` 都照樣改名 —— 那正是「檔名與內容脫鉤」的來源)。
+        所以要被遷移的檔案必須是合法 DataFrame;仍用 placeholder 的是
+        「本來就不該被碰」的檔案,遷移腳本不會讀它們的內容。
+        """
+        end = pd.to_datetime(SNAP)
+        idx = pd.bdate_range(end - pd.Timedelta(days=int(days) - 3), end)
+        path = self.cache / name
+        pd.DataFrame({"date": idx, "close": 1.0}).to_pickle(path)
+        return path
+
     def test_dry_run_never_touches_files(self):
-        old = self._touch(f"price__2330__{SNAP}.pkl")
+        old = self._touch_frame(f"price__2330__{SNAP}.pkl", config.HISTORY_DAYS)
         moved = migrate_cache_range.main(apply=False)
         self.assertEqual(moved, 1)
         self.assertTrue(old.exists())
@@ -250,10 +264,10 @@ class MigrateCacheRangeTest(unittest.TestCase):
     def test_apply_uses_each_datasets_own_default_range(self):
         d = config.HISTORY_DAYS
         m = config.MARKET_HISTORY_DAYS
-        self._touch(f"price__2330__{SNAP}.pkl")
-        self._touch(f"inst__2330__{SNAP}.pkl")
-        self._touch(f"market__TAIEX__{SNAP}.pkl")
-        self._touch(f"market__VIX__{SNAP}.pkl")
+        self._touch_frame(f"price__2330__{SNAP}.pkl", d)
+        self._touch_frame(f"inst__2330__{SNAP}.pkl", d)
+        self._touch_frame(f"market__TAIEX__{SNAP}.pkl", m)
+        self._touch_frame(f"market__VIX__{SNAP}.pkl", d)
         # 這些不是 data.py 的命名空間（或本來就沒有範圍維度），不可被改名。
         untouched = [f"info__ALL__{SNAP}.pkl", f"disposition__ALL__{SNAP}.pkl",
                      f"divresult__2330__{SNAP}.pkl", "pitsnap__20260622.pkl"]
@@ -276,6 +290,54 @@ class MigrateCacheRangeTest(unittest.TestCase):
         migrate_cache_range.main(apply=True)
         self.assertTrue(old.exists())
         self.assertEqual(new.read_bytes(), b"placeholder")
+
+    def _write_window(self, name: str, first: str, last: str) -> Path:
+        path = self.cache / name
+        idx = pd.bdate_range(first, last)
+        pd.DataFrame({"date": idx, "close": 1.0}).to_pickle(path)
+        return path
+
+    def test_content_beyond_the_snapshot_is_not_renamed(self):
+        """內容比快照還新 → 檔名會宣告一個它不具備的範圍,拒絕改名。
+
+        原 bug(2026-08-15 第三輪審查):`plan()` 只看檔名、從不開檔,
+        連 `b"placeholder"` 都會被蓋上 `d730` 戳。真實 `_cache/` 有多個 snapshot,
+        只要當初以不同 HISTORY_DAYS 抓過、或抓取被 FinMind 402 截斷,
+        改名後就等於用檔名替錯的內容永久背書。
+        """
+        old = self._write_window(f"price__2330__{SNAP}.pkl",
+                                 "2025-01-02", "2026-12-31")
+        moved = migrate_cache_range.main(apply=True, verbose=False)
+        self.assertEqual(moved, 0)
+        self.assertTrue(old.exists(), "拒絕改名的檔案必須原封不動")
+
+    def test_content_longer_than_declared_range_is_not_renamed(self):
+        """內容涵蓋得比 d{days} 宣告的還長 → 同樣是脫鉤,拒絕改名。"""
+        end = pd.to_datetime(SNAP)
+        too_early = (end - pd.Timedelta(days=config.HISTORY_DAYS + 400)
+                     ).strftime("%Y-%m-%d")
+        old = self._write_window(f"price__2330__{SNAP}.pkl", too_early, SNAP)
+        moved = migrate_cache_range.main(apply=True, verbose=False)
+        self.assertEqual(moved, 0)
+        self.assertTrue(old.exists())
+
+    def test_unreadable_cache_is_not_renamed(self):
+        old = self._touch(f"price__2330__{SNAP}.pkl")
+        moved = migrate_cache_range.main(apply=True, verbose=False)
+        self.assertEqual(moved, 0)
+        self.assertTrue(old.exists())
+
+    def test_short_coverage_is_allowed_but_reported(self):
+        """新上市/下市/當初截斷的檔案分不出來 → 放行但要留註記,不是靜默通過。"""
+        end = pd.to_datetime(SNAP)
+        late = (end - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        self._write_window(f"price__2330__{SNAP}.pkl", late, SNAP)
+        _, _, rejected = migrate_cache_range.plan(self.cache)
+        self.assertEqual(rejected, [])
+        ok, note = migrate_cache_range._verify_content(
+            self.cache / f"price__2330__{SNAP}.pkl", SNAP, config.HISTORY_DAYS)
+        self.assertTrue(ok)
+        self.assertIn("未證實", note)
 
 
 # ── 處置/注意快取:同一個 bug 的第二個現場 ────────────────────────────────

@@ -32,6 +32,8 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 import config
 import data
 
@@ -56,10 +58,66 @@ def _default_attr(dataset: str, stock_id: str) -> str | None:
     return _DATASET_DEFAULT_ATTR.get(dataset)
 
 
-def plan(cache_dir: Path | None = None) -> tuple[list[tuple[Path, Path]], int]:
-    """列出 (舊路徑, 新路徑)，不動檔案。回傳 (待遷移清單, 略過數)。"""
+_SLACK_DAYS = 7          # 快照日/起始日落在非交易日時的合理誤差
+
+
+def _content_window(path: Path):
+    """讀出快取內容實際涵蓋的日期跨度；讀不出來回 None（視為無法驗證）。"""
+    try:
+        df = pd.read_pickle(path)
+    except Exception:
+        return None
+    if not isinstance(df, pd.DataFrame) or df.empty or "date" not in df.columns:
+        return None
+    dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    return dates.min(), dates.max()
+
+
+def _verify_content(path: Path, snapshot: str, days: int):
+    """檢查內容跨度與「檔名將宣告的範圍」是否相容。
+
+    回傳 `(ok, note)`。這是 2026-08-15 第三輪審查抓到的缺口:原本的 `plan()`
+    只看檔名就替 4501 個檔蓋上 `d{days}` 戳,**從不開檔**。repo 自己的測試甚至
+    寫入 `b'placeholder'`(連合法 pickle 都不是)也照樣被改名 —— 零內容驗證。
+    真實 `_cache/` 有兩個以上的 snapshot,只要當初有任何一次以不同 HISTORY_DAYS
+    抓過、或抓取被 FinMind 402 截斷,改名後檔名就會宣告一個內容並不具備的範圍,
+    而 P0-2 之後所有人都會信任檔名 —— 那正是 P0-2 要根除的「檔名與內容範圍脫鉤」,
+    只是變成一次性、永久性地寫進磁碟。
+
+    判準刻意不對稱:
+      - 內容**超出**宣告範圍(更早的起點或更晚的終點)→ 一定是錯的,拒絕改名。
+      - 內容**短於**宣告範圍 → 可能是新上市/已下市/當初被截斷,單看檔案分不出來,
+        所以放行但標註,讓人知道哪些檔的涵蓋度沒被證實。
+    """
+    window = _content_window(path)
+    if window is None:
+        return False, "內容讀不出日期(非 DataFrame / 空表 / 無 date 欄)"
+    first, last = window
+    end = pd.to_datetime(snapshot)
+    start = end - pd.Timedelta(days=int(days))
+    slack = pd.Timedelta(days=_SLACK_DAYS)
+    if last > end + slack:
+        return False, f"內容最後一日 {str(last)[:10]} 晚於快照 {snapshot}"
+    if first < start - slack:
+        return False, (f"內容起始 {str(first)[:10]} 早於 d{days} 宣告的 "
+                       f"{str(start)[:10]}：實際涵蓋比檔名宣告的還長")
+    short_by = (first - start).days
+    if short_by > 30:
+        return True, f"內容比宣告晚 {short_by} 天起(新上市/下市/當初截斷,未證實)"
+    return True, ""
+
+
+def plan(cache_dir: Path | None = None):
+    """列出 (舊路徑, 新路徑)，不動檔案。
+
+    回傳 `(待遷移清單, 略過數, 拒絕清單)`；拒絕清單是「內容與將宣告的範圍不符」
+    的檔案,它們**不會**被改名(改了等於用檔名替錯的內容背書)。
+    """
     cache_dir = Path(cache_dir or config.CACHE_DIR)
     moves: list[tuple[Path, Path]] = []
+    rejected: list[tuple[Path, str]] = []
     skipped = 0
     for path in sorted(cache_dir.glob("*.pkl")):
         parts = path.name[:-4].split("__")
@@ -76,19 +134,33 @@ def plan(cache_dir: Path | None = None) -> tuple[list[tuple[Path, Path]], int]:
         if new_path.exists():        # 已經有新檔，不覆蓋（保留兩者供比對）
             skipped += 1
             continue
+        ok, note = _verify_content(path, snapshot, int(getattr(config, attr)))
+        if not ok:
+            rejected.append((path, note))
+            continue
         moves.append((path, new_path))
-    return moves, skipped
+    return moves, skipped, rejected
 
 
-def main(apply: bool = False, cache_dir: Path | None = None) -> int:
-    moves, skipped = plan(cache_dir)
+def main(apply: bool = False, cache_dir: Path | None = None,
+         verbose: bool = True) -> int:
+    moves, skipped, rejected = plan(cache_dir)
     for old, new in moves:
-        print(f"  {old.name} -> {new.name}")
+        if verbose:
+            print(f"  {old.name} -> {new.name}")
         if apply:
             os.rename(old, new)
     verb = "已遷移" if apply else "將遷移（dry-run，未動檔）"
     print(f"\n{verb} {len(moves)} 個快取檔加上範圍戳；略過 {skipped} 個"
           f"（已含範圍戳、無範圍維度或非資料層命名）。")
+    if rejected:
+        print(f"\n拒絕改名 {len(rejected)} 個（內容與檔名將宣告的範圍不符，"
+              "改名等於用檔名替錯的內容背書）：")
+        for path, note in rejected[:20]:
+            print(f"  [reject] {path.name}：{note}")
+        if len(rejected) > 20:
+            print(f"  ...另有 {len(rejected) - 20} 個")
+        print("  這些檔請重抓（改 SNAPSHOT 或刪檔後重跑抓取），不要手動改名。")
     if not apply and moves:
         print("確認清單無誤後加 --apply 才會真的改名。")
     return len(moves)
