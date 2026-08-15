@@ -40,32 +40,57 @@ import pandas as pd
 import config
 
 DIVIDEND_RESULT_DATASET = "TaiwanStockDividendResult"
+CAPITAL_REDUCTION_DATASET = "TaiwanStockCapitalReductionReferencePrice"
 _OHLC = ["open", "high", "low", "close"]
 
-# 還原因子的合理區間。<0.5 通常不是單純除權息(可能是分割/減資/壞列),
-# >1.02 也不合理(除權息只會降參考價)。超出就不套用,留給 price_integrity 揪。
+# 除權息因子的合理區間。<0.5 通常不是單純除權息(可能是分割/大配股/壞列),
+# >1.02 也不合理(除權息只會降參考價)。
+#
+# 2026-08-15 修:超出區間的事件**過去是靜默 drop**,而且不留任何痕跡。
+# 實測 1808 潤隆 2024-09-26:before=119.50 / after=52.95 → factor=0.443096,
+# 低於 FACTOR_MIN 被丟掉且不報錯,結果「已還原」序列在該日仍留著 raw 的
+# 119.5 → 53.5(-55.23%)。官方 TaiwanStockPriceAdj 在同一天的因子階梯正是
+# ×2.256652(= 1/0.443134),證明那是真事件。
+# 現在超出區間的事件會被記進 `uncovered`,由呼叫端決定怎麼處理,不再消失。
 FACTOR_MIN = 0.50
 FACTOR_MAX = 1.02
 
 
+def _snapshot_tag() -> str:
+    return getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+
+
+def _snapshot_end() -> str:
+    snap = _snapshot_tag()
+    return snap if snap != "live" else pd.Timestamp.today().strftime("%Y-%m-%d")
+
+
 def fetch_dividend_events(stock_id: str, refresh: bool = False) -> pd.DataFrame:
-    """抓單檔的除權息結果(含快照戳快取)。回傳 date / factor。"""
-    snap = getattr(config, "SNAPSHOT_END_DATE", "").strip() or "live"
+    """抓單檔的除權息結果(含快照戳快取)。回傳 date / factor / in_range。
+
+    **不再靜默丟棄**超出合理區間的事件:它們照樣回傳,只是 `in_range=False`,
+    由 `fetch_adjustment_events()` 決定是被減資資料解釋掉,還是列為未涵蓋。
+    """
+    snap = _snapshot_tag()
     cache = config.CACHE_DIR / f"divresult__{stock_id}__{snap}.pkl"
     if cache.exists() and not refresh:
         try:
-            return pd.read_pickle(cache)
+            cached = pd.read_pickle(cache)
+            if "in_range" in cached.columns:
+                return cached
+            # 舊格式(已被過濾過、沒有 in_range 欄):重抓,否則被丟掉的事件
+            # 永遠回不來,而那正是這次要修的 bug。
         except Exception:
             pass
-    end = snap if snap != "live" else pd.Timestamp.today().strftime("%Y-%m-%d")
     # 重用資料層的 Authorization header + 有界重試。舊版把 token 放在 query string，
     # 可能進入 proxy/access log；且失敗回空表會讓未還原價冒充還原成功。
     import data as data_mod
     raw = data_mod.fetch_finmind_dataset(
-        DIVIDEND_RESULT_DATASET, str(stock_id), "2000-01-01", end
+        DIVIDEND_RESULT_DATASET, str(stock_id), "2000-01-01", _snapshot_end()
     )
+    cols = ["date", "factor", "in_range"]
     if raw.empty:
-        out = pd.DataFrame(columns=["date", "factor"])
+        out = pd.DataFrame(columns=cols)
         out.to_pickle(cache)
         return out
     d = raw.copy()
@@ -73,14 +98,98 @@ def fetch_dividend_events(stock_id: str, refresh: bool = False) -> pd.DataFrame:
     before = pd.to_numeric(d.get("before_price"), errors="coerce")
     after = pd.to_numeric(d.get("after_price"), errors="coerce")
     d["factor"] = after / before
-    d = d[
-        d["date"].notna()
-        & d["factor"].notna()
-        & d["factor"].between(FACTOR_MIN, FACTOR_MAX)
-    ]
-    out = d[["date", "factor"]].sort_values("date").reset_index(drop=True)
+    d = d[d["date"].notna() & d["factor"].notna()]
+    d["in_range"] = d["factor"].between(FACTOR_MIN, FACTOR_MAX)
+    out = d[cols].sort_values("date").reset_index(drop=True)
     out.to_pickle(cache)
     return out
+
+
+def fetch_capital_reduction_events(stock_id: str,
+                                   refresh: bool = False) -> pd.DataFrame:
+    """抓減資參考價事件(全市場一次抓 + 快照戳快取),回傳該檔的 date / factor。
+
+    為什麼一定要接:減資**完全不在** `TaiwanStockDividendResult` 裡,而全市場
+    2015~2026 共 532 筆減資中有 **139 筆(26.1%)的價格跳幅小於 0.11** ——
+    也就是 `PRICE_INTEGRITY_RETURN_THRESHOLD` 的殘留斷點掃描**結構上看不到**。
+    實例:1808 2025-11-24 的 raw 報酬只有 +2.61%(遠低於門檻),正確報酬是
+    -4.87%,單日誤差 7.5 個百分點 —— 對 8% 硬停損是決定性的。
+    「自建還原不涵蓋減資 + 掃描看不到小幅減資」是雙盲,必須從資料源頭補。
+
+    因子與除權息同形式(after / before):減資後股數變少、參考價**上升**,
+    所以 factor > 1,回溯還原會把減資前的價格放大到今天的尺度。
+    """
+    snap = _snapshot_tag()
+    cache = config.CACHE_DIR / f"capred__ALL__{snap}.pkl"
+    table = None
+    if cache.exists() and not refresh:
+        try:
+            table = pd.read_pickle(cache)
+        except Exception:
+            table = None
+    if table is None:
+        import data as data_mod
+        raw = data_mod.fetch_finmind_dataset(
+            CAPITAL_REDUCTION_DATASET, None, "2000-01-01", _snapshot_end()
+        )
+        if raw is None or raw.empty:
+            table = pd.DataFrame(columns=["date", "stock_id", "factor", "reason"])
+        else:
+            d = raw.copy()
+            d["date"] = pd.to_datetime(d["date"], errors="coerce")
+            before = pd.to_numeric(
+                d.get("ClosingPriceonTheLastTradingDay"), errors="coerce")
+            after = pd.to_numeric(
+                d.get("PostReductionReferencePrice"), errors="coerce")
+            d["factor"] = after / before
+            d["reason"] = d.get("ReasonforCapitalReduction", "")
+            d["stock_id"] = d["stock_id"].astype(str)
+            table = d[d["date"].notna() & d["factor"].notna() & (d["factor"] > 0)][
+                ["date", "stock_id", "factor", "reason"]
+            ].sort_values(["stock_id", "date"]).reset_index(drop=True)
+        table.to_pickle(cache)
+    sub = table[table["stock_id"] == str(stock_id)]
+    return sub[["date", "factor"]].sort_values("date").reset_index(drop=True)
+
+
+def fetch_adjustment_events(stock_id: str, refresh: bool = False):
+    """合併除權息與減資,回傳 `(events, uncovered)`。
+
+    `events`:要套用的因子(date / factor / source)。
+    `uncovered`:偵測到、但**沒有任何資料源能解釋**的事件(date / factor)——
+    多半是分割、面額變更或壞列。它們不會被套用(硬猜係數比留著缺口更危險),
+    但一定要被看見:過去它們是被 `factor.between()` 靜默丟掉的。
+    """
+    div = fetch_dividend_events(stock_id, refresh=refresh)
+    cap = fetch_capital_reduction_events(stock_id, refresh=refresh)
+
+    accepted = []
+    if not div.empty:
+        ok = div[div["in_range"]].copy()
+        ok["source"] = "dividend"
+        accepted.append(ok[["date", "factor", "source"]])
+    if not cap.empty:
+        c = cap.copy()
+        c["source"] = "capital_reduction"
+        accepted.append(c[["date", "factor", "source"]])
+
+    events = (pd.concat(accepted, ignore_index=True)
+              if accepted else pd.DataFrame(columns=["date", "factor", "source"]))
+    if not events.empty:
+        # 同一天同時被兩個資料源記到時,以減資為準(它給的是官方參考價)。
+        events = (events.sort_values(["date", "source"])
+                        .drop_duplicates(subset=["date"], keep="last")
+                        .sort_values("date").reset_index(drop=True))
+
+    # 超出區間的除權息事件,若當天有減資紀錄就算已被解釋。
+    if div.empty:
+        uncovered = pd.DataFrame(columns=["date", "factor"])
+    else:
+        bad = div[~div["in_range"]]
+        explained = set(pd.to_datetime(cap["date"])) if not cap.empty else set()
+        uncovered = bad[~bad["date"].isin(explained)][["date", "factor"]]
+        uncovered = uncovered.sort_values("date").reset_index(drop=True)
+    return events, uncovered
 
 
 def adjust_prices(price: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
@@ -123,5 +232,25 @@ def adjust_prices(price: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
 
 def adjust_price_frame(stock_id: str, price: pd.DataFrame,
                        refresh: bool = False) -> pd.DataFrame:
-    """便利包裝:抓事件 + 套用還原。"""
-    return adjust_prices(price, fetch_dividend_events(stock_id, refresh=refresh))
+    """便利包裝:抓事件(除權息 + 減資)+ 套用還原。
+
+    未涵蓋的事件不會被套用,但會寫進 `out.attrs`:
+      - `adjustment_uncovered`:未涵蓋事件的 [(日期, 隱含因子)] 清單
+      - `adjustment_complete`:沒有未涵蓋事件才是 True
+      - `adjustment_sources`:實際套用的因子來源分佈
+
+    這樣「還原過了」與「還原完整」就分得開 —— 過去兩者是同一件事,因為修不了的
+    事件被靜默丟掉之後不留痕跡。
+    """
+    events, uncovered = fetch_adjustment_events(stock_id, refresh=refresh)
+    out = adjust_prices(price, events)
+    if out is None or not hasattr(out, "attrs"):
+        return out
+    out.attrs["adjustment_uncovered"] = [
+        (str(d)[:10], round(float(f), 6))
+        for d, f in zip(uncovered["date"], uncovered["factor"])
+    ] if not uncovered.empty else []
+    out.attrs["adjustment_complete"] = bool(uncovered.empty)
+    out.attrs["adjustment_sources"] = (
+        events["source"].value_counts().to_dict() if not events.empty else {})
+    return out
