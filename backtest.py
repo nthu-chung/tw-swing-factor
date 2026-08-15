@@ -33,6 +33,7 @@ import evaluation_split
 import factors
 import price_integrity
 import provenance
+import security_type
 import universe as uni
 # 相位掃描只有一份實作(evaluation/phases.py)。正式 IS/OS、S19 的 evaluate 與
 # forward_test 都走它;這裡不再自己寫 `for phase in range(...)`。
@@ -547,6 +548,18 @@ def _future_pool_provenance(pool_asof: Optional[str], snapshot: str, *,
     }
 
 
+def _security_type_provenance() -> Dict[str, Any]:
+    """證券別過濾在這次執行中擋掉了什麼(進 `summary["universe"]`)。
+
+    為什麼一定要進 summary:2026-08-15 之前 `universe._is_normal_stock` 收了
+    `market_type` 卻沒用,興櫃(381 檔通過)、DR、創新板一路混進候選池;興櫃沒有
+    ±10% 漲跌停(2026-05 單日 |ret|>10.5% 佔比是上市的 ~100 倍、最大 +57.17%),
+    偏誤方向是系統性灌高動能策略的 Sharpe。修掉之後候選池組成會變 —— 兩份結果
+    如果沒有任何欄位分得出「用的是哪一種池」,舊數字就會被誤當成同一件事的重跑。
+    """
+    return {"excluded_by_security_type": security_type.exclusion_summary()}
+
+
 def _apply_future_pool_downgrade(universe_meta: Dict[str, Any]) -> None:
     """用了未來池就不可能是正式證據 —— 就地降級,理由寫進 `evidence_note`。"""
     if not universe_meta.get("future_pool_bypassed"):
@@ -675,7 +688,11 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         industry = industry_map.get(sid, "")
         if config.EXCLUDE_FINANCE and ("金融" in industry or "保險" in industry):
             continue
-        if "ETF" in industry or "ETN" in industry or sid.startswith("00"):
+        # 引擎邊界的**次要**防線:主要判定在池建構(security_type.filter_*)。
+        # 這裡刻意不查 registry —— 引擎可能收到研究用的合成代號,查不到證券別就
+        # raise 會把「池已經篩過了」的正常路徑一起擋掉。共用同一份非普通股清單,
+        # 所以 DR/受益證券/創新板現在也擋得住(原本只認字串 "ETF"/"ETN")。
+        if security_type.is_non_common_industry(industry) or sid.startswith("00"):
             continue
 
         bundle = data.fetch_bundle(sid)
@@ -759,6 +776,7 @@ def _prepare_panel(symbols: List[str], min_score_for_trade: float,
         other_pool_asofs=universe_meta.get("candidate_pool_asof_candidates")))
     # provenance 最後蓋上:誠實標籤不可被 provider metadata 或舊欄位覆寫。
     universe_meta.update(universe_provenance)
+    universe_meta.update(_security_type_provenance())
     _apply_future_pool_downgrade(universe_meta)
     _apply_pool_asof_downgrade(universe_meta)
     if dynamic_enabled:
@@ -1193,6 +1211,9 @@ def backtest_portfolio(symbols: Optional[List[str]] = None,
             **_dynamic_universe_settings(dynamic_enabled, universe_top_n),
             **universe_provenance,
         })
+    # 證券別統計是「這份池是哪一種池」的唯一線索,兩條路徑都要蓋(external picks
+    # 路徑沒有 panel.attrs,panel 路徑則要更新成 summary 當下的最新統計)。
+    universe_info.update(_security_type_provenance())
 
     # ── 市場濾網 overlay 狀態（預設關；開啟才作用，不影響 FACTOR_WEIGHTS）──
     filter_on = bool(getattr(config, "MARKET_FILTER_ENABLED", False))

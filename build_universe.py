@@ -22,6 +22,7 @@ import requests
 
 import config
 import data as data_mod
+import security_type
 
 TWSE_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_ALL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
@@ -35,8 +36,13 @@ def _to_float(x) -> float:
 
 
 def _is_normal_4digit(code: str) -> bool:
-    """4 碼純數字普通股；排除 ETF(00開頭)、權證/特殊(>4碼或含字母)。"""
-    return len(code) == 4 and code.isdigit() and not code.startswith("00")
+    """代號**形狀**前篩(4 碼純數字、非 00 開頭)。
+
+    這只擋權證/CB/特別股與 00 開頭 ETF,**不是**證券別判定 —— DR(91xx)與興櫃的
+    代號同樣是 4 碼數字。真正的證券別白名單在 `build()` 裡用 TaiwanStockInfo 套。
+    形狀規則共用 `security_type` 的那一份,免得四個檔案各寫一次。
+    """
+    return security_type.is_plausible_equity_code(code)
 
 
 def fetch_twse_rows() -> list[dict]:
@@ -77,20 +83,27 @@ def fetch_tpex_rows() -> list[dict]:
 
 def build(top_n: int = 100, exclude_finance: bool = True) -> list[dict]:
     rows = fetch_twse_rows() + fetch_tpex_rows()
-    print(f"[universe] 全市場普通股(4碼)：{len(rows)} 檔")
+    print(f"[universe] 全市場 4 碼代號：{len(rows)} 檔")
 
-    # 用 FinMind 的 stock_info 取得產業別，過濾金融保險
-    industry_map = {}
-    if exclude_finance:
-        info = data_mod.fetch_stock_info()
-        if not info.empty:
-            industry_map = {str(r["stock_id"]).strip(): str(r.get("industry", "")).strip()
-                            for _, r in info.iterrows()}
+    # 證券別白名單:openapi 只給代號,分不出 DR / 創新板 / ETF,一定要配
+    # TaiwanStockInfo 的 type + industry_category(判定共用 `security_type`)。
+    # `on_unknown="exclude"`:這是 live 的池建構,當天剛掛牌的股票可能還沒進
+    # stock_info —— 排除並記數(印出來)比 raise 掉整次建池合理,而且方向是保守的。
+    registry = security_type.build_registry(data_mod.fetch_stock_info())
+    eligible = set(security_type.filter_ids(
+        (r["stock_id"] for r in rows),
+        registry=registry, source="build_universe.build", on_unknown="exclude"))
+    dropped = [r["stock_id"] for r in rows if r["stock_id"] not in eligible]
+    if dropped:
+        print(f"[universe] 證券別排除(興櫃/DR/創新板/ETF/未知)：{len(dropped)} 檔"
+              f"（例：{', '.join(sorted(dropped)[:8])}）")
 
     filtered = []
     n_fin = 0
     for r in rows:
-        ind = industry_map.get(r["stock_id"], "")
+        if r["stock_id"] not in eligible:
+            continue
+        ind = registry.get(r["stock_id"], ("", "", ""))[1]
         if exclude_finance and ("金融" in ind or "保險" in ind or "金control" in ind):
             n_fin += 1
             continue

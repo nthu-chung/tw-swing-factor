@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+import security_type
+
 
 TWSE_PRICE_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TWSE_FLOW_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
@@ -28,14 +30,20 @@ def _number(value) -> float:
 
 
 def _regular_equity_mask(sid: pd.Series) -> pd.Series:
-    """4 碼純數字普通股，排除 00 開頭 ETF/ETN。
+    """上市／上櫃**普通股**遮罩(證券別白名單,與回測用的是同一份判定)。
 
-    對齊 build_universe._is_normal_4digit 與 config.EXCLUDE_ETF_PREFIX0，讓 live
-    的 screen 與 market_flow_monitor 不再混入 0050/0056 這類 ETF（原本只用
-    ``\\d{4}`` 會把 00 開頭放行）。
+    原 bug(2026-08-15 修):這裡只檢查「4 碼數字、非 00 開頭」,而 DR(9105 泰金寶-DR
+    這類 91xx)與創新板股票的代號同樣是 4 碼數字 —— 光看代號永遠分不出來,一定要
+    查 TaiwanStockInfo 的 type / industry_category。判定共用 `security_type`,
+    `universe` / `pit_universe` / 這裡只能有一個答案。
+
+    `on_unknown="exclude"`:這支是 live 的研究排序工具,不是證據來源;當天剛掛牌
+    還沒進 stock_info 的代號排掉並記數(`security_type.exclusion_summary()` 看得到),
+    比中斷整份 screen 合理。方向仍是保守的 —— 不知道就不放行。
     """
-    s = sid.astype(str).str.strip()
-    return s.str.fullmatch(r"\d{4}", na=False) & ~s.str.startswith("00")
+    return security_type.eligible_mask(
+        sid, source="current_watchlist._regular_equity_mask",
+        on_unknown="exclude")
 
 
 def fetch_price_day(session: requests.Session, day: date) -> pd.DataFrame:

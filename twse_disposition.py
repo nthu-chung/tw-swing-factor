@@ -34,6 +34,7 @@ import pandas as pd
 import requests
 
 import config
+import security_type
 
 NOTICE_URL = "https://www.twse.com.tw/rwd/zh/announcement/notice"
 PUNISH_OPENAPI = "https://openapi.twse.com.tw/v1/announcement/punish"
@@ -57,9 +58,12 @@ def _roc_to_date(s: str):
 
 
 def _is_stock(code: str) -> bool:
-    """4 碼普通股,排除權證(6碼)、00 開頭 ETF。"""
-    c = str(code).strip()
-    return len(c) == 4 and c.isdigit() and not c.startswith("00")
+    """代號**形狀**前篩:排除權證(6碼)、CB(5碼)、00 開頭 ETF。
+
+    處置/注意公告只有代號,判不出證券別;形狀規則共用 `security_type` 的那一份,
+    避免「4 碼非 00」這條規則在 repo 裡長出第 N 個副本(那正是興櫃洩漏的成因)。
+    """
+    return security_type.is_plausible_equity_code(code)
 
 
 # ── (1) 歷史注意(逐月)──────────────────────────────────────────────────

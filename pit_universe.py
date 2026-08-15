@@ -45,6 +45,7 @@ import pandas as pd
 import requests
 
 import config
+import security_type
 
 TWSE_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
 TPEX_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
@@ -69,9 +70,13 @@ def _num(v) -> float:
 
 
 def _is_stock(code: str) -> bool:
-    """4 碼數字普通股;排除 00 開頭 ETF、權證(6碼)、CB(5碼)。"""
-    c = str(code).strip()
-    return len(c) == 4 and c.isdigit() and not c.startswith("00")
+    """代號**形狀**前篩:排除 00 開頭 ETF、權證(6碼)、CB(5碼)。
+
+    交易所逐日快照只有代號,分不出 DR(91xx)與創新板 —— 那是證券別問題,
+    由 `apply_security_type_filter()` 在資料進入池管線時用 TaiwanStockInfo 判定。
+    形狀規則共用 `security_type` 的那一份。
+    """
+    return security_type.is_plausible_equity_code(code)
 
 
 def _col(fields: List[str], *keys) -> Optional[int]:
@@ -215,6 +220,30 @@ def _with(session: requests.Session, headers: dict) -> requests.Session:
     return session
 
 
+def apply_security_type_filter(history: pd.DataFrame, *,
+                               source: str,
+                               on_unknown: str = "raise") -> pd.DataFrame:
+    """把逐日快照裡的非普通股濾掉(進池管線的證券別閘門)。
+
+    為什麼放在 history 這一層而不是 `fetch_*_day` 的解析迴圈:逐日快照是**逐檔
+    pickle 快取**的(`_cache/pitsnap__YYYYMMDD.pkl`),解析時篩掉只對「之後才抓的
+    日子」有效,既有快取仍帶著 DR/創新板 —— 而 `load_history_cached` 正是正式月頻
+    池的來源。放在這裡,舊快取也會在每次載入時被同一份判定濾過。
+
+    實測(凍結快照 2026-06-22 以前的逐日快照,1988 檔 4 碼代號):28 檔創新板、
+    4 檔存託憑證(9103/9105/9110/9136)與 1 檔興櫃(1780,上市後轉興櫃)原本一路
+    混進 PIT 池。興櫃基本上不在 TWSE/TPEx 的日行情端點裡,所以這條路徑的主要洩漏
+    是創新板與 DR。
+
+    `on_unknown` 預設 `"raise"`:查不到證券別的代號多半是已下市股,
+    直接排除等於在 PIT 池重新引入倖存者偏誤 —— 那要人來決定,不能靜默發生。
+    """
+    if history is None or len(history) == 0:
+        return history
+    return security_type.filter_frame(history, source=source,
+                                      on_unknown=on_unknown)
+
+
 def load_history(start, end, refresh: bool = False,
                  verbose: bool = True) -> pd.DataFrame:
     """抓 [start, end] 每個日曆日的全市場快照,合併成 long panel。
@@ -237,6 +266,7 @@ def load_history(start, end, refresh: bool = False,
     if not frames:
         return pd.DataFrame(columns=SNAPSHOT_COLUMNS)
     out = pd.concat(frames, ignore_index=True)
+    out = apply_security_type_filter(out, source="pit_universe.load_history")
     return out.sort_values(["date", "stock_id"]).reset_index(drop=True)
 
 
@@ -279,6 +309,9 @@ def load_history_cached(start: str = "2024-06-01", end: Optional[str] = None,
         raise RuntimeError(
             "[pit] 找不到任何快照快取。先跑 pit_universe.load_history(start, end) 建立。")
     out = pd.concat(frames, ignore_index=True)
+    # 舊快取是在證券別過濾上線前存的,裡面仍有 DR / 創新板 —— 在這裡濾,
+    # 正式月頻池才不會因為「快取比程式碼舊」而繼續吃到非普通股。
+    out = apply_security_type_filter(out, source="pit_universe.load_history_cached")
     if verbose:
         print(f"[pit] 快取載入 {out['date'].nunique()} 交易日 / {out['stock_id'].nunique()} 檔")
     return out.sort_values(["date", "stock_id"]).reset_index(drop=True)

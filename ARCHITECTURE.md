@@ -17,7 +17,7 @@
 限制是什麼」，不會連券商 API，也不會替使用者送出訂單。每日人工流程可以引用同一
 套規則產生警示，例如漲停、處置、全額交割，但輸出仍只是候選資料。
 
-## 七個不可協商的管線不變式
+## 八個不可協商的管線不變式
 
 這些不是風格偏好，每一條都對應一個實際發生過、會產生假結果的缺陷。改動任何一層
 之前先確認沒有破壞它們。
@@ -31,6 +31,7 @@
 | 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
 | 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss。視窗由呼叫端指定的全市場表（處置／注意）用 `data.window_cache_scope()`（戳 `w{start}_{end}`）；讀取端 `execution.tradability` 必須自己確認快取涵蓋回測區間，涵蓋不到就當缺資料 fail-closed。衍生的稽核 panel 快取（`factor_audit.panel_cache_path` / `defensive_rs.panel_path`）檔名帶快照與 `HISTORY_DAYS` | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op。同一個洞在 `data.py` 之外重演過一次：處置快取只以快照為 key，先放一份只涵蓋 2026-05-01~05-10 的檔，再請求 2021-01-01~2026-06-22 會零重抓直接回傳那一列——而這層資料決定「處置期間禁新倉」，等於把更早期間全部當成沒被處置而放行進場 |
+| 8 | **只有上市／上櫃普通股能進候選池** | `security_type.py` 的證券別白名單，由 `universe.get_universe` / `pit_universe.load_history*` / `current_watchlist` / `build_universe.build` 共用（引擎邊界 `_prepare_panel` 再擋一次非普通股產業別）；判準來自 TaiwanStockInfo 的 `type` + `industry_category` + `stock_name` 後綴，缺任一欄或出現沒見過的產業別一律 fail-closed（`on_unknown` 只有 `raise`／`exclude`，刻意沒有 `allow`）；被擋掉的數量與理由寫進 `summary["universe"]["excluded_by_security_type"]` | `universe._is_normal_stock(stock_id, market_type)` 收了 `market_type` 卻**完全沒用它**，只檢查「4 碼數字非 00 開頭」——而興櫃、DR（91xx）、創新板的代號同樣是 4 碼數字。實測凍結快照下舊規則放行 2509 檔、其中 408 檔不是上市櫃普通股（興櫃 369／創新板 28／DR 11）；PIT 逐日快照混進 28 檔創新板 + 4 檔 DR，`outputs/universe_top100.json` 也含 1 檔創新板。**興櫃沒有 ±10% 漲跌停**：2026-05 單日 |ret|>10.5% 佔比為上市 0.034%／上櫃 0.042%／興櫃 3.872%（約 100 倍），最大 +57.17%；動能因子找的正是那種標的，偏誤方向是系統性灌高 Sharpe。流動性擋不住——最大一檔興櫃日均成交值 14.75 億、全市場 ADV 排名 #188，落在 `DYNAMIC_UNIVERSE_CANDIDATE_POOL=300` 之內 |
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
@@ -93,9 +94,11 @@ jsonl（與那份指紋）是**稽核紀錄不是資料產物**，已加進 `.gi
 `params.factor_weights` 與 `factor_weights_applied`）、全部策略與投組參數（含
 `params.strategy` 的 `StrategySpec`）、PIT candidate rule／pool size／**真實**
 pool as-of、dynamic universe 設定、price dataset 與自建還原及
-`data.integrity_bypassed`、`universe.future_pool_bypassed`、漲跌停／處置／張數／
-成本設定、`evaluation` 的 IS／embargo／OS 固定日期、phase、`provenance.git_state()`
-的 git commit，以及 `eval_audit`。兩個實測過的失真點：pool as-of 曾經取
+`data.integrity_bypassed`、`universe.future_pool_bypassed`、
+`universe.excluded_by_security_type`（被證券別白名單擋掉的檔數與理由——修正證券別
+過濾會改變候選池組成，沒有這一欄就分不出兩份結果用的是哪一種池）、漲跌停／處置／
+張數／成本設定、`evaluation` 的 IS／embargo／OS 固定日期、phase、
+`provenance.git_state()` 的 git commit，以及 `eval_audit`。兩個實測過的失真點：pool as-of 曾經取
 `build_universe.load_asof(universe_top_n)`，那是**每日 top-N（100）**那份檔案，
 而真正套進歷史的是 top300——top100 的 `as_of=2026-06-20`（≤ 快照 2026-06-22，
 看起來合規）、top300 的 `as_of=2026-08-03`（未來池），同一份 metadata 的
@@ -205,6 +208,11 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
   它——台帳的 `strategy_hash` 與 manifest 的 `rules_sha256_16` 必須是同一個東西。
 - `provenance.py`：git 狀態的單一實作（回測 `summary["provenance"]` 與
   `freeze_manifest` 共用；dirty 工作樹 = 對不到 commit = 無法重現，必須看得見）。
+- `security_type.py`：「哪些證券可以進池」的**單一判定**（上市／上櫃普通股白名單，
+  排除興櫃／DR／創新板／ETF／ETN／受益證券／特別股）。`universe`、`pit_universe`、
+  `current_watchlist`、`build_universe` 與引擎邊界共用這一份；證券別缺失時
+  fail-closed（`on_unknown` 只有 `raise` / `exclude`，沒有 `allow`），排除統計進
+  `summary["universe"]["excluded_by_security_type"]`。
 - `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
   `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
 - `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked

@@ -15,6 +15,7 @@ import pandas as pd
 
 import config
 import data
+import security_type
 
 
 # ── 未來池逃生門的紀錄簿 ────────────────────────────────────────────────
@@ -77,13 +78,20 @@ def _assert_universe_pit(pool_asof: str, top_n: int) -> None:
         )
 
 
-def _is_normal_stock(stock_id: str, market_type: str) -> bool:
-    """4 碼數字、上市或上櫃普通股。"""
-    if not (len(stock_id) == 4 and stock_id.isdigit()):
-        return False
-    if config.EXCLUDE_ETF_PREFIX0 and stock_id.startswith("00"):
-        return False
-    return True
+def _is_normal_stock(stock_id: str, market_type: str, industry: str,
+                     name: str) -> bool:
+    """上市／上櫃**普通股**才放行(證券別白名單,不是代號規則)。
+
+    原 bug(2026-08-15 修):這個函式收了 `market_type` 參數卻**完全沒用它**,
+    實際只檢查「4 碼數字且不以 00 開頭」。結果 TaiwanStockInfo 的 541 檔
+    `type=emerging`(興櫃)有 381 檔通過,連同 11 檔存託憑證(DR,代號 91xx
+    同樣是 4 碼)與創新板一起混進全市場 universe。興櫃沒有 ±10% 漲跌停
+    (2026-05 實測單日 |ret|>10.5% 佔比:上市 0.034% / 上櫃 0.042% / 興櫃 3.872%,
+    最大單日 +57.17%),而動能因子找的正是那種標的 —— 偏誤方向是系統性灌高 Sharpe。
+
+    判定本身放在 `security_type`(三個池建構點共用同一份),這裡只是薄轉發。
+    """
+    return not security_type.classify(stock_id, market_type, industry, name)
 
 
 def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
@@ -94,6 +102,9 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
     - 否則：全市場上市櫃普通股。
     """
     if top_n:
+        # 這條路只是**讀回**已建好的池檔;證券別過濾在建構端
+        # (`build_universe.build`)就做掉了,不在讀取端重做 —— 讀取端再篩一次會讓
+        # 「池檔內容」與「實際用的池」不一致,as_of provenance 也就對不上。
         import build_universe
         try:
             ids = build_universe.load(top_n)
@@ -125,13 +136,17 @@ def get_universe(sample: bool = True, top_n: int = None) -> List[str]:
     if info.empty:
         raise RuntimeError("無法取得全市場股票清單；拒絕降級成 sample universe")
 
+    # 證券別過濾是 fail-closed 的:興櫃/DR/創新板/ETF 一律擋掉,判不出證券別的
+    # 直接 raise(缺 market_type 就當可交易 = 原 bug 的另一種形態)。
+    eligible = set(security_type.filter_stock_info(
+        info, source="universe.get_universe"))
+    industry_by_id = {
+        str(r.get("stock_id", "")).strip(): str(r.get("industry", "")).strip()
+        for _, r in info.iterrows()
+    }
     out = []
-    for _, row in info.iterrows():
-        sid = str(row.get("stock_id", "")).strip()
-        mtype = str(row.get("market_type", "")).strip()
-        industry = str(row.get("industry", "")).strip()
-        if not _is_normal_stock(sid, mtype):
-            continue
+    for sid in eligible:
+        industry = industry_by_id.get(sid, "")
         if config.EXCLUDE_FINANCE and ("金融" in industry or "金control" in industry):
             continue
         out.append(sid)

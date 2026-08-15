@@ -87,7 +87,10 @@ SAMPLE_UNIVERSE = [
 
 # pre-filter：排除條件
 EXCLUDE_FINANCE = True          # 排除金融保險（產業別含「金融」）
-EXCLUDE_ETF_PREFIX0 = True      # 排除 00 開頭 ETF
+# 2026-08-15 起 ETF 由 `security_type` 的證券別白名單擋掉(不論這個旗標)。
+# 保留它只是為了 freeze_manifest 的規則雜湊相容;關掉它**不會**放行 ETF ——
+# 「用 config 旗標決定要不要擋非普通股」本身就是逃生門。
+EXCLUDE_ETF_PREFIX0 = True      # 排除 00 開頭 ETF(已被證券別白名單涵蓋)
 MIN_AVG_VOLUME_LOTS = 500       # 近20日均量門檻（張），低於視為流動性不足
 
 # ── 動態 universe（long-only；只決定「當日可選哪些股票」）──────────────
