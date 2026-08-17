@@ -2,7 +2,7 @@
 """策略因子一律在稠密 panel 計算(P0-4)的離線回歸測試。
 
 原本的 bug(管線不變式 3 / AGENTS.md 陷阱 1):
-`backtest._prepare_panel` 的 `keep_non_members` 預設是 `False`,回傳的 panel 只留
+`event_backtest._prepare_panel` 的 `keep_non_members` 預設是 `False`,回傳的 panel 只留
 動態 universe 的**成員日**。`rotation_research.build_research_panel` 用了這個預設值,
 接著直接在該 panel 上做 `groupby("stock_id")` 的 `shift(1).rolling(20)` 算
 `breakout_20` / `breakout_volume_ratio` / `positive_day_share_20`。
@@ -13,7 +13,7 @@ universe 的股票,那 20 列會橫跨 60+ 個日曆日 —— 突破價位拿�
 而這三個欄位直接決定 `rotation_breakout` 的 eligible 條件與 `signal_score`。
 
 修法(本檔釘住的行為):
-1. 公開入口 `backtest.build_research_panel()` **預設稠密**,`_prepare_panel` 降為
+1. 公開入口 `event_backtest.build_research_panel()` **預設稠密**,`_prepare_panel` 降為
    引擎內部函式,並在 panel 上戳稠密度標籤。
 2. `PanelOps` 的 ts_ 類算子在標成 `members_only` 的 panel 上 fail-closed raise。
 3. `rotation_research` 先在完整個股序列上算 rolling,成員資格過濾留到選股階段 ——
@@ -30,7 +30,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import rotation_research
 from factor_engine import operators as op
 from factor_engine import panel_density
@@ -78,7 +78,7 @@ def _dense_panel() -> pd.DataFrame:
 def _build(panel: pd.DataFrame) -> pd.DataFrame:
     """跑 rotation_research 的 panel 建構,資料層全部換成合成資料(不打網路)。"""
     with (
-        mock.patch.object(rotation_research.backtest, "build_research_panel",
+        mock.patch.object(rotation_research.event_backtest, "build_research_panel",
                           return_value=panel),
         mock.patch.object(rotation_research.uni, "get_industry_map",
                           return_value={"B": "電子", "C": "電子"}),
@@ -223,27 +223,51 @@ class _PanelEnv:
     def __enter__(self):
         price = _factor_frame()
         self._patches = [
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest.uni, "get_name_map", return_value={}),
-            mock.patch.object(backtest.uni, "get_industry_map", return_value={}),
-            mock.patch.object(backtest.data, "fetch_market_index",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest.uni, "get_name_map", return_value={}),
+            mock.patch.object(event_backtest.uni, "get_industry_map", return_value={}),
+            mock.patch.object(event_backtest.data, "fetch_market_index",
                               return_value=pd.DataFrame()),
-            mock.patch.object(backtest.data, "fetch_bundle",
+            mock.patch.object(event_backtest.data, "fetch_bundle",
                               side_effect=lambda *_a, **_k: {"price": price.copy()}),
-            mock.patch.object(backtest.factors, "compute_factors",
+            mock.patch.object(event_backtest.factors, "compute_factors",
                               side_effect=lambda *_a, **_k: price.copy()),
             # 用純函式而非 MagicMock:MagicMock 有 keys(),DataFrame.apply 會誤判成
             # dict-like 的多函式聚合而炸掉。
-            mock.patch.object(backtest.factors, "composite_score",
+            mock.patch.object(event_backtest.factors, "composite_score",
                               new=lambda *_a, **_k: 80.0),
         ]
-        for p in self._patches:
-            p.start()
+        # 逐一 start,並記住「已經成功啟動」的那些。若中途某個 start() 失敗
+        # (例如目標屬性在某個環境下不存在),前面已啟動的 patch 必須立刻停掉 ——
+        # 否則 `__enter__` 拋出 → with 區塊沒進去 → `__exit__` 永遠不會執行 →
+        # 那些 patch 會**留在整個 process 裡**污染後面所有測試。
+        #
+        # 這不是理論問題:`_load_disposition_days` 被 patch 成 `lambda: {}`,
+        # 一旦洩漏,字母序在後面的 `test_tpex_disposition` 就會拿到空字典而失敗,
+        # 而且失敗訊息完全看不出跟這裡有關(2026-08-16 CI 偶發紅燈)。
+        started = []
+        try:
+            for p in self._patches:
+                p.start()
+                started.append(p)
+        except Exception:
+            for p in reversed(started):
+                p.stop()
+            raise
         return self
 
     def __exit__(self, *exc):
+        # **每一個都要停到。** 舊版一個 `p.stop()` 拋例外,後面的就全被跳過 ——
+        # 而 `_assert_price_integrity` / `_load_disposition_days` 排在清單最前面,
+        # reversed 之後最後才停,於是它們正是最容易漏掉的兩個。實測(2026-08-16
+        # CI)洩漏出去的就是這兩個,而症狀出現在字母序更後面、看起來毫不相關的
+        # `test_tpex_disposition`。
+        _stop_errors = []
         for p in reversed(self._patches):
-            p.stop()
+            try:
+                p.stop()
+            except Exception as _exc:                       # noqa: BLE001
+                _stop_errors.append(_exc)
         return False
 
 
@@ -253,7 +277,7 @@ class BuildResearchPanelDefaultsToDenseTest(unittest.TestCase):
             _pit_history(), top_n=1, min_obs=5,
         )
         with _PanelEnv():
-            return backtest.build_research_panel(
+            return event_backtest.build_research_panel(
                 ["A", "B"], dynamic_enabled=True, universe_top_n=10,
                 universe_provider=provider, **kwargs,
             )
@@ -289,7 +313,7 @@ class BuildResearchPanelDefaultsToDenseTest(unittest.TestCase):
 
     def test_public_entry_signature_defaults_to_dense(self):
         """簽章層面也要釘住:members_only 預設 False(不是誰都記得看文件)。"""
-        sig = inspect.signature(backtest.build_research_panel)
+        sig = inspect.signature(event_backtest.build_research_panel)
         self.assertIs(sig.parameters["members_only"].default, False)
         self.assertEqual(sig.parameters["members_only"].kind,
                          inspect.Parameter.KEYWORD_ONLY)
@@ -366,12 +390,60 @@ class StrategiesUseThePublicEntryTest(unittest.TestCase):
             if "_prepare_panel" in self._module_calls(path):
                 offenders.append(path.name)
         self.assertEqual(offenders, [],
-                         "strategies/ 必須用 backtest.build_research_panel()")
+                         "strategies/ 必須用 event_backtest.build_research_panel()")
 
     def test_s19_uses_build_research_panel(self):
         """正向釘住:S19 的 legacy 對照路徑走的是公開入口。"""
         names = self._module_calls(REPO_ROOT / "strategies" / "s19_chip_momentum.py")
         self.assertIn("build_research_panel", names)
+
+    def _members_only_kwarg_offenders(self, path: pathlib.Path) -> bool:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "members_only" and not (
+                        isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                    return True
+        return False
+
+    def test_strategies_may_not_ask_for_a_sparse_panel(self):
+        """堵住第二個門:AST 原本只禁 `_prepare_panel` 這個名字。
+
+        `build_research_panel(members_only=True)` 在 strategies/ 裡完全合法,
+        而它拿到的就是稀疏 panel —— 「strategies/ 結構上不可能拿到稀疏 panel」
+        因此並不成立(2026-08-16 審查)。稀疏 panel 只有做當日橫斷面統計時才對,
+        策略單元沒有這種需求。
+        """
+        offenders = [p.name for p in sorted((REPO_ROOT / "strategies").glob("*.py"))
+                     if self._members_only_kwarg_offenders(p)]
+        self.assertEqual(offenders, [],
+                         "strategies/ 不得要求稀疏 panel(members_only=True)")
+
+    def test_merge_sites_preserve_the_density_tag(self):
+        """merge 一定丟 attrs → 閘門靜默消失。已知站點必須走 preserving_merge。"""
+        dense = panel_density.tag(
+            pd.DataFrame({"date": pd.to_datetime(["2026-01-05"]),
+                          "stock_id": ["A"], "close": [10.0]}),
+            panel_density.DENSE)
+        right = pd.DataFrame({"date": pd.to_datetime(["2026-01-05"]),
+                              "stock_id": ["A"], "extra": [1.0]})
+        plain = dense.merge(right, on=["date", "stock_id"], how="left")
+        self.assertIsNone(panel_density.density_of(plain),
+                          "前提:pandas 的 merge 會丟掉 attrs")
+        kept = panel_density.preserving_merge(
+            dense, right, on=["date", "stock_id"], how="left")
+        self.assertEqual(panel_density.density_of(kept), panel_density.DENSE)
+
+    def test_live_signal_light_panel_is_tagged_dense(self):
+        """S19 的**正式** PIT 路徑不經過 build_research_panel,標籤要自己貼對。"""
+        import inspect
+
+        import live_signal
+        src = inspect.getsource(live_signal.build_light_panel)
+        self.assertIn("panel_density", src,
+                      "build_light_panel 必須明確標稠密度,否則算子閘門形同不存在")
 
 
 if __name__ == "__main__":

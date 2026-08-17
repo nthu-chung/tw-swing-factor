@@ -145,6 +145,26 @@ KNOWN_CONSUMED_HOLDOUTS: Tuple[ConsumedHoldout, ...] = (
         evidence="STRATEGY_REGISTRY.md 的 S19 條目(證據等級 blocked)",
         declared_at="2026-08-15",
     ),
+    ConsumedHoldout(
+        # 策略本身已撤出公開 repo;**這筆消耗紀錄不能跟著走** ——
+        # 台帳全域只有一本,否則換個 repo 就能把「這段看過了」洗掉。
+        strategy="h2_inst_persistence",
+        # 2026-08-16 的 forward 檢驗誤用 `run_golden_path()` 而**沒有帶
+        # holdout_protocol**,於是那一次 run 在 2024-11-19 ~ 2026-08-14 的完整
+        # 區間上計分 —— 把 H2 的 locked OS 整段掃過去了。授權從未發生,台帳也
+        # 沒有這筆揭露,所以只能在這裡宣告既成消耗。
+        seen_start="2024-11-19",
+        seen_end="2026-08-14",
+        os_window=("2025-11-20", "2026-06-22"),
+        status="consumed_unauthorized_traversal",
+        reason=(
+            "forward 檢驗為了取 2026-06-23 之後的區間,直接呼叫 run_golden_path "
+            "而未帶 holdout_protocol(segment=None),等於繞過資料閘門讓策略看過"
+            "整段 OS。這不是授權揭露:沒有 freeze、沒有 owner 授權、沒有進台帳"
+        ),
+        evidence="outputs/2026-08-16 的 forward run(audit.json 的 segment=None)",
+        declared_at="2026-08-16",
+    ),
 )
 
 

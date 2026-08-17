@@ -23,10 +23,10 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 from _offline_registry import common_stocks
-from strategies.position_policy import (
+from strategy_kit.position_policy import (
     RegimeProvenance,
     RegimeState,
     StrategyPositionPolicy,
@@ -90,14 +90,14 @@ def _run(prices, signals, policy, *, disposition=None, regime_by_date=None,
     with (
         # policy 路徑的 signal_frame 也過證券別閘門(fail-closed),要宣告證券別。
         common_stocks(*symbols),
-        mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
-        mock.patch.object(backtest, "_load_disposition_days",
+        mock.patch.object(event_backtest, "_assert_price_integrity", lambda *a, **k: None),
+        mock.patch.object(event_backtest, "_load_disposition_days",
                           lambda *a, **k: dict(disposition or {})),
-        mock.patch.object(backtest.data, "fetch_price",
+        mock.patch.object(event_backtest.data, "fetch_price",
                           side_effect=lambda sid, *a, **k: prices[sid].copy()),
         mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
     ):
-        return backtest.backtest_portfolio(
+        return event_backtest.backtest_portfolio(
             symbols=symbols, sample=False,
             start_date=str(all_dates[0])[:10],
             end_date=str(end_date or all_dates[-1])[:10],
@@ -123,12 +123,12 @@ class LegacyParityTest(unittest.TestCase):
         picks = {d: [("1101", 1.0, "1101")] for d in dates[:-1]}
         with (
             common_stocks("1101"),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *a, **k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *a, **k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *a, **k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price",
                               return_value=prices["1101"].copy()),
         ):
-            result = backtest.backtest_portfolio(
+            result = event_backtest.backtest_portfolio(
                 symbols=["1101"], sample=False, rebalance_every=5, top_n=1,
                 picks_by_date=picks, static_universe_comparator=True)
         self.assertEqual(sorted(result), ["equity_curve", "summary", "trades"])
@@ -137,7 +137,7 @@ class LegacyParityTest(unittest.TestCase):
 
     def test_policy_and_picks_by_date_are_mutually_exclusive(self):
         with self.assertRaises(ValueError):
-            backtest.backtest_portfolio(
+            event_backtest.backtest_portfolio(
                 symbols=["1101"], sample=False, picks_by_date={"x": []},
                 signal_frame=pd.DataFrame({"date": [], "stock_id": [], "rank": []}),
                 strategy_position_policy=_one_slot_policy(),
@@ -205,13 +205,13 @@ class RiskStopTest(unittest.TestCase):
     def test_close_confirmed_stop_fills_at_next_open_even_on_a_gap(self):
         """跳空時用實際開盤價,不回填理論停損價(規格 §3.4)。"""
         dates = list(pd.bdate_range("2026-01-05", periods=8))
-        # dates[3] 收盤 -10% 觸發停損確認;dates[4] 開盤再跳空到 85。
+        # dates[3] 收盤 -22% 觸發**累積**停損確認;dates[4] 開盤再跳空到 75。
         prices = {"1101": _flat(dates, overrides={
-            dates[3]: (99.0, 99.5, 89.0, 90.0),
-            dates[4]: (85.0, 86.0, 84.0, 85.5),
-            dates[5]: (85.0, 86.0, 84.0, 85.5),
-            dates[6]: (85.0, 86.0, 84.0, 85.5),
-            dates[7]: (85.0, 86.0, 84.0, 85.5),
+            dates[3]: (90.0, 90.5, 77.0, 78.0),
+            dates[4]: (75.0, 76.0, 74.0, 75.5),
+            dates[5]: (75.0, 76.0, 74.0, 75.5),
+            dates[6]: (75.0, 76.0, 74.0, 75.5),
+            dates[7]: (75.0, 76.0, 74.0, 75.5),
         })}
         signals = _signals({dates[0]: {"1101": 1}})
         result = _run(prices, signals, _one_slot_policy())
@@ -219,7 +219,7 @@ class RiskStopTest(unittest.TestCase):
         stop = trades[trades["exit_reason"] == "risk_stop"]
         self.assertEqual(len(stop), 1)
         self.assertEqual(pd.Timestamp(stop.iloc[0]["exit_date"]), dates[4])
-        self.assertAlmostEqual(float(stop.iloc[0]["exit_price"]), 85.0)
+        self.assertAlmostEqual(float(stop.iloc[0]["exit_price"]), 75.0)
 
     def test_regime_risk_off_creates_exit_intent_for_every_holding(self):
         """regime 的測試資料於 2026-08-15 改成帶 provenance 的 `RegimeState`。
@@ -305,7 +305,7 @@ class ConcentrationCapTest(unittest.TestCase):
 class SignalFrameValidationTest(unittest.TestCase):
     def test_missing_columns_fail_closed(self):
         with self.assertRaises(ValueError):
-            backtest._prepare_signal_snapshots(
+            event_backtest._prepare_signal_snapshots(
                 pd.DataFrame({"date": [pd.Timestamp("2026-01-05")],
                               "stock_id": ["1101"]}))
 
@@ -314,7 +314,7 @@ class SignalFrameValidationTest(unittest.TestCase):
             "date": [pd.Timestamp("2026-01-05")] * 2,
             "stock_id": ["1101", "1101"], "rank": [1, 5]})
         with self.assertRaises(ValueError):
-            backtest._prepare_signal_snapshots(frame)
+            event_backtest._prepare_signal_snapshots(frame)
 
 
 class EngineFailClosedTest(unittest.TestCase):
@@ -368,13 +368,13 @@ class StaleDelistFailClosedTest(unittest.TestCase):
         picks = {d: [("1101", 1.0, "1101")] for d in dates}
         with (
             common_stocks("1101", "1102"),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *a, **k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *a, **k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *a, **k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *a, **k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda sid, *a, **k: prices[sid].copy()),
             mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=["1101", "1102"], sample=False, rebalance_every=5, top_n=1,
                 start_date=str(dates[0])[:10], end_date=str(dates[-1])[:10],
                 picks_by_date=picks, static_universe_comparator=True)
@@ -421,9 +421,9 @@ class ExitPendingDefaultTest(unittest.TestCase):
     但兩個旗標的安全方向相反 —— `snapshot_complete=False` 的效果是**不賣**
     (保守),`exit_pending=True` 的效果卻是**不停損**(漏掉風控)。§5 的最小
     holdings 契約又不含這一欄,所以照契約呼叫 `policy.decide()` 的人,手上跌超過
-    18%(= hard_stop 8% + 一根跌停)的部位一律得到 `hold`,一筆退出意圖都不會產生:
+    30%(= hard_stop 20% + 一根跌停)的部位一律得到 `hold`,一筆退出意圖都不會產生:
 
-        entry 100 / close 75(-25%),不帶 exit_pending
+        entry 100 / close 70(-30%),不帶 exit_pending
         舊行為 → action=hold, reason=stop_breached_earlier_exit_pending_assumed
         新行為 → action=exit, reason=risk_stop
 
@@ -435,7 +435,7 @@ class ExitPendingDefaultTest(unittest.TestCase):
     def _decide(self, holding_extra):
         policy = StrategyPositionPolicy(StrategyPositionPolicySpec())
         row = {"stock_id": "1101", "weight": 0.10, "entry_price": 100.0,
-               "close": 75.0, "holding_days": 20}
+               "close": 65.0, "holding_days": 20}
         row.update(holding_extra)
         return policy, policy.decide(
             as_of=pd.Timestamp("2026-01-09"),
@@ -456,10 +456,10 @@ class ExitPendingDefaultTest(unittest.TestCase):
     def test_minimum_holdings_contract_alone_is_enough_to_stop(self):
         """§5 的最小 holdings 契約(五個欄位)必須足以觸發 hard stop。
 
-        舊行為下 -19% / -25% / -50% 全都回 `hold`;缺 `exit_pending` 的呼叫端
+        舊行為下 -25% / -35% / -50% 全都回 `hold`;缺 `exit_pending` 的呼叫端
         等於整條停損失效。
         """
-        for close in (81.0, 75.0, 50.0):
+        for close in (75.0, 65.0, 50.0):
             with self.subTest(close=close):
                 _, d = self._decide({"close": close})
                 action = d.actions.set_index("stock_id").loc["1101"]
@@ -485,10 +485,10 @@ class ExitPendingDefaultTest(unittest.TestCase):
             policy._state["n_stop_repeated_unknown_exit_pending"], 0)
 
     def test_fresh_cross_is_unaffected_by_the_default(self):
-        """一般跨越日(-9%,還沒到 stop+跌停)本來就與 `exit_pending` 無關。"""
+        """一般跨越日(-25%,還沒到 stop+跌停)本來就與 `exit_pending` 無關。"""
         for extra in ({}, {"exit_pending": True}, {"exit_pending": False}):
             with self.subTest(extra=extra):
-                policy, d = self._decide({"close": 91.0, **extra})
+                policy, d = self._decide({"close": 75.0, **extra})
                 action = d.actions.set_index("stock_id").loc["1101"]
                 self.assertEqual(action["action"], "exit")
                 self.assertEqual(action["reason_code"], "risk_stop")

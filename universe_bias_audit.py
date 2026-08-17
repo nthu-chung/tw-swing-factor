@@ -35,7 +35,7 @@ import pandas as pd
 
 import config
 import data
-import universe as uni
+from universes import legacy_static as uni
 
 
 WIN = 20  # 排名用的滾動視窗（交易日），對齊 DYNAMIC_UNIVERSE_LOOKBACK

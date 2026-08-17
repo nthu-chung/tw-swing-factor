@@ -71,7 +71,7 @@ import config
 import provenance
 from evaluation import holdout as holdout_ledger
 from evaluation.splits import build_evaluation_split
-from strategies.spec import KNOWN_STRATEGIES, StrategySpec, load_spec
+from strategy_kit.spec import KNOWN_STRATEGIES, StrategySpec, load_spec
 
 # manifest 格式版本。schema < 3 的 manifest 缺策略參數、大半 load-bearing 設定,
 # 或缺 holdout 邊界,屬 legacy/不完整,forward 必須拒用(見 validate_manifest)。

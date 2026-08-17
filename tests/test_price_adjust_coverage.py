@@ -26,7 +26,7 @@ import pandas as pd
 
 import config
 import data
-import price_adjust
+from data import price_adjust
 
 SNAP = "2026-06-22"
 
@@ -141,6 +141,103 @@ class AdjustmentCoverageTest(unittest.TestCase):
         self.assertTrue(api.called, "舊格式必須重抓,不能沿用被過濾過的結果")
         self.assertIn("in_range", out.columns)
 
+
+
+class RawColumnContractTest(unittest.TestCase):
+    """`PRICE_SCALE_CONTRACT.md` 鐵則一的第一步:as-traded 價格必須另存一份。
+
+    還原價是「今日等值」單位,而台股有一整組規則看**絕對價位**:tick 價格帶、
+    整張 1000 股的資金門檻、20 元最低手續費、±10% 漲跌停。實測 2327 在
+    2024-06-24 買一張的真實成本是 759,000 元,用還原價算只要 147,245 元
+    (5.15 倍);12 檔樣本裡有 2 檔還原後落進不同的 tick 帶。少了 `*_raw`,
+    執行層只能拿還原價去判這些規則。
+    """
+
+    def _price(self):
+        return pd.DataFrame({
+            "date": pd.bdate_range("2025-08-01", periods=6),
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+            "volume": 1000, "turnover": 100000.0,
+        })
+
+    def _events(self):
+        return pd.DataFrame({"date": [pd.Timestamp("2025-08-06")],
+                             "factor": [0.5], "source": ["dividend"]})
+
+    def test_raw_columns_keep_the_as_traded_price(self):
+        out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertTrue((out["close_raw"] == 100.0).all())
+
+    def test_anchor_latest_bar_puts_the_true_price_at_the_end(self):
+        """back-adjusted:最後一根 = 今天的真實價,事件之前被縮小。"""
+        with mock.patch.object(config, "PRICE_ADJUST_ANCHOR",
+                               price_adjust.ANCHOR_LATEST_BAR):
+            out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertAlmostEqual(float(out.iloc[0]["close"]), 50.0)
+        self.assertAlmostEqual(float(out.iloc[-1]["close"]), 100.0)
+
+    def test_anchor_series_start_puts_the_true_price_at_the_beginning(self):
+        """forward-adjusted(預設):起點 = 真實價,事件之後被放大。"""
+        with mock.patch.object(config, "PRICE_ADJUST_ANCHOR",
+                               price_adjust.ANCHOR_SERIES_START):
+            out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertAlmostEqual(float(out.iloc[0]["close"]), 100.0)
+        self.assertAlmostEqual(float(out.iloc[-1]["close"]), 200.0)
+
+    def test_both_anchors_give_identical_returns(self):
+        """換錨只差一個常數倍率 —— 報酬必須完全相同,策略損益不受影響。"""
+        rets = {}
+        for anchor in (price_adjust.ANCHOR_LATEST_BAR,
+                       price_adjust.ANCHOR_SERIES_START):
+            with mock.patch.object(config, "PRICE_ADJUST_ANCHOR", anchor):
+                out = price_adjust.adjust_prices(self._price(), self._events())
+            rets[anchor] = out["close"].pct_change().dropna().round(12).tolist()
+        self.assertEqual(rets[price_adjust.ANCHOR_LATEST_BAR],
+                         rets[price_adjust.ANCHOR_SERIES_START])
+
+    def test_a_new_event_never_rewrites_earlier_adjusted_values(self):
+        """凍結績效可重現的唯一來源:新事件不得回頭改動舊值。"""
+        later = pd.DataFrame({
+            "date": [pd.Timestamp("2025-08-06"), pd.Timestamp("2025-08-08")],
+            "factor": [0.5, 0.9], "source": ["dividend", "dividend"]})
+        with mock.patch.object(config, "PRICE_ADJUST_ANCHOR",
+                               price_adjust.ANCHOR_SERIES_START):
+            before = price_adjust.adjust_prices(self._price(), self._events())
+            after = price_adjust.adjust_prices(self._price(), later)
+        pd.testing.assert_series_equal(
+            before["close"].iloc[:5], after["close"].iloc[:5])
+
+    def test_unknown_anchor_fails_closed(self):
+        with mock.patch.object(config, "PRICE_ADJUST_ANCHOR", "yolo"):
+            with self.assertRaises(ValueError):
+                price_adjust.adjust_prices(self._price(), self._events())
+
+    def test_adj_factor_price_is_the_multiplier_from_raw_to_adjusted(self):
+        """契約:adjusted == raw × adj_factor_price(vwap 換算與股數換算都靠它)。"""
+        out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertTrue(
+            ((out["close_raw"] * out["adj_factor_price"] - out["close"]).abs()
+             < 1e-9).all())
+
+    def test_volume_and_turnover_are_never_adjusted(self):
+        out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertTrue((out["volume"] == 1000).all())
+        self.assertTrue((out["turnover"] == 100000.0).all())
+
+    def test_price_and_share_factors_are_separate_columns(self):
+        """CRSP 的 CFACPR/CFACSHR 在 spin-off/rights 時不相等,不可共用一欄。"""
+        out = price_adjust.adjust_prices(self._price(), self._events())
+        self.assertIn("adj_factor_price", out.columns)
+        self.assertIn("adj_factor_share", out.columns)
+        # 現金股利不調量 → share 因子恆為 1(CRSP / zipline 慣例)
+        self.assertTrue((out["adj_factor_share"] == 1.0).all())
+
+    def test_no_events_still_emits_the_contract_columns(self):
+        out = price_adjust.adjust_prices(self._price(),
+                                         pd.DataFrame(columns=["date", "factor"]))
+        for col in ("close_raw", "adj_factor_price", "adj_factor_share"):
+            self.assertIn(col, out.columns)
+        self.assertTrue((out["close_raw"] == out["close"]).all())
 
 if __name__ == "__main__":
     unittest.main()

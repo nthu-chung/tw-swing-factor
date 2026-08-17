@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 
 import data
-from dynamic_universe import add_membership
+from universes.dynamic import add_membership
 
 
 def _panel(rows):

@@ -13,8 +13,9 @@ from unittest import mock
 
 import pandas as pd
 
-import policy_research_run as prr
-from strategies.position_policy import (
+import research.golden_path as prr   # 實作已搬到 research 層;
+                                     # policy_research_run 只剩 re-export
+from strategy_kit.position_policy import (
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
 )
@@ -31,10 +32,19 @@ class _FakeUniverse:
 
 
 def _frame():
-    days = list(pd.bdate_range("2026-01-05", periods=15))[::5]
+    """一份**合格**的 SignalFrame。
+
+    2026-08-16 起外部訊號也要過 `validate_signal_frame`(§3.1:不為外部訊號開
+    比較寬鬆的第二條路),所以這裡補上 `ranking_universe_count` —— 原本缺這一欄
+    代表「當日排名母體有多大」無從查證,正是 validator 要擋的東西。
+    斷言完全沒有改動,只有 fixture 補齊到契約要求的欄位。
+    """
+    # strategy 的 make_signals 是日頻；runner 自己負責選五個 weekly phase。
+    days = list(pd.bdate_range("2026-01-05", periods=30))
     return pd.DataFrame(
         [{"date": d, "stock_id": "A", "rank": 1, "raw_score": 1.0,
-          "eligible": True, "snapshot_complete": True} for d in days])
+          "eligible": True, "snapshot_complete": True,
+          "ranking_universe_count": 1} for d in days])
 
 
 def _summary(**over):
@@ -64,21 +74,34 @@ def _summary(**over):
             base[k] = {**base[k], **v}
         else:
             base[k] = v
-    return {"summary": base}
+    days = pd.bdate_range("2026-01-05", periods=20)
+    return {
+        "summary": base,
+        "equity_curve": pd.DataFrame({"date": days,
+                                      "equity": [1_000_000.0] * len(days)}),
+        "trades": pd.DataFrame(),
+        "decision_log": [],
+        "order_log": [],
+    }
 
 
 class RequestAssemblyTest(unittest.TestCase):
     def test_pit_universe_is_used_by_default(self):
         """呼叫端不自己湊 symbols —— 那正是舊研究腳本靜默退回單日靜態池的原因。"""
         uni = _FakeUniverse()
-        with mock.patch.object(prr.backtest, "backtest_portfolio",
+        with mock.patch.object(prr.event_backtest, "backtest_portfolio",
                                return_value=_summary()) as bp:
-            prr.run_policy_backtest(signal_frame=_frame(), universe=uni)
+            result = prr.run_signal_frame_backtest(
+                signal_frame=_frame(), universe=uni)
         self.assertEqual(uni.calls, 1)
-        kw = bp.call_args.kwargs
-        self.assertEqual(kw["symbols"], ["A", "B"])
-        self.assertIsNotNone(kw["universe_provider"])
-        self.assertFalse(kw["sample"])
+        self.assertEqual(bp.call_count, 5)
+        self.assertEqual(len(result["phase_results"]), 5)
+        self.assertIn(result["representative_phase"], range(5))
+        for call in bp.call_args_list:
+            kw = call.kwargs
+            self.assertEqual(kw["symbols"], ["A", "B"])
+            self.assertIsNotNone(kw["universe_provider"])
+            self.assertFalse(kw["sample"])
 
     def test_capital_scenarios_are_immutable_request_parameters(self):
         seen = []
@@ -87,29 +110,34 @@ class RequestAssemblyTest(unittest.TestCase):
             seen.append((kwargs["initial_capital"], kwargs["order_size_mode"]))
             return _summary()
 
-        with mock.patch.object(prr.backtest, "backtest_portfolio",
+        with mock.patch.object(prr.event_backtest, "backtest_portfolio",
                                side_effect=_fake):
-            prr.run_policy_backtest(signal_frame=_frame(),
+            prr.run_signal_frame_backtest(signal_frame=_frame(),
                                     universe=_FakeUniverse(), capital="research")
-            prr.run_policy_backtest(signal_frame=_frame(),
+            prr.run_signal_frame_backtest(signal_frame=_frame(),
                                     universe=_FakeUniverse(), capital="personal")
-        self.assertEqual(seen, [(1_000_000.0, "research_fractional"),
-                                (500_000.0, "odd_lot_proxy")])
+        self.assertEqual(seen[:5], [(1_000_000.0, "research_fractional")] * 5)
+        self.assertEqual(seen[5:], [(500_000.0, "odd_lot_proxy")] * 5)
 
     def test_unknown_capital_scenario_fails_closed(self):
         with self.assertRaises(ValueError):
-            prr.run_policy_backtest(signal_frame=_frame(),
+            prr.run_signal_frame_backtest(signal_frame=_frame(),
                                     universe=_FakeUniverse(), capital="yolo")
 
-    def test_policy_is_passed_through(self):
+    def test_policy_spec_is_cloned_for_each_phase(self):
         pol = StrategyPositionPolicy(StrategyPositionPolicySpec(
             max_slots=5, risk_on_slots=5, caution_slots=2,
             slot_weight=0.20, single_name_cap=0.30))
-        with mock.patch.object(prr.backtest, "backtest_portfolio",
+        with mock.patch.object(prr.event_backtest, "backtest_portfolio",
                                return_value=_summary()) as bp:
-            prr.run_policy_backtest(signal_frame=_frame(),
+            prr.run_signal_frame_backtest(signal_frame=_frame(),
                                     universe=_FakeUniverse(), policy=pol)
-        self.assertIs(bp.call_args.kwargs["strategy_position_policy"], pol)
+        phase_policies = [c.kwargs["strategy_position_policy"]
+                          for c in bp.call_args_list]
+        self.assertEqual(len(phase_policies), 5)
+        self.assertEqual(len({id(p) for p in phase_policies}), 5)
+        self.assertTrue(all(p is not pol for p in phase_policies))
+        self.assertTrue(all(p.spec == pol.spec for p in phase_policies))
 
 
 class AuditSummaryTest(unittest.TestCase):

@@ -12,7 +12,7 @@ import unittest
 
 import pandas as pd
 
-from evaluation_split import build_evaluation_split
+from evaluation.splits import build_evaluation_split
 
 
 class EvaluationSplitTest(unittest.TestCase):

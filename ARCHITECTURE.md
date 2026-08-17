@@ -28,11 +28,11 @@
 | 2 | **每日 universe 只用截至訊號日的資料** | `dynamic_universe.add_membership`（ADV20 rolling 含當日、不含未來） | 成員資格偷看未來 |
 | 3 | **因子在稠密 panel 上算** | 公開入口 `backtest.build_research_panel()`（**預設稠密**；`members_only=True` 只給純橫斷面統計，要顯式指定）。`_prepare_panel` 降為引擎內部函式並在 `panel.attrs["panel_density"]` 戳稠密度；`factor_engine/panel_density.py` 提供 `require_dense()`，`PanelOps` 的 `ts_*` 在 `members_only` panel 上 fail-closed raise（`cs_*`／`group_*` 照常放行）。成員過濾延到選股階段套 `in_dynamic_universe`；`strategies/` 禁止直接用 `_prepare_panel`（`tests/test_dense_panel_factors.py` 以 AST 掃描釘住） | `ts_` 的「20 列」橫跨 60+ 個日曆日，算子全面失真。實測 `rotation_research` 用預設稀疏 panel 算 `breakout_20`／`breakout_volume_ratio`／`positive_day_share_20`：突破訊號翻轉約 3%、命中率相對灌水約 +9.6%，而這三欄直接決定 `rotation_breakout` 的 eligible 與 `signal_score` |
 | 4 | **field / operator 分界：有視窗才是 operator** | `factor_engine/data_fields.py` vs `factor_engine/operators.py` | 視窗長度被寫死，搜尋空間只涵蓋教科書版本 |
-| 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
+| 5 | **執行層是事件驅動，不是 `weights × returns`** | `backtest/event_backtest.py` 事件迴圈＋`execution/` | 表達不了路徑相依：一字漲停買不到、MA 跌破次日開盤才成交、處置期間禁新倉 |
 | 6 | **價格完整性 fail-closed** | `backtest._assert_price_integrity` | 公司行動斷點被當成真實報酬（實測：-73.6% 的假 hard-stop，並改變「最佳」退場規則的選擇） |
-| 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss。視窗由呼叫端指定的全市場表（處置／注意）用 `data.window_cache_scope()`（戳 `w{start}_{end}`）；讀取端 `execution.tradability` 必須自己確認快取涵蓋回測區間，涵蓋不到就當缺資料 fail-closed。衍生的稽核 panel 快取（`factor_audit.panel_cache_path` / `defensive_rs.panel_path`）檔名帶快照與 `HISTORY_DAYS` | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op。同一個洞在 `data.py` 之外重演過一次：處置快取只以快照為 key，先放一份只涵蓋 2026-05-01~05-10 的檔，再請求 2021-01-01~2026-06-22 會零重抓直接回傳那一列——而這層資料決定「處置期間禁新倉」，等於把更早期間全部當成沒被處置而放行進場 |
+| 7 | **快取 key 必須含所有影響內容的輸入** | `data.CacheScope`（dataset／stock_id／快照結束日／範圍戳；歷史型資料集少了範圍維度就 raise），舊格式檔一律視為 miss。視窗由呼叫端指定的全市場表（處置／注意）用 `data.window_cache_scope()`（戳 `w{start}_{end}`）；讀取端 `execution.tradability` 必須自己確認快取涵蓋回測區間，涵蓋不到就當缺資料 fail-closed。衍生的稽核 panel 快取（`factor_audit.panel_cache_path` / `defensive_rs.panel_path`）檔名帶快照與 `HISTORY_DAYS` | 實測 `fetch_price('2330')` 與 `fetch_price('2330', history_days=2000)` 命中同一檔、回傳相同 482 列且零警告——「抓更長歷史（含空頭段）」變成靜默 no-op。同一個洞在 `data/__init__.py` 之外重演過一次：處置快取只以快照為 key，先放一份只涵蓋 2026-05-01~05-10 的檔，再請求 2021-01-01~2026-06-22 會零重抓直接回傳那一列——而這層資料決定「處置期間禁新倉」，等於把更早期間全部當成沒被處置而放行進場 |
 | 8 | **只有上市／上櫃普通股能進候選池** | `security_type.py` 的證券別白名單，由 `universe.get_universe` / `pit_universe.load_history*` / `current_watchlist` / `build_universe.build` 共用（引擎邊界 `_prepare_panel` 再擋一次非普通股產業別）；判準來自 TaiwanStockInfo 的 `type` + `industry_category` + `stock_name` 後綴，缺任一欄或出現沒見過的產業別一律 fail-closed（`on_unknown` 只有 `raise`／`exclude`，刻意沒有 `allow`）；被擋掉的數量與理由寫進 `summary["universe"]["excluded_by_security_type"]` | `universe._is_normal_stock(stock_id, market_type)` 收了 `market_type` 卻**完全沒用它**，只檢查「4 碼數字非 00 開頭」——而興櫃、DR（91xx）、創新板的代號同樣是 4 碼數字。實測凍結快照下舊規則放行 2509 檔、其中 408 檔不是上市櫃普通股（興櫃 369／創新板 28／DR 11）；PIT 逐日快照混進 28 檔創新板 + 4 檔 DR，`outputs/universe_top100.json` 也含 1 檔創新板。**興櫃沒有 ±10% 漲跌停**：2026-05 單日 |ret|>10.5% 佔比為上市 0.034%／上櫃 0.042%／興櫃 3.872%（約 100 倍），最大 +57.17%；動能因子找的正是那種標的，偏誤方向是系統性灌高 Sharpe。流動性擋不住——最大一檔興櫃日均成交值 14.75 億、全市場 ADV 排名 #188，落在 `DYNAMIC_UNIVERSE_CANDIDATE_POOL=300` 之內 |
-| 9 | **基準與個股序列同報酬口徑（含息 vs 不含息）** | `return_convention.py` 是唯一判定入口（由 `PRICE_DATASET` + `SELF_ADJUST_PRICES` 推導個股口徑，再決定基準指數：含息 → `TaiwanStockTotalReturnIndex`、不含息 → `TaiwanStockPrice`/TAIEX）；`summary["return_convention"]` 記兩條序列各自的口徑，不一致直接 raise（`config.BENCHMARK_INDEX_DATASET` 顯式指定不一致的基準也 raise）；`rotation_research` 的基準與 alpha/beta 走 `fetch_benchmark_index()`，含息指數取不到就 raise，**不退回價格指數** | 個股在自建／官方還原價下是含息序列（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻是 TAIEX 價格指數 → 差額全部變成假超額。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677 vs 含息 45.23%／1.790，**2.86pp/年、Sharpe 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。量級剛好落在「看起來像小 alpha」的區間，只印警告會被捲過去 |
+| 9 | **基準與個股序列同報酬口徑（含息 vs 不含息）** | `data/return_convention.py` 是唯一判定入口（由 `PRICE_DATASET` + `SELF_ADJUST_PRICES` 推導個股口徑，再決定基準指數：含息 → `TaiwanStockTotalReturnIndex`、不含息 → `TaiwanStockPrice`/TAIEX）；`summary["return_convention"]` 記兩條序列各自的口徑，不一致直接 raise（`config.BENCHMARK_INDEX_DATASET` 顯式指定不一致的基準也 raise）；`rotation_research` 的基準與 alpha/beta 走 `fetch_benchmark_index()`，含息指數取不到就 raise，**不退回價格指數** | 個股在自建／官方還原價下是含息序列（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻是 TAIEX 價格指數 → 差額全部變成假超額。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677 vs 含息 45.23%／1.790，**2.86pp/年、Sharpe 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。量級剛好落在「看起來像小 alpha」的區間，只印警告會被捲過去 |
 
 評估邊界另有兩條，屬於 `evaluation/`：IS／embargo／OS 由 `evaluation/splits.py`
 單一入口建立且互不重疊（未來標籤視窗 > embargo 時拒跑）；每段**跑滿所有等價再平衡
@@ -116,7 +116,7 @@ print 一行就放行，現在會記事件並把 `formal_evidence_eligible` 降�
 
 第三條屬於 freeze／forward：**凍結必須凍到全部規則**。強制點是
 `freeze_manifest.py`（config 的大寫參數預設全凍，排除要寫進 `NOT_FROZEN` 附理由）
-加上 `strategies/spec.py` 的 `StrategySpec`（訊號視窗／權重與持股數／再平衡天數／
+加上 `strategy_kit/spec.py` 的 `StrategySpec`（訊號視窗／權重與持股數／再平衡天數／
 MA 出場／停損）。沒有它會怎樣：手維護的 `FROZEN_KEYS` 只列 34 個而 config 有 92 個，
 `BT_ORDER_SIZE_MODE`、漲跌停／處置模型、IS-OS／embargo 全部漏凍；S19 的 10 檔／
 20 日更是在 manifest 產生**之後**才被寫進 config，改成 3 檔／5 日 `rules_sha256_16`
@@ -173,7 +173,7 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 > ⚠️ 這是**目標**狀態，不是現況。目前實際存在的套件只有 `universes/`、
 > `factor_engine/`、`strategies/`、`execution/`、`evaluation/`；
 > `market_data/`、`portfolio/`、`backtesting/`、`analyst_research/`、`research/`
-> **尚未建立**，其責任目前仍散在根目錄的 `data.py`、`backtest.py` 與研究腳本裡。
+> **尚未建立**，其責任目前仍散在根目錄的 `data/__init__.py`、`backtest/event_backtest.py` 與研究腳本裡。
 > 下一節列出已完成的部分與搬遷順序。
 
 | 模組 | 唯一責任 | 不應包含 |
@@ -224,14 +224,14 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
   排除統計是**每次 backtest request 自己的** `ExclusionCollector`
   （`exclusion_scope()` 用 contextvars 綁定），不是 process 全域累積；
   `exclusion_summary()` 降級成純觀察用途，不得當 summary 數字的來源。
-- `strategies/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
+- `strategy_kit/spec.py`：可凍結的 `StrategySpec`（策略的全部可調參數）與策略註冊表；
   `freeze_manifest.py` 凍的就是它，`forward_test.py` 套回去的也是它。
 - `strategies/s19_chip_momentum.py`：S19 策略單元；證據狀態仍是 blocked
   （參數改由 `SPEC` 提供，舊模組常數只是它的投影）。
 - `execution/tradability.py`：回測使用的一字漲跌停與處置禁倉資料載入。
 - `execution/taiwan_rules.py`：普通股 tick、精確 10% 漲跌停與首五日例外介面。
 - `execution/costs.py`：研究小數股、整張、零股代理及券商成本。
-- `strategies/position_policy.py`：`StrategyPositionPolicy` v1（下一節說明責任邊界）。
+- `strategy_kit/position_policy.py`：`StrategyPositionPolicy` v1（下一節說明責任邊界）。
 
 根目錄的 `operators.py`、`factors.py`、`evaluation_split.py`、
 `chip_momentum_strategy.py` 暫時保留為相容入口（薄轉發，不含邏輯；
@@ -241,7 +241,7 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 
 ## StrategyPositionPolicy 的責任邊界
 
-`strategies/position_policy.py` 是訊號層與事件引擎之間新增的一層。它存在的理由
+`strategy_kit/position_policy.py` 是訊號層與事件引擎之間新增的一層。它存在的理由
 不是「多一個抽象」，而是原本這三件事沒有地方擋：退出理由不可稽核（`exit_reason`
 只有引擎內建那幾種，策略自己的「排名掉出去了」無處可放）、desired 與 realized
 混為一談（跌停賣不掉、現金不夠只是「跳過」，回測看起來永遠想買就買到）、資金
@@ -302,6 +302,35 @@ hash、資金情境、desired vs realized 差異統計、每種 exit reason 的�
 realized return）。**這些是流程與可稽核性的改善，不是任何策略有效的證據**——本次
 產生的回測數字不得用來宣稱 edge，也沒有任何策略因此通過 clean OOS／forward。
 
+## 已移除的舊腳本（2026-08-16）
+
+下列腳本沒有任何程式或測試 import，且都是**一次性任務或已被 registry 判定
+`rejected` 的舊策略**。它們的結論都已經以報告形式進版控，所以刪掉的是腳本、
+不是結論。要看當時怎麼算的請翻 git log。
+
+| 已刪除 | 行數 | 結論存放處 |
+|---|---:|---|
+| `winner_dna.py` | 383 | S12 `rejected`；`outputs/winner_dna_report.md` |
+| `defensive_rs.py` | 322 | S05 `rejected`；`outputs/DEFENSIVE_RS_REPORT.md` |
+| `factor_audit.py` | 322 | `outputs/FACTOR_AUDIT_REPORT.md` |
+| `sector_scan.py` | 309 | `outputs/sector_scan_report.md` |
+| `factor_scan.py` | 278 | `outputs/FACTOR_SCAN_REPORT.md` |
+| `disposition_event_study.py` | 205 | `outputs/DISPOSITION_EVENT_STUDY.md` |
+| `experiment_weights.py` | 136 | `outputs/WEIGHT_FIX_REPORT.md` |
+| `evaluate_dynamic_universe.py` | 102 | `outputs/DYNAMIC_UNIVERSE_REPORT.md` |
+| `migrate_cache_stamp.py` | 53 | 快取遷移,已完成 |
+| `policy_research_run.py` | 32 | 純 shim；實作在 `research/golden_path.py` |
+
+同時刪除四份**已執行完畢**的 GOAL 文件(make_signals golden path、single holdout、
+golden path remediation、screener completion)與過期的 `HANDOFF_2026-08-01.md`。
+它們開頭都寫著「狀態:待執行」,留著會讓下一個讀的人以為還有事沒做;結論已經落進
+程式碼註解、契約測試與 `STRATEGY_REGISTRY.md`。
+
+**刪除的判準是「有沒有人 import」加上「文件有沒有把它當現行指令」。** 第二個條件
+救回了 `data/prefetch.py` 與 `universe_bias_audit.py` —— 它們同樣零 import,但
+`RESEARCH_OPERATING_PROTOCOL.md` 把它們列為換資料與宣稱前稽核的實際步驟,
+刪掉等於拿掉一個documented 的能力。
+
 ## 工程閘門（與研究正確性同層）
 
 | 閘門 | 內容 |
@@ -318,17 +347,17 @@ owner decision 而非失敗，稽核腳本不代替決定。
 1. 驗證並快取官方逐日 `reference_price / limit_up / limit_down`，取代一般日的
    `derived_prev_close`；新上市與轉板例外要接 PIT lifecycle。
 2. 將其餘資料來源與快照搬到 `market_data/`；月頻 PIT provider 已先搬到
-   `universes/`，舊的抓取／解析函式暫留 `pit_universe.py` 作相容層。搬遷時
+   `universes/`，舊的抓取／解析函式暫留 `universes/pit_snapshots.py` 作相容層。搬遷時
    `data.CacheScope` 是快取檔名的唯一推導點——研究腳本要路徑請用
    `data.cache_scope()` / `data.cache_glob()`，視窗自己指定的全市場表用
    `data.window_cache_scope()` / `data.parse_window_scope()`，不要自己拼字串
    （自己拼就是不變式 7 的下一次破口，處置快取已經因此重演過一次；舊快取加
-   範圍戳用 `migrate_cache_range.py --apply`，處置／注意快取不在遷移範圍內，
-   舊檔一律視為 miss，請重跑 `twse_disposition.py` / `tpex_disposition.py`）。
+   範圍戳用 `data/migrate_cache_range.py --apply`，處置／注意快取不在遷移範圍內，
+   舊檔一律視為 miss，請重跑 `data/twse_disposition.py` / `data/tpex_disposition.py`）。
    仍不帶範圍維度但**結構上安全**的兩處：`price_adjust.divresult__{sid}__{snap}`
    （查詢窗固定 `2000-01-01`~snapshot，snapshot 已在 key 裡）與
    `pit_universe.pitsnap__{YYYYMMDD}`（檔名本身就是那一天）。
-3. 把 `backtest.py` 拆成 `backtesting/engine.py`、`portfolio/` 與 `execution/`。
+3. 把 `backtest/event_backtest.py` 拆成 `backtesting/engine.py`、`portfolio/` 與 `execution/`。
    在成交紀錄 parity 測試通過前，根目錄引擎仍是唯一正式入口。
 4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略台帳，不因整理資料夾而
    消失或改名成已驗證策略。

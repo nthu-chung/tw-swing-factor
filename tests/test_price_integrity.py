@@ -7,7 +7,7 @@ from unittest import mock
 
 import pandas as pd
 
-import price_integrity
+from data import price_integrity
 import rotation_research
 
 

@@ -24,6 +24,22 @@ Arithmetic 的核心子集;Vector/Reduce/Special 等多值/order-book 算子不�
 panel 上一律 **fail-closed raise**(見 `panel_density`);cs_*/group_* 只看當日橫斷面,
 不受影響、照常放行。因子要在稠密 panel 上算,成員過濾留到選股階段。
 
+排名母體(`ranking_mask`)：稠密 panel 為了 ts_ 而保留非成員列,但**橫斷面算子不該
+把那些列算進母體**。同一份稠密 panel 上,`cs_rank` 的母體可以是全 panel、當月候選池
+或當日可買成員 —— 三者給出的分數不同,而差異在單一 cs_ 算子下看不出來(同日單調
+轉換),只在**兩個以上 cs_ 加權組合**時才會不對稱地扭曲順序。所以母體必須是呼叫端
+的顯式決定,而不是「panel 剛好有哪些列」:
+
+    ops = PanelOps(panel["date"], panel["stock_id"],
+                   ranking_mask=panel["in_candidate_pool"],   # 當月候選池
+                   ranking_universe="pool")
+    ops.cs_rank(x)      # 只在遮罩內排名;遮罩外一律 NaN
+    ops.ts_ir(ret, 20)  # 不受遮罩影響,仍看完整稠密序列
+
+遮罩只作用在 cs_* / group_* / regression_* / bucket(見 `_cross_sectional` 裝飾器,
+`tests/test_operators_ranking_universe.py` 會擋住漏標的新算子);ts_* 一律看完整
+序列,否則就退化成稀疏 panel 的失真問題。不傳 `ranking_mask` = 維持舊行為(全 panel)。
+
 用法：
     ops = PanelOps(panel["date"], panel["stock_id"])
     z   = ops.cs_zscore(panel["mom_ret"])           # 當日跨股 z-score
@@ -32,6 +48,7 @@ panel 上一律 **fail-closed raise**(見 `panel_density`);cs_*/group_* 只看�
 """
 from __future__ import annotations
 
+import functools
 from typing import Callable, Optional
 
 import numpy as np
@@ -80,11 +97,43 @@ def if_else(cond: pd.Series, a, b) -> pd.Series:
     return pd.Series(np.where(cond.fillna(False).to_numpy(), a, b), index=cond.index)
 
 
+# ── 橫斷面算子的排名母體裝飾器 ─────────────────────────────────────────────
+def _cross_sectional(fn: Callable) -> Callable:
+    """標記一個方法是**橫斷面**算子,並讓它自動套用 `PanelOps` 的排名母體。
+
+    為什麼用裝飾器而不是在每個方法裡自己遮:漏掉一個就是一個安靜錯掉的母體,
+    而母體錯了不會 crash,只會讓分數變成另一套。標記本身也讓
+    `tests/test_operators_ranking_universe.py` 能反過來掃「有沒有算子忘了標」——
+    新增算子時忘記處理母體會被測試擋下來,而不是等到寫報告才發現。
+
+    語意:遮罩外的列在**輸入**就被轉成 NaN(所以不進 mean/std/rank 的母體),
+    輸出也一律 NaN(所以不會有「不在母體卻拿得到分數」的列流到下游)。
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if self._cs_mask is None:
+            return fn(self, *args, **kwargs)
+        name = fn.__name__
+        args = tuple(self._cs_scope_in(a, name) for a in args)
+        kwargs = {k: self._cs_scope_in(v, name) for k, v in kwargs.items()}
+        return self._cs_scope_out(fn(self, *args, **kwargs))
+
+    wrapper._is_cross_sectional = True
+    return wrapper
+
+
 # ── PanelOps:綁定 (date, stock) 鍵,提供因果/橫斷面/族群算子 ────────────────
 class PanelOps:
-    """綁定一個 long panel 的 date/stock 鍵,方法回傳與 panel index 對齊的 Series。"""
+    """綁定一個 long panel 的 date/stock 鍵,方法回傳與 panel index 對齊的 Series。
 
-    def __init__(self, date: pd.Series, stock: pd.Series):
+    `ranking_mask` 決定橫斷面算子的母體(見模組 docstring);不傳 = 全 panel。
+    `ranking_universe` 只是那個母體的名字,會被呼叫端寫進 provenance,讓事後看得出
+    當時的分數是在哪個母體上算的 —— 母體不留痕跡等於數字無法重現。
+    """
+
+    def __init__(self, date: pd.Series, stock: pd.Series, *,
+                 ranking_mask: Optional[pd.Series] = None,
+                 ranking_universe: str = "panel"):
         if not date.index.equals(stock.index):
             raise ValueError("date 與 stock 的 index 必須一致")
         if date.index.duplicated().any():
@@ -100,6 +149,44 @@ class PanelOps:
         order = pd.DataFrame({"s": self.stock, "d": self.date}, index=self._orig_index)
         self._sorted_index = order.sort_values(["s", "d"], kind="stable").index
         self._stock_sorted = self.stock.loc[self._sorted_index]
+        self.ranking_universe = str(ranking_universe)
+        self._cs_mask = self._validate_ranking_mask(ranking_mask)
+
+    # ---- 內部:橫斷面排名母體 ----
+    def _validate_ranking_mask(self, mask) -> Optional[pd.Series]:
+        """把排名母體正規化成對齊 panel 的 bool Series;不合法一律 fail-closed。"""
+        if mask is None:
+            return None
+        if not isinstance(mask, pd.Series):
+            raise TypeError("ranking_mask 必須是與 panel 對齊的 bool Series")
+        if not mask.index.equals(self._orig_index):
+            raise ValueError(
+                "[fail-closed] ranking_mask 的 index 與 panel 不一致。"
+                "錯位的遮罩會把 A 股票的成員資格套到 B 股票身上,而結果看起來完全正常")
+        out = mask.fillna(False).astype(bool)
+        if not out.any():
+            raise ValueError(
+                "[fail-closed] ranking_mask 全為 False:橫斷面母體是空的,"
+                "所有 cs_ 算子都會回 NaN。這通常代表傳錯欄位,不是真的沒有成員")
+        return out
+
+    def _cs_scope_in(self, value, op_name: str):
+        """把輸入限縮到排名母體:母體外轉 NaN,才不會進 rank/mean/std 的計算。"""
+        if isinstance(value, (list, tuple)):
+            return type(value)(self._cs_scope_in(v, op_name) for v in value)
+        if not isinstance(value, pd.Series):
+            return value                      # 純量參數(視窗、side、rettype…)
+        if not value.index.equals(self._orig_index):
+            raise ValueError(
+                f"[fail-closed] PanelOps.{op_name}:輸入 Series 的 index 與 panel "
+                "不一致,無法套用排名母體。請先對齊到同一個 panel index")
+        return value.where(self._cs_mask)
+
+    def _cs_scope_out(self, result):
+        """母體外的列不得帶著分數離開:它們當天本來就不在這個橫斷面裡。"""
+        if not isinstance(result, pd.Series):
+            result = pd.Series(result, index=self._orig_index)
+        return result.where(self._cs_mask)
 
     # ---- 內部:稀疏 panel 上禁止時序運算（不變式 3 的第二道防線）----
     def _require_dense(self, op_name: str) -> None:
@@ -379,10 +466,12 @@ class PanelOps:
     def _by_date(self, x):
         return x.groupby(self.date, sort=False)
 
+    @_cross_sectional
     def cs_rank(self, x):
         """當日跨股 rank → [0,1](WQ rank)。"""
         return self._by_date(x).rank(pct=True)
 
+    @_cross_sectional
     def cs_zscore(self, x):
         """當日跨股 z-score,母體 std(ddof=0,對齊 WQ / market_flow_monitor)。"""
         g = self._by_date(x)
@@ -390,13 +479,16 @@ class PanelOps:
         sd = g.transform(lambda s: s.std(ddof=0))       # 純量 broadcast,安全
         return (x - m) / sd.replace(0, np.nan)
 
+    @_cross_sectional
     def cs_demean(self, x):
         """當日減去橫斷面均值(WQ normalize,useStd=false)。"""
         return x - self._by_date(x).transform("mean")
 
+    @_cross_sectional
     def cs_normalize(self, x, use_std: bool = False):
         return self.cs_zscore(x) if use_std else self.cs_demean(x)
 
+    @_cross_sectional
     def cs_winsorize(self, x, std: float = 4.0):
         """當日把離群夾到 mean ± std*sd(WQ winsorize)。"""
         g = self._by_date(x)
@@ -404,16 +496,19 @@ class PanelOps:
         sd = g.transform(lambda s: s.std(ddof=0))
         return x.clip(m - std * sd, m + std * sd)
 
+    @_cross_sectional
     def cs_scale(self, x, a: float = 1.0):
         """當日縮放到 sum(|x|)=a(WQ scale to booksize)。"""
         tot = x.abs().groupby(self.date, sort=False).transform("sum")
         return x * a / tot.replace(0, np.nan)
 
+    @_cross_sectional
     def cs_one_side(self, x, side: str = "long"):
         """平移成 long-only(減當日最小)或 short-only(減最大)(WQ one_side)。"""
         agg = "min" if side == "long" else "max"
         return x - self._by_date(x).transform(agg)
 
+    @_cross_sectional
     def cs_quantile(self, x):
         """當日 rank 後套高斯反 CDF(WQ quantile gaussian);無 scipy 則退回置中 rank。"""
         r = self._by_date(x).rank(pct=True).clip(1e-6, 1 - 1e-6)
@@ -421,6 +516,7 @@ class PanelOps:
             return pd.Series(_norm.ppf(r.to_numpy()), index=r.index)
         return r - 0.5
 
+    @_cross_sectional
     def bucket(self, x, n: int = 10):
         """當日 rank 後切成 n 個桶(0..n-1),可當 group 值(WQ bucket)。"""
         r = self._by_date(x).rank(pct=True, method="first")
@@ -432,36 +528,45 @@ class PanelOps:
             raise ValueError("group 請傳入與 panel 對齊的 Series(產業標籤),非欄名")
         return x.groupby([self.date, group.astype(str)], sort=False)
 
+    @_cross_sectional
     def group_rank(self, x, group):
         return self._by_group(x, group).rank(pct=True)
 
+    @_cross_sectional
     def group_mean(self, x, group):
         return self._by_group(x, group).transform("mean")
 
+    @_cross_sectional
     def group_zscore(self, x, group):
         g = self._by_group(x, group)
         m = g.transform("mean")
         sd = g.transform(lambda s: s.std(ddof=0))
         return (x - m) / sd.replace(0, np.nan)
 
+    @_cross_sectional
     def group_neutralize(self, x, group):
         """對每個(當日×族群)去均值(WQ group_neutralize;= factor_audit 的產業中性化)。"""
         return x - self._by_group(x, group).transform("mean")
 
+    @_cross_sectional
     def group_std_dev(self, x, group):
         """當日族群內標準差(WQ group_std_dev);母體 std 對齊 group_zscore。"""
         return self._by_group(x, group).transform(lambda s: s.std(ddof=0))
 
+    @_cross_sectional
     def group_median(self, x, group):
         return self._by_group(x, group).transform("median")
 
+    @_cross_sectional
     def group_sum(self, x, group):
         return self._by_group(x, group).transform("sum")
 
+    @_cross_sectional
     def group_count(self, x, group):
         """族群成員數;中性化前用來擋掉單一成員組(那種組中性化後恆為 0)。"""
         return self._by_group(x, group).transform("count")
 
+    @_cross_sectional
     def group_scale(self, x, group):
         """(x - gmin)/(gmax - gmin),當日族群內縮到 [0,1](WQ group_scale)。"""
         g = self._by_group(x, group)
@@ -480,16 +585,19 @@ class PanelOps:
         a = my - b * mx
         return a, b
 
+    @_cross_sectional
     def regression_proj(self, y, x):
         """當日跨股把 y 迴歸到 x,回傳擬合值 ŷ = a + b·x(WQ regression_proj)。"""
         a, b = self._cs_ab(y, x)
         return a + b * x
 
+    @_cross_sectional
     def regression_neut(self, y, x):
         """當日跨股把 y 對 x 迴歸後的**殘差**(y 中性化掉 x 的成分;WQ regression_neut)。"""
         a, b = self._cs_ab(y, x)
         return y - (a + b * x)
 
+    @_cross_sectional
     def multi_regression(self, y, xs, rettype="resid"):
         """當日跨股多因子 OLS(y ~ 1 + x1 + x2 + …),回傳殘差或擬合(WQ multi_regression)。
 

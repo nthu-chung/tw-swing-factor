@@ -10,9 +10,9 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
-import evaluation_split
+import evaluation.splits as evaluation_split
 
 
 class RunFullSplitTest(unittest.TestCase):
@@ -44,12 +44,12 @@ class RunFullSplitTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.uni, "get_universe", return_value=["A"]),
-                mock.patch.object(backtest, "backtest_portfolio", side_effect=fake_portfolio),
-                mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
+                mock.patch.object(event_backtest.uni, "get_universe", return_value=["A"]),
+                mock.patch.object(event_backtest, "backtest_portfolio", side_effect=fake_portfolio),
+                mock.patch.object(event_backtest, "factor_ic", return_value=pd.DataFrame()),
                 mock.patch.object(config, "OUTPUT_DIR", Path(tmp)),
             ):
-                result, _ = backtest.run_full(
+                result, _ = event_backtest.run_full(
                     sample=True, top_n=1, rebalance_every=3,
                     dynamic_enabled=False,
                 )
@@ -97,18 +97,18 @@ class RunFullSplitTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch.object(
-                    backtest.MonthlyPITUniverseProvider, "from_cache",
+                    event_backtest.MonthlyPITUniverseProvider, "from_cache",
                     return_value=provider,
                 ) as make_provider,
                 mock.patch.object(
-                    backtest.uni, "get_research_candidates",
+                    event_backtest.uni, "get_research_candidates",
                     side_effect=AssertionError("正式回測不可讀 current pool"),
                 ),
-                mock.patch.object(backtest, "backtest_portfolio", side_effect=fake_portfolio),
-                mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
+                mock.patch.object(event_backtest, "backtest_portfolio", side_effect=fake_portfolio),
+                mock.patch.object(event_backtest, "factor_ic", return_value=pd.DataFrame()),
                 mock.patch.object(config, "OUTPUT_DIR", Path(tmp)),
             ):
-                backtest.run_full(
+                event_backtest.run_full(
                     sample=False, top_n=1, rebalance_every=1,
                     dynamic_enabled=True, pool=250,
                 )

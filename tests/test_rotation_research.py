@@ -14,6 +14,7 @@ from unittest import mock
 
 import pandas as pd
 
+from _offline_registry import use_common_stocks
 import rotation_research
 from evaluation import phases
 
@@ -121,7 +122,7 @@ class FormalPicksTest(unittest.TestCase):
 
 class FormalPortfolioTest(unittest.TestCase):
     def test_picks_go_into_the_real_event_driven_engine(self):
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary) as engine:
             result = rotation_research.formal_portfolio(
                 _signals(), ["1001", "1002", "1003"],
@@ -137,7 +138,7 @@ class FormalPortfolioTest(unittest.TestCase):
 
     def test_evaluation_window_bounds_are_forwarded(self):
         """只限制 picks 日期不夠:引擎沒有 end_date 會跑到資料末端(陷阱 5)。"""
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary) as engine:
             rotation_research.formal_portfolio(
                 _signals(), ["1001"],
@@ -149,7 +150,7 @@ class FormalPortfolioTest(unittest.TestCase):
     def test_formal_path_never_uses_the_research_only_loop(self):
         """正式數字不得經過自製 positions/cash/MTM 迴圈。"""
         with (
-            mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+            mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                               side_effect=_fake_summary),
             mock.patch.object(rotation_research, "run_portfolio") as legacy,
         ):
@@ -168,7 +169,7 @@ class FormalPortfolioTest(unittest.TestCase):
         沒有任何欄位描述產生它的規則。
         """
         spec = {"name": "rotation_probe", "signal": {"window": 20}}
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary) as engine:
             rotation_research.formal_portfolio(
                 _signals(), ["1001"],
@@ -176,7 +177,7 @@ class FormalPortfolioTest(unittest.TestCase):
                 strategy_spec=spec)
         self.assertIs(engine.call_args.kwargs["strategy_spec"], spec)
 
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary) as engine:
             rotation_research.formal_portfolio_sweep(
                 _signals(), ["1001"],
@@ -186,7 +187,7 @@ class FormalPortfolioTest(unittest.TestCase):
 
     def test_no_picks_means_no_engine_call(self):
         empty = pd.DataFrame(columns=["date", "stock_id", "signal_score", "name"])
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary) as engine:
             self.assertEqual(
                 rotation_research.formal_portfolio(
@@ -202,7 +203,7 @@ class FormalPortfolioSweepTest(unittest.TestCase):
         self.assertIs(rotation_research.sweep_phases, phases.sweep_phases)
         spy = mock.Mock(side_effect=phases.sweep_phases)
         with (
-            mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+            mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                               side_effect=_fake_summary),
             mock.patch.object(rotation_research, "sweep_phases", spy),
         ):
@@ -215,7 +216,7 @@ class FormalPortfolioSweepTest(unittest.TestCase):
         self.assertEqual(list(sweep.rows["phase"]), [0, 1, 2])
 
     def test_sweep_reports_median_min_and_worst_drawdown(self):
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary):
             sweep = rotation_research.formal_portfolio_sweep(
                 _signals(), ["1001"],
@@ -229,7 +230,7 @@ class FormalPortfolioSweepTest(unittest.TestCase):
 
     def test_rows_expose_evidence_flags_for_verification(self):
         """相位表要能在結果層面驗證評估窗與候選池,而不是只能相信參數傳對了。"""
-        with mock.patch.object(rotation_research.backtest, "backtest_portfolio",
+        with mock.patch.object(rotation_research.event_backtest, "backtest_portfolio",
                                side_effect=_fake_summary):
             sweep = rotation_research.formal_portfolio_sweep(
                 _signals(), ["1001"],
@@ -239,6 +240,81 @@ class FormalPortfolioSweepTest(unittest.TestCase):
         self.assertEqual(row["days_beyond_last_pick"], 0)
         # rotation 的候選池是 legacy 單日排名 → 沒傳 PIT provider 就不是正式證據。
         self.assertFalse(row["formal_evidence_eligible"])
+
+
+class ResearchOnlyStampTest(unittest.TestCase):
+    """探索性產出必須自帶「我不是正式績效」的欄位。
+
+    原缺陷:`main()` 寫出的 rotation_is_oos.csv / rotation_trades.csv /
+    theme_case_audit.csv 沒有任何 in-artifact 標記,落到 outputs/ 之後跟正式回測
+    結果長得一模一樣;research-only 的資訊只存在原始碼 docstring 與
+    STRATEGY_REGISTRY 裡。本 repo 對正式結果的標準是「結果必須自帶說得出可不可以
+    當正式證據的欄位」,探索性產出沒有理由例外。
+    """
+
+    def test_stamp_adds_self_describing_columns(self):
+        out = rotation_research.stamp_research_only(
+            pd.DataFrame({"variant": ["a"], "sharpe": [1.0]}))
+        self.assertTrue(bool(out.iloc[0]["research_only"]))
+        self.assertFalse(bool(out.iloc[0]["formal_evidence_eligible"]))
+        self.assertEqual(out.iloc[0]["engine"],
+                         "rotation_research.run_portfolio")
+        self.assertIn("非 PIT", str(out.iloc[0]["reason"]))
+
+    def test_stamp_keeps_the_original_columns(self):
+        src = pd.DataFrame({"variant": ["a"], "sharpe": [1.0]})
+        out = rotation_research.stamp_research_only(src)
+        for col in src.columns:
+            self.assertIn(col, out.columns)
+        self.assertEqual(len(out), len(src))
+
+
+class FormalPortfolioEndToEndTest(unittest.TestCase):
+    """不 mock 正式引擎的端到端測試。
+
+    原缺陷:`FormalPortfolioTest` / `FormalPortfolioSweepTest` 的每一支都
+    `mock.patch.object(rotation_research.event_backtest, "backtest_portfolio", ...)`,
+    斷言的是 call_args 與假 summary 的聚合 —— 真引擎的參數相容性
+    (picks_by_date 的 key 型別、symbols 與 picks 的一致性、start/end 是否被接受)
+    完全沒被覆蓋。這正是「mock 過深,測到 mock」:把 formal_portfolio 的參數改壞,
+    那批測試仍然全綠。這一支只 mock 資料層,讓真引擎跑完。
+    """
+
+    def _prices(self, ids, days):
+        frames = {}
+        for i, sid in enumerate(ids):
+            frames[sid] = pd.DataFrame({
+                "date": days,
+                "open": 100.0 + i, "high": 101.0 + i,
+                "low": 99.0 + i, "close": 100.0 + i,
+                "volume": 1_000_000, "turnover": 1e8,
+            })
+        return frames
+
+    def test_real_engine_accepts_the_picks_and_reports_honest_provenance(self):
+        ids = ["1001", "1002", "1003"]
+        # 證券別閘門會擋掉判不出來的代號(這是對的),所以離線測試要顯式宣告。
+        use_common_stocks(self, *ids)
+        days = list(pd.bdate_range("2026-03-02", periods=12))
+        prices = self._prices(ids, days)
+        with (
+            mock.patch.object(rotation_research.event_backtest,
+                              "_assert_price_integrity", lambda *a, **k: None),
+            mock.patch.object(rotation_research.event_backtest,
+                              "_load_disposition_days", lambda *a, **k: {}),
+            mock.patch.object(rotation_research.event_backtest.data, "fetch_price",
+                              side_effect=lambda sid, *a, **k: prices[sid].copy()),
+        ):
+            res = rotation_research.formal_portfolio(
+                _signals(), ids,
+                start_date="2026-03-02", end_date="2026-03-17",
+                max_positions=2, rebalance_every=1)
+
+        self.assertIn("summary", res, f"真引擎沒有產出 summary:{str(res)[:200]}")
+        summary = res["summary"]
+        self.assertEqual(summary["eval_audit"]["days_beyond_last_pick"], 0)
+        # legacy 單日候選池 + 沒傳 PIT provider → 必須誠實標成不可作正式證據
+        self.assertFalse(summary["universe"]["formal_evidence_eligible"])
 
 
 if __name__ == "__main__":

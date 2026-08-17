@@ -7,7 +7,7 @@ from unittest import mock
 
 import pandas as pd
 
-import pit_universe as pu
+from universes import pit_snapshots as pu
 
 
 TWSE_FIELDS = ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額",

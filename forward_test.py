@@ -65,7 +65,7 @@ import pandas as pd
 
 import config
 import freeze_manifest
-import return_convention
+from data import return_convention
 from evaluation import holdout as holdout_ledger
 from evaluation.phases import PhaseSweep
 

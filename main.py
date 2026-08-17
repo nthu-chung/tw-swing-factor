@@ -31,8 +31,8 @@ import sys
 
 import config
 import screener
-import backtest
-import universe as uni
+from backtest import event_backtest
+from universes import legacy_static as uni
 from universes import historical_pit_universe
 
 
@@ -84,7 +84,7 @@ def main():
         screener.screen(as_of=args["date"], sample=sample,
                         pool=args["pool"], verbose=True)
     elif cmd == "backtest":
-        backtest.run_full(sample=sample, top_n=args["top"],
+        event_backtest.run_full(sample=sample, top_n=args["top"],
                           rebalance_every=args["rebalance"],
                           pool=args["pool"],
                           dynamic_enabled=not args["static_universe"],
@@ -105,7 +105,7 @@ def main():
                 pit = historical_pit_universe(candidate_pool_n=args["pool"])
                 universe_provider = pit.provider
                 symbols = pit.symbols
-        ic_df = backtest.factor_ic(
+        ic_df = event_backtest.factor_ic(
             symbols=symbols,
             sample=sample,
             dynamic_enabled=(not args["static_universe"]) and not sample,
@@ -113,7 +113,7 @@ def main():
             universe_provider=universe_provider,
             static_universe_comparator=static_comparator,
         )
-        backtest._print_ic(ic_df)
+        event_backtest._print_ic(ic_df)
     else:
         print(__doc__)
 

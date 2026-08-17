@@ -156,7 +156,7 @@
 | 上市/上櫃/ETF 覆蓋（§1/§6） | `current_watchlist._regular_equity_mask` | live screen 與 market_flow 排除 00 開頭 ETF |
 | 族群分類隨時間改變（§6） | `universe_meta.industry_pit=False` + `industry_asof` | 回測 metadata 明示產業分類非 PIT |
 | CI 下界>0 ≠ edge（§7） | `validate_oos` beta-aware verdict + 寫入 buy&hold 基準 | OS 普漲時自動降級結論，不再無條件宣稱「維持上線合理」 |
-| 凍結必須凍到全部規則（§8） | `freeze_manifest`：反向 allowlist（config 大寫參數預設全凍，要排除得寫進 `NOT_FROZEN` 並附理由）＋ `strategies/spec.py` 的 `StrategySpec` | 手維護 `FROZEN_KEYS` 只列 34 個、config 有 92 個 → 改 `BT_ORDER_SIZE_MODE`／處置模型／IS-OS 切割，hash 一個字都不會變；S19 的 10 檔／20 日更是在 manifest 之後才寫進 config，完全沒被凍 |
+| 凍結必須凍到全部規則（§8） | `freeze_manifest`：反向 allowlist（config 大寫參數預設全凍，要排除得寫進 `NOT_FROZEN` 並附理由）＋ `strategy_kit/spec.py` 的 `StrategySpec` | 手維護 `FROZEN_KEYS` 只列 34 個、config 有 92 個 → 改 `BT_ORDER_SIZE_MODE`／處置模型／IS-OS 切割，hash 一個字都不會變；S19 的 10 檔／20 日更是在 manifest 之後才寫進 config，完全沒被凍 |
 | 凍結版本不可冒充（§8） | `freeze_manifest.validate_manifest` + `apply_rules` fail-closed；label 進檔名不進 hash | legacy／不完整／被改過的 manifest 不得被 forward 使用；同日不同 label 不再互相覆寫 |
 | 因子必須在稠密 panel 上算（§6） | 公開入口 `backtest.build_research_panel()` 預設稠密（`members_only=True` 只給純橫斷面統計）＋ `factor_engine/panel_density.py` 的標籤；`PanelOps` 的 `ts_*` 在 `members_only` panel 上 raise | long panel 的 `rolling(20)` 算的是「20 **列**」：間歇進出 universe 的股票會橫跨 60+ 個日曆日。`rotation_research` 的 `breakout_20`／量比／`positive_day_share_20` 正是這樣算出來的（訊號翻轉約 3%、命中率相對灌水約 +9.6%），2026-08-15 修為「稠密算因子、選股才套成員資格」 |
 | forward 不得挑相位／缺基準（§7） | `forward_test.run` 走策略單元的全相位掃描 + 等權基準 + 不可覆寫的輸出 | 舊版只跑單一相位、吃引擎預設 `rebalance_every=5/top_n=3`、沒有基準、每次重跑覆寫同名檔 |
@@ -166,7 +166,7 @@
 | holdout 只有第一次是 holdout（§1/§7） | `evaluation/holdout.py` 的 append-only 台帳 `outputs/holdout_ledger.jsonl`（雜湊鏈防靜默改寫 + 排他檔案鎖）；`backtest.run_full` 的 OS 段、`s19.main`、`forward_test.run` 每次揭露都 append：strategy hash、OS 起訖、reveal time、git commit | 重疊到看過的區間 → `holdout_previously_seen=True`、`fresh_oos_claim_allowed=False`，並回報 `fresh_os_start`。原本完全沒有這個紀錄，而 IS/OS 切點錨在資料尾端、資料視窗又隨 `SNAPSHOT_END_DATE` 滑動：快照 2026-06-22 的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 後 OS 起點變成 2026-01-05 —— 2025-11-19~2026-01-04 **從 OS 變成 IS**，同一段資料會被第二次報成 fresh OOS |
 | 凍結必須釘住 holdout 邊界（§8） | `freeze_manifest.holdout_boundaries()` 寫進 `manifest["holdout"]`（不進 `rules`／hash）；`validate_manifest` 缺這段即判不可靠，未解析成日期時出警告 | 只凍 `EVAL_SPLIT_MODE`／`IS_OS_SPLIT`／`EMBARGO_DAYS` 這些**參數**是不夠的：同一組參數在不同快照下解出不同的 OS 區間 |
 | 單相位只能 debug（§7） | `single_phase_debug` 由呼叫端的**意圖**傳入並標進 summary／`phase_stats`；forward 收到 debug 掃描直接 raise | 舊版 `forward_test` 用 `len(df) == 1` 反推旗標 —— 拿結果當意圖：20 相位只有 1 個有結果會被誤標成 debug，再平衡天數為 1 的正式全相位掃描也會被誤標 |
-| 基準與個股同報酬口徑（§1/§7） | `return_convention.py` 是口徑的單一判定入口；`summary["return_convention"]` 記錄兩條序列各自含不含息，不一致直接 raise；`rotation_research.benchmark_metrics` / `market_relative_metrics` 改走 `return_convention.fetch_benchmark_index()`，含息指數抓不到就 raise（**不退回價格指數**） | 個股序列在自建／官方還原價下是**含息**的（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻一直是 TAIEX **價格指數**（不含息）。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677，含息報酬指數 45.23%／1.790 —— **每年 2.86pp 的假超額、Sharpe 差 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。這個量級剛好落在「看起來像小 alpha」的區間，所以只印警告沒有用 |
+| 基準與個股同報酬口徑（§1/§7） | `data/return_convention.py` 是口徑的單一判定入口；`summary["return_convention"]` 記錄兩條序列各自含不含息，不一致直接 raise；`rotation_research.benchmark_metrics` / `market_relative_metrics` 改走 `return_convention.fetch_benchmark_index()`，含息指數抓不到就 raise（**不退回價格指數**） | 個股序列在自建／官方還原價下是**含息**的（`price_adjust` 的比值回溯等同除息日股利再投入），基準卻一直是 TAIEX **價格指數**（不含息）。實測 2024-06-03~2026-06-20：價格指數算術年化 42.38%／Sharpe 1.677，含息報酬指數 45.23%／1.790 —— **每年 2.86pp 的假超額、Sharpe 差 0.113**；2015~2026 逐年差 2.41~4.81pp 且沒有一年為負。這個量級剛好落在「看起來像小 alpha」的區間，所以只印警告沒有用 |
 
 ## 10. 標準操作流程（指令級）
 
@@ -180,21 +180,21 @@ python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 PYTHONPATH=. .venv/bin/python preflight.py
 
-# 2) 正式回測的候選池走月頻 PIT,不需要 build_universe.py。
+# 2) 正式回測的候選池走月頻 PIT,不需要 universes/build.py。
 #    第一次要補齊交易所逐日快照(之後逐日快取重用):
 .venv/bin/python -c "import pit_universe as p; p.load_history('2024-06-01','2026-06-22')"
 
 # 3) legacy static 對照組才需要 outputs/universe_top*.json(已進版控的 fixture)。
 #    要重建:
-.venv/bin/python build_universe.py 300
+.venv/bin/python universes/build.py 300
 ```
 不寫死「應 N passed」——測試數會隨新增回歸測試變動，用**綠燈**而不是數字當判準。
 
 ### B. 推進研究窗（換資料）
 ```bash
 export SWING_SNAPSHOT_END=2026-07-31        # 改截止日 → cache 自動 miss → 真重抓
-.venv/bin/python build_universe.py 300      # 重建候選池(注意仍非 PIT,見 §6)
-.venv/bin/python prefetch.py                # 依需要重抓
+.venv/bin/python universes/build.py 300      # 重建候選池(注意仍非 PIT,見 §6)
+.venv/bin/python data/prefetch.py                # 依需要重抓
 ```
 
 ### C. 跑研究回測 / OOS / factor audit（三選一價格路線）
@@ -203,8 +203,8 @@ export SWING_SNAPSHOT_END=2026-07-31        # 改截止日 → cache 自動 miss
 export SWING_PRICE_DATASET=TaiwanStockPriceAdj   # 需 FinMind 付費/sponsor token
 .venv/bin/python main.py backtest --pool 300
 
-# 路線2(僅 smoke、結果標 bypassed):未還原價逃生門
-SWING_ALLOW_UNADJUSTED=1 .venv/bin/python validate_oos.py --pool 100
+# 路線2 已移除:當年跑它的 validate_oos.py 於 2026-08-16 隨 legacy 研究鏈刪除。
+# 未還原價逃生門本身仍在(SWING_ALLOW_UNADJUSTED),但沒有任何現行入口該用它。
 
 # 不設任何一個 → 未還原價一律 fail-closed raise(這是預期行為,不看斷點掃描結果)
 ```
@@ -261,10 +261,10 @@ forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（202
 ### F. 尚未修好的（仍是揭露、非強制）——升級結論前必須先處理
 - **候選池倖存者（已部分修復）**：正式回測改走兩層 PIT——`universes/monthly_pit.py`
   用完整 M-1 曆月的交易所逐日快照建 M 月候選（含當時在市、後來下市者），再由
-  `dynamic_universe.py` 在池內依截至訊號日的 ADV20 排每日 top-N。因此
+  `universes/dynamic.py` 在池內依截至訊號日的 ADV20 排每日 top-N。因此
   `candidate_membership_survivorship_free=True`。
   **但 `price_history_survivorship_free` 仍為 `False`**：下市股的完整價格序列可能缺，
-  所以整體 `survivorship_free` 維持 `False`。`build_universe.py` 的
+  所以整體 `survivorship_free` 維持 `False`。`universes/build.py` 的
   `outputs/universe_top*.json` 現在只供 legacy static 對照（`--static-universe`），
   **不得回套歷史**（偏誤上界見 `UNIVERSE_BIAS_REPORT.md`）。
   這條界線現在由結構強制、不再靠自律：正式歷史候選池的入口是
@@ -277,7 +277,7 @@ forward 是唯一能升級證據等級的路徑，所以它的閘門最嚴（202
   `regime_strategy_lab.py`、`market_filter_eval.py`、`experiment_weights.py`、
   `validate_oos.py`、`evaluate_dynamic_universe.py`、`sector_rotation.py`、
   `strategies/s19_chip_momentum.build_panel(use_pit_pool=False)`。
-- **還原價**：預設仍未還原；`price_adjust.py` 自建只處理除權息，不含分割／減資。
+- **還原價**：預設仍未還原；`data/price_adjust.py` 自建只處理除權息，不含分割／減資。
   真績效需 `TaiwanStockPriceAdj` 全量重抓後重跑所有報告。未還原價現在一律
   fail-closed raise（§9），不是警告。
 - **報酬口徑不一致（2026-08-15 發現並修正機制，既有超額結論一律需重驗）**：

@@ -23,7 +23,7 @@ by this module states that limitation explicitly.
 
 要出正式投組績效請走 `formal_portfolio()` / `formal_portfolio_sweep()`:它把
 `build_signal_table()` 的 picks 轉成 `picks_by_date` 餵進
-`backtest.backtest_portfolio()`(唯一正式事件驅動引擎)。候選池仍是 legacy 單日
+`event_backtest.backtest_portfolio()`(唯一正式事件驅動引擎)。候選池仍是 legacy 單日
 排名,所以除非呼叫端傳 PIT `universe_provider`,引擎會誠實把結果標成
 `formal_evidence_eligible=False`。
 """
@@ -35,13 +35,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 import data
-import evaluation_split
-import price_integrity
-import return_convention
-import universe as uni
+import evaluation.splits as evaluation_split
+from data import price_integrity
+from data import return_convention
+from universes import legacy_static as uni
 from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import panel_density
 
@@ -90,7 +90,7 @@ def build_rotation_panel(
     static comparator。要做正式歷史證據請走 `universes.historical_pit_universe()`。
 
     2026-08-15 修的 bug(不變式 3 / AGENTS.md 陷阱 1):
-    這裡以前用 `backtest._prepare_panel(...)` 的**預設值**,拿到的是「只留動態
+    這裡以前用 `event_backtest._prepare_panel(...)` 的**預設值**,拿到的是「只留動態
     universe 成員日」的稀疏 panel,然後立刻在上面做 `groupby("stock_id")` 的
     `shift(1).rolling(20)` 算 `breakout_20` / `breakout_volume_ratio` /
     `positive_day_share_20`。long panel 的 rolling 算的是「20 列」,一檔間歇進出
@@ -105,7 +105,7 @@ def build_rotation_panel(
     """
     if symbols is None:
         symbols = uni.get_universe(top_n=config.DYNAMIC_UNIVERSE_CANDIDATE_POOL)
-    panel = backtest.build_research_panel(
+    panel = event_backtest.build_research_panel(
         symbols,
         dynamic_enabled=True,
         universe_top_n=universe_top_n,
@@ -205,7 +205,8 @@ def attach_group_scores(panel: pd.DataFrame) -> pd.DataFrame:
         "group_near_high_breadth", "group_inst_breadth",
         "group_price_score", "group_combo_score", "group_rank",
     ]
-    return panel.merge(group_daily[merge_cols], on=["date", "industry"], how="left")
+    return panel_density.preserving_merge(
+        panel, group_daily[merge_cols], on=["date", "industry"], how="left")
 
 
 def build_signal_table(panel: pd.DataFrame, variant: str) -> pd.DataFrame:
@@ -253,7 +254,7 @@ def build_signal_table(panel: pd.DataFrame, variant: str) -> pd.DataFrame:
     )
 
 
-# ── 正式引擎路徑:把 research picks 餵進 backtest.backtest_portfolio ──────────
+# ── 正式引擎路徑:把 research picks 餵進 event_backtest.backtest_portfolio ──────────
 # 為什麼要有這一段(P2):這支腳本原本只有自製的 `run_portfolio()` 迴圈,而
 # 「族群輪動要不要升級成正式策略」需要的是**正式引擎**的數字。以前這條路只寫在
 # 註解裡,等於沒有 —— 想比較的人得自己重寫一次轉換,轉換寫錯就再產生一組不可比
@@ -262,7 +263,7 @@ def build_signal_table(panel: pd.DataFrame, variant: str) -> pd.DataFrame:
 def formal_picks_by_date(signals: pd.DataFrame) -> Dict[pd.Timestamp, List[Tuple]]:
     """把 signal table 轉成正式引擎吃的 `picks_by_date`。
 
-    格式與 `backtest.backtest_portfolio` 內部自建的一致:
+    格式與 `event_backtest.backtest_portfolio` 內部自建的一致:
     `{訊號日: [(stock_id, score, name), ...]}`,同日**依分數由高到低**排序。
 
     刻意不在這裡截斷成 N 檔:引擎會自己取 `[:top_n]`,而且它需要看到完整排序
@@ -320,7 +321,7 @@ def formal_portfolio(signals: pd.DataFrame,
     picks = formal_picks_by_date(signals)
     if not picks:
         return {}
-    return backtest.backtest_portfolio(
+    return event_backtest.backtest_portfolio(
         symbols=symbols,
         sample=False,
         start_date=start_date,
@@ -416,7 +417,7 @@ def run_portfolio(
     這套**不會**升格成正式引擎;它只服務探索迭代速度。
 
     要出正式投組績效請改呼叫本模組的 `formal_portfolio()` /
-    `formal_portfolio_sweep()`(內部走 `backtest.backtest_portfolio`),不要把這裡
+    `formal_portfolio_sweep()`(內部走 `event_backtest.backtest_portfolio`),不要把這裡
     的數字當正式證據引用。
     """
     ma_windows = [exit_spec.ma_window] if exit_spec.ma_window else []
@@ -741,6 +742,26 @@ def theme_case_audit(
     return pd.DataFrame(rows)
 
 
+# 探索性產出的自我聲明。跟著 meta 與每一份寫出的 CSV 走 —— 落到 outputs/ 之後,
+# 這幾份檔案跟正式回測結果長得一模一樣,而 research-only 的資訊原本只存在原始碼
+# docstring 與 STRATEGY_REGISTRY 裡。本 repo 對正式結果的標準是「結果必須自帶
+# 說得出可不可以當正式證據的欄位」,探索性產出沒有理由例外。
+RESEARCH_ONLY_STAMP = {
+    "research_only": True,
+    "engine": "rotation_research.run_portfolio",
+    "formal_evidence_eligible": False,
+    "reason": ("自製 positions/cash/MTM 迴圈(無漲停鎖/處置禁倉/整張與成本模型)、"
+               "legacy 單日候選池(非 PIT)、每格只跑一個相位"),
+}
+
+
+def stamp_research_only(df: "pd.DataFrame") -> "pd.DataFrame":
+    """把 research-only 聲明蓋成 DataFrame 的欄位(寫檔前用)。"""
+    if df is None or not hasattr(df, "assign"):
+        return df
+    return df.assign(**RESEARCH_ONLY_STAMP)
+
+
 def evaluate(
     *,
     candidate_pool: int = 300,
@@ -808,7 +829,8 @@ def evaluate(
         "OOS": benchmark_metrics(split["os_start"], split["os_end"]),
     }
     all_trades = pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame()
-    return result_df, {"split": split, "benchmark": benchmark}, all_trades
+    return result_df, {"split": split, "benchmark": benchmark,
+                       **RESEARCH_ONLY_STAMP}, all_trades
 
 
 def main():
@@ -851,17 +873,18 @@ def main():
     )
     result, meta, trades = evaluate(panel=panel, symbols=symbols)
     theme_audit = theme_case_audit(panel, symbols)
-    result.to_csv(
+    # 檔案本身要說得出它不是正式績效(見 RESEARCH_ONLY_STAMP)。
+    stamp_research_only(result).to_csv(
         config.OUTPUT_DIR / "rotation_is_oos.csv",
         index=False,
         encoding="utf-8-sig",
     )
-    trades.to_csv(
+    stamp_research_only(trades).to_csv(
         config.OUTPUT_DIR / "rotation_trades.csv",
         index=False,
         encoding="utf-8-sig",
     )
-    theme_audit.to_csv(
+    stamp_research_only(theme_audit).to_csv(
         config.OUTPUT_DIR / "theme_case_audit.csv",
         index=False,
         encoding="utf-8-sig",

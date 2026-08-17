@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-import pit_universe
+from universes import pit_snapshots as pit_universe
 
 
 @dataclass(frozen=True)

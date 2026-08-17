@@ -4,7 +4,7 @@
 > 記下實際回傳與踩到的坑。要找資料先看這裡,不要重新試錯。
 >
 > 想買資料前先讀最後一節「付費才有的東西」。目前結論:**還不需要付費**。
-> 規劃性質的比較(TEJ / FinMind 方案)見 `DATA_SOURCE_RESEARCH.md`。
+> 規劃性質的比較(TEJ / FinMind 方案)見 當年的資料源規劃比較(已於 2026-08-16 刪除,見 git log)。
 >
 > ⚠️ **這一頁的端點沒有一個會在測試或 CI 裡被呼叫。** `tests/` 一律離線、mock 掉
 > HTTP,`.github/workflows/ci.yml` 也不設 `FINMIND_TOKEN`。要動這些端點就是要動
@@ -34,7 +34,7 @@ process list；本 repo 的資料請求只用 `Authorization: Bearer ...` header
 | `TaiwanStockMarginPurchaseShortSale` | 融資融券餘額 | `data.fetch_margin` |
 | `TaiwanStockSecuritiesLending` | 借券 | `data.fetch_lending` |
 | `TaiwanStockShareholding` | 外資持股比例 | `data.fetch_foreign_holding` |
-| **`TaiwanStockDividendResult`** | **除權息前後參考價** | **`price_adjust.py` 自建還原價的關鍵** |
+| **`TaiwanStockDividendResult`** | **除權息前後參考價** | **`data/price_adjust.py` 自建還原價的關鍵** |
 | `TaiwanStockDividend` | 股利政策(含除息交易日) | 未用 |
 | `TaiwanStockDelisting` | 下市清單(2024-01~2026-07 共 32 筆) | 未用(PIT 池方案更完整) |
 | `TaiwanStockBalanceSheet` | 資產負債表,含 `CapitalStock` | **可推市值**,見下 |
@@ -72,14 +72,14 @@ dataset=TaiwanStockTotalReturnIndex&data_id=TAIEX
 還原價 61.83% vs 未還原 55.87%(差 5.96pp/年;剔除 2327 分割污染後仍 3.52pp)。
 
 接在 `data.fetch_market_total_return_index`(快取 `market__TAIEX_TR__<snap>__d<days>`),
-選哪一個指數由 `return_convention.py` 決定 —— 口徑對不上或抓不到一律 raise,
+選哪一個指數由 `data/return_convention.py` 決定 —— 口徑對不上或抓不到一律 raise,
 **不會退回價格指數**。
 
 ### 被鎖(回 `status=400 Your level is register`)
 
 | dataset | 內容 | 免費替代 |
 |---|---|---|
-| `TaiwanStockPriceAdj` | 官方還原價 | ✅ `price_adjust.py` 自建(僅除權息,不含分割/減資) |
+| `TaiwanStockPriceAdj` | 官方還原價 | ✅ `data/price_adjust.py` 自建(僅除權息,不含分割/減資) |
 | `TaiwanStockMarketValue` | 市值 | ✅ 用 `CapitalStock`,見下 |
 | `TaiwanStockHoldingSharesPer` | 集保戶數分級 | ❌ TDCC 有公開但需另爬 |
 | `TaiwanStockTradingDailyReport` | 分點進出 | ❌ 難自建,TWSE 需逐檔爬 |
@@ -113,7 +113,7 @@ https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX
 - 非交易日 `stat != "OK"`。
 - 欄位:證券代號/名稱/成交股數/成交筆數/成交金額/開/高/低/收/漲跌/…
 
-用於 `pit_universe.py` 建 point-in-time 候選池。
+用於 `universes/pit_snapshots.py` 建 point-in-time 候選池。
 
 ### 注意/處置
 
@@ -123,7 +123,7 @@ https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX
 當前處置:https://openapi.twse.com.tw/v1/announcement/punish     ← 只回當前,無歷史
 ```
 
-TWSE **沒有歷史處置端點**,所以 `twse_disposition.py` 用「連續3日注意→次日起處置
+TWSE **沒有歷史處置端點**,所以 `data/twse_disposition.py` 用「連續3日注意→次日起處置
 10日」規則推導(proxy,偏寬,`source="derived"`)。
 
 ### 其他
@@ -155,7 +155,7 @@ https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes
 ```
 
 處置端點**直接給真實「處置起訖時間」**,不需要像 TWSE 那樣推導。
-所以上櫃是 `actual`、上市是 `derived`,`source` 欄位據實標示(見 `tpex_disposition.py`)。
+所以上櫃是 `actual`、上市是 `derived`,`source` 欄位據實標示(見 `data/tpex_disposition.py`)。
 
 實測 2023-01~2026-06:978 段真實處置 / 370 檔;注意事件 12117 筆。
 PIT 檢查 325 筆零違規 —— 公布日一律早於處置起始日。
@@ -214,12 +214,32 @@ openapi 系列(`/openapi/v1/...`)只給**近期滾動視窗**:處置約 2 週、
 已知限制:TaiwanStockInfo 的證券別是**當下狀態**,不是 PIT。「當時興櫃、現在上市」
 的歷史列擋不住(PIT 池的保護來自資料源本身:TWSE/TPEx 日行情端點不含興櫃)。
 
+### 資料本身的邊界(讀任何回測數字前先確認)
+
+閘門擋得住程式犯錯,擋不住資料先天缺的東西。以下是目前**還沒解除**的限制,
+它們會限制結論能講多強,不是可以忽略的免責文:
+
+1. **候選成員是 PIT,價格覆蓋不是。** 每月 PIT 池含當時在市、後來下市的股票
+   (`candidate_membership_survivorship_free=True`),但下市股的完整價格序列可能
+   缺,所以整體 metadata 的 `survivorship_free` 仍是 **`False`**。
+2. **價格預設未還原。** 官方 `TaiwanStockPriceAdj` 在免費層被鎖;`data/price_adjust.py`
+   自建還原只處理除權息,**不含分割與減資**。正式回測因此預設 fail-closed
+   (寧可拒跑,也不要把公司行動斷點記成真實虧損)。
+3. **產業分類不是 PIT。** 歷史日期套用當前 FinMind 標籤,族群策略保留
+   `industry_pit=False`。
+4. **處置／下市資料不完整。** TWSE 歷史處置是由注意名單推導的 proxy
+   (`source="derived"`),只有 TPEx 是 `actual`。下市的現金清算／換股條件沒有正式資料。
+5. **漲跌停與成交容量是近似。** 一字鎖停由 OHLC 判斷,沒有逐日委託簿與撮合量,
+   任何結論都還需要滑價與容量敏感度測試。
+6. **資料只有約兩年,且是單一偏多頭 regime。** 沒有足夠的空頭樣本,任何統計檢定
+   的檢定力都低 —— 這一條限制的是「能不能下結論」,不是「數字算得對不對」。
+
 ## 5. 付費才有的東西(以及該不該買)
 
 **結論修正(2026-08-15):正確的比較基準需要付費層。** 兩個曾經的阻擋項仍可用免費
 資料解決:
 
-- 還原價 → `price_adjust.py`(缺口:分割/減資,由 `price_integrity` 殘留掃描擋)
+- 還原價 → `data/price_adjust.py`(缺口:分割/減資,由 `price_integrity` 殘留掃描擋)
 - 市值 → `CapitalStock / 10 × close`
 
 但**還原價一旦開啟,個股序列就是含息的**,而免費層只有不含息的 TAIEX 價格指數 →
@@ -242,8 +262,8 @@ openapi 系列(`/openapi/v1/...`)只給**近期滾動視窗**:處置約 2 週、
 
 ## 關聯檔案
 
-- 自建還原價:`price_adjust.py`｜PIT 候選池:`pit_universe.py`
-- 報酬口徑(含息/不含息)與基準選擇:`return_convention.py`
-- 注意/處置:`twse_disposition.py`(上市)、`tpex_disposition.py`(上櫃)
-- 資料層:`data.py`｜候選池建構:`build_universe.py`
-- 規劃性質的資料源比較(TEJ 等):`DATA_SOURCE_RESEARCH.md`
+- 自建還原價:`data/price_adjust.py`｜PIT 候選池:`universes/pit_snapshots.py`
+- 報酬口徑(含息/不含息)與基準選擇:`data/return_convention.py`
+- 注意/處置:`data/twse_disposition.py`(上市)、`data/tpex_disposition.py`(上櫃)
+- 資料層:`data/__init__.py`｜候選池建構:`universes/build.py`
+- 規劃性質的資料源比較(TEJ 等):當年的資料源規劃比較(已於 2026-08-16 刪除,見 git log)

@@ -560,7 +560,7 @@ class ForwardHoldoutTest(_LedgerCase):
     def _forward(self, *, freeze_date: str, panel_start: str, snapshot: str,
                  now: datetime, spec=None, label: str = "fwd",
                  resolve_boundaries: bool = True):
-        import backtest
+        from backtest import event_backtest
         import forward_test
 
         panel = _panel(panel_start)
@@ -587,7 +587,7 @@ class ForwardHoldoutTest(_LedgerCase):
             with (
                 mock.patch.object(s19, "build_panel",
                                   return_value=(panel, ["A", "B", "C", "D"])),
-                mock.patch.object(backtest, "backtest_portfolio",
+                mock.patch.object(event_backtest, "backtest_portfolio",
                                   side_effect=lambda **kw: fake_bt(**kw)),
                 mock.patch.object(s19, "equal_weight_baseline",
                                   return_value={"sharpe": 0.4, "ann_ret": 0.08,
@@ -678,8 +678,8 @@ class ForwardHoldoutTest(_LedgerCase):
 # ── 6. 正式 IS/OS(run_full)揭露 OS 也要入帳 ─────────────────────────────
 class RunFullHoldoutTest(_LedgerCase):
     def _run_full(self):
-        import backtest
-        import evaluation_split
+        from backtest import event_backtest
+        import evaluation.splits as evaluation_split
 
         dates = pd.bdate_range("2024-01-01", periods=120)
 
@@ -701,12 +701,12 @@ class RunFullHoldoutTest(_LedgerCase):
             }
 
         with (
-            mock.patch.object(backtest.uni, "get_universe", return_value=["A"]),
-            mock.patch.object(backtest, "backtest_portfolio",
+            mock.patch.object(event_backtest.uni, "get_universe", return_value=["A"]),
+            mock.patch.object(event_backtest, "backtest_portfolio",
                               side_effect=fake_portfolio),
-            mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
+            mock.patch.object(event_backtest, "factor_ic", return_value=pd.DataFrame()),
         ):
-            result, _ = backtest.run_full(sample=True, top_n=1, rebalance_every=3,
+            result, _ = event_backtest.run_full(sample=True, top_n=1, rebalance_every=3,
                                           dynamic_enabled=False)
         split = evaluation_split.build_evaluation_split(
             dates, minimum_embargo_days=config.BT_IC_HORIZON)
@@ -719,7 +719,7 @@ class RunFullHoldoutTest(_LedgerCase):
         self.assertEqual([rec["os_start"], rec["os_end"]], list(split.os_window))
         self.assertEqual(rec["is_window"], list(split.is_window))
         self.assertEqual(rec["embargo_trading_days"], split.n_embargo)
-        self.assertEqual(rec["source"], "backtest.run_full")
+        self.assertEqual(rec["source"], "event_backtest.run_full")
         self.assertFalse(rec["holdout_previously_seen"])
         # smoke sample 仍然看過那段資料 → 照樣入帳,只是標成非正式證據
         self.assertFalse(rec["context"]["formal_evidence_eligible"])

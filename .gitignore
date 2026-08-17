@@ -4,6 +4,13 @@ _cache/
 # 輸出：報告(.md)進版控當研究成果，其餘(csv/log/json/pickle)排除
 outputs/*
 !outputs/*.md
+# 同理但用於日期子資料夾（研究批次一次一個 outputs/YYYY-MM-DD/）：
+# 只有該批次的報告進版控，run artifacts（csv/json/log）留在本機。
+# 不這樣的話 outputs/* 會把整個日期目錄擋掉，git 連進去都不會進去，
+# 結論就只活在某一台機器上 —— 那正是「負面發現要寫進版控」要防的事。
+!outputs/*/
+outputs/*/*
+!outputs/*/*.md
 # 例外：重現回測必需的候選池 fixture + 不可覆寫的凍結 manifest 要進版控
 !outputs/universe_top*.json
 !outputs/FROZEN_MANIFEST_*.json
@@ -35,3 +42,7 @@ venv/
 
 # 系統
 .DS_Store
+
+# golden path 的執行產物:每次 run 一個目錄,內含 CSV/JSON。
+# 它們是研究產物不是原始碼,且 run_id 含 hash,進版控只會製造無意義的 diff。
+outputs/research_runs/

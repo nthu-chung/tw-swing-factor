@@ -29,13 +29,18 @@
   1. 先用大盤(TAIEX)序列當市場行事曆,解出參考交易日 —— `--date` 落在假日
      就退到「最近一個有效交易日」;沒給 `--date` 就是市場最後一個交易日。
   2. 每檔股票必須在**那一天**有 bar 才算候選(不是 <= 那一天)。
-  3. 只有更舊 bar 的(停牌/暫停交易/已下市)排除並標 `stale_bar`,計入
+  3. 那一根還必須是 **valid bar**(收盤/成交股數/成交金額都是正數);掛牌但
+     全日無成交、停牌卻仍出列的,記 `no_trade` 並排除 —— 它的收盤價不是可成交價。
+  4. 只有更舊 bar 的(停牌/暫停交易/已下市)排除並標 `stale_bar`,計入
      診斷資訊,不冒充當日候選。
-  4. 連那天之前都沒有資料的(尚未上市)記 `no_asof`。
+  5. 連那天之前都沒有資料的(尚未上市)記 `no_asof`。
 
-這條規則與 `dynamic_universe.add_membership` 語意一致但**目前是第三份獨立
-實作**(screener / live / dynamic_universe 各一份)。收斂成同一份成員規則屬於
-更深的重構,尚未做;改動任何一份時請三份一起看。
+第 3 點是 2026-08-16 補的:原本只檢查「參考日有沒有那一列」,與本檔宣稱的
+「與 `dynamic_universe.add_membership` 語意一致」相反 —— 實測把某檔在參考日的
+volume/turnover 設為 0,screener 仍把它放進候選且 `stale_bar` 計數是 0,而同一份
+資料在 `add_membership` 是 `in_dynamic_universe=False`。現在兩邊共用
+`dynamic_universe.valid_bar_mask()`,不再是兩份會分岔的判定。
+(`current_watchlist` 仍有自己的一份,尚未收斂。)
 """
 
 from __future__ import annotations
@@ -46,14 +51,16 @@ import pandas as pd
 
 import config
 import data
-import factors
-import universe as uni
+from universes import dynamic as dyn
+import factor_engine.legacy_factors as factors
+from universes import legacy_static as uni
 
 
 # 參考日取列的三種結果。`ok` 以外都不得進候選名單。
 REFERENCE_OK = "ok"
 REFERENCE_STALE_BAR = "stale_bar"     # 停牌/下市:只有更舊的 bar
 REFERENCE_NO_ASOF = "no_asof"         # 參考日之前完全沒資料(尚未上市)
+REFERENCE_NO_TRADE = "no_trade"       # 參考日有列但全日無成交(收盤價非可成交價)
 
 
 def market_trading_days(market: Optional[pd.DataFrame]) -> pd.DatetimeIndex:
@@ -108,7 +115,17 @@ def reference_bar(frame: Optional[pd.DataFrame], ref_day: pd.Timestamp):
     dates = pd.to_datetime(frame["date"], errors="coerce")
     exact = frame[dates == ref_day]
     if len(exact):
-        return exact.iloc[-1], REFERENCE_OK, ref_day
+        # 有那一列還不夠:掛牌但全日無成交、停牌卻仍出列的 bar,收盤價不是可成交價。
+        # 判定共用 dynamic_universe.valid_bar_mask —— 本檔 docstring 宣稱與
+        # add_membership 語意一致,但 2026-08-15 之前只檢查「有沒有列」,實測
+        # 參考日 volume/turnover=0 的股票仍會進候選且不被計數,兩者判定相反。
+        try:
+            ok = bool(dyn.valid_bar_mask(exact).iloc[-1])
+        except ValueError:
+            ok = False          # 缺欄位不可當成「有成交」
+        if ok:
+            return exact.iloc[-1], REFERENCE_OK, ref_day
+        return None, REFERENCE_NO_TRADE, ref_day
     older = dates[dates < ref_day]
     if len(older) == 0:
         return None, REFERENCE_NO_ASOF, None
@@ -179,7 +196,7 @@ def screen(
     rows = []
     stale_bars: List[dict] = []
     skipped = {"no_data": 0, "liquidity": 0, "trend": 0, "no_asof": 0,
-               "excluded": 0, "stale_bar": 0}
+               "excluded": 0, "stale_bar": 0, "no_trade": 0}
 
     for sid in symbols:
         # pre-filter：排除金融 / ETF / 非普通股（任何 universe 模式都套用）

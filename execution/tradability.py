@@ -85,7 +85,7 @@ def load_disposition_days(all_dates) -> Dict[str, set]:
             "拒絕用半套市場覆蓋回測"
         )
     try:
-        import twse_disposition
+        from data import twse_disposition
 
         combined = pd.concat(frames, ignore_index=True)
         return twse_disposition.disposition_day_set(combined, all_dates)

@@ -12,9 +12,9 @@ import pandas as pd
 import requests
 
 import config
-import backtest
+from backtest import event_backtest
 import data
-import universe
+from universes import legacy_static as universe
 
 
 class _Response:
@@ -70,7 +70,7 @@ class DataFailClosedTest(unittest.TestCase):
         raw = pd.DataFrame({"date": [pd.Timestamp("2025-01-01")], "close": [100.0]})
         with (
             mock.patch.object(config, "SELF_ADJUST_PRICES", True),
-            mock.patch("price_adjust.adjust_price_frame", side_effect=RuntimeError("boom")),
+            mock.patch("data.price_adjust.adjust_price_frame", side_effect=RuntimeError("boom")),
         ):
             with self.assertRaisesRegex(RuntimeError, "拒絕退回未還原價"):
                 data._maybe_self_adjust("2330", raw, "TaiwanStockPrice")
@@ -104,7 +104,7 @@ class DataFailClosedTest(unittest.TestCase):
 
 class UniverseFailClosedTest(unittest.TestCase):
     def test_missing_named_pool_never_falls_back_to_sample(self):
-        with mock.patch("build_universe.load", return_value=[]):
+        with mock.patch("universes.build.load", return_value=[]):
             with self.assertRaises(FileNotFoundError):
                 universe.get_universe(top_n=300)
 
@@ -122,7 +122,7 @@ class ExecutionDataFailClosedTest(unittest.TestCase):
                 mock.patch.object(config, "CACHE_DIR", Path(tmp)),
             ):
                 with self.assertRaisesRegex(RuntimeError, "無處置快取"):
-                    backtest._load_disposition_days(pd.bdate_range("2025-01-01", periods=5))
+                    event_backtest._load_disposition_days(pd.bdate_range("2025-01-01", periods=5))
 
 
 if __name__ == "__main__":

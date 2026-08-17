@@ -28,12 +28,12 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 import security_type
 from _offline_registry import common_stock_registry, common_stocks
 from strategies import s19_chip_momentum as _s19
-from strategies.position_policy import (
+from strategy_kit.position_policy import (
     RegimeProvenance,
     RegimeState,
     StrategyPositionPolicy,
@@ -162,15 +162,15 @@ class RegimeProvenanceInSummaryTest(unittest.TestCase):
         security_type.set_registry(common_stock_registry(*_SYMBOLS))
         with (
             common_stocks(*_SYMBOLS),
-            mock.patch.object(backtest, "_assert_price_integrity",
+            mock.patch.object(event_backtest, "_assert_price_integrity",
                               lambda *a, **k: None),
-            mock.patch.object(backtest, "_load_disposition_days",
+            mock.patch.object(event_backtest, "_load_disposition_days",
                               lambda *a, **k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *a, **k: price.copy()),
             mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=list(_SYMBOLS), sample=False, dynamic_enabled=True,
                 start_date=str(self.DATES[0])[:10],
                 end_date=str(self.DATES[-1])[:10],

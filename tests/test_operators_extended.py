@@ -7,7 +7,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import operators as op
+import factor_engine.operators as op
+from factor_engine import attach_fields
 
 
 def _panel(n=80, sids=("A", "B"), seed=7):
@@ -38,8 +39,8 @@ class CausalityTest(unittest.TestCase):
 
         ob = op.PanelOps(base["date"], base["stock_id"])
         oe = op.PanelOps(ext["date"], ext["stock_id"])
-        bf = op.attach_fields(base, ob)
-        ef = op.attach_fields(ext, oe)
+        bf = attach_fields(base, ob)
+        ef = attach_fields(ext, oe)
 
         unary = ["ts_mean", "ts_std_dev", "ts_sum", "ts_min", "ts_max", "ts_median",
                  "ts_zscore", "ts_ir", "ts_returns", "ts_scale", "ts_rank",
@@ -81,7 +82,7 @@ class FieldTest(unittest.TestCase):
     def test_vwap_uses_real_turnover_not_approximation(self):
         p = _panel(n=10)
         o = op.PanelOps(p["date"], p["stock_id"])
-        f = op.attach_fields(p, o)
+        f = attach_fields(p, o)
         np.testing.assert_allclose(f["vwap"].values,
                                    (p["turnover"] / p["volume"]).values, rtol=1e-12)
 
@@ -95,7 +96,7 @@ class FieldTest(unittest.TestCase):
             "volume": [1e6, 1e6], "turnover": [1e8, 1.3e8],
         })
         o = op.PanelOps(p["date"], p["stock_id"])
-        f = op.attach_fields(p, o)
+        f = attach_fields(p, o)
         self.assertAlmostEqual(f["true_range"].iloc[0], 2.0)        # 首日無前收 → high-low
         self.assertAlmostEqual(f["true_range"].iloc[1], 32.0)       # |132-100| 跳空主導
         self.assertGreater(f["true_range"].iloc[1], 132 - 129)
@@ -103,7 +104,7 @@ class FieldTest(unittest.TestCase):
     def test_returns_and_gap(self):
         p = _panel(n=5, sids=("A",))
         o = op.PanelOps(p["date"], p["stock_id"])
-        f = op.attach_fields(p, o)
+        f = attach_fields(p, o)
         self.assertTrue(np.isnan(f["returns"].iloc[0]))             # 首日無前收
         exp = p["close"].iloc[1] / p["close"].iloc[0] - 1
         self.assertAlmostEqual(f["returns"].iloc[1], exp)
@@ -134,7 +135,7 @@ class IndicatorTest(unittest.TestCase):
     def test_atr_equals_mean_true_range(self):
         p = _panel(n=40, sids=("A",))
         o = op.PanelOps(p["date"], p["stock_id"])
-        f = op.attach_fields(p, o)
+        f = attach_fields(p, o)
         np.testing.assert_allclose(o.ts_atr(f["true_range"], 14).dropna().values,
                                    o.ts_mean(f["true_range"], 14).dropna().values,
                                    rtol=1e-12)

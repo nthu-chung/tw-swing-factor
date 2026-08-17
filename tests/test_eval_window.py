@@ -14,7 +14,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 from _offline_registry import use_common_stocks
 
@@ -49,12 +49,12 @@ class EvalWindowTest(unittest.TestCase):
 
     def _run(self, **kw):
         with (
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda s, *a, **k: self.cache[s].copy()),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=list(self.cache), sample=False, rebalance_every=20,
                 top_n=3, picks_by_date=self.picks, **kw)
 

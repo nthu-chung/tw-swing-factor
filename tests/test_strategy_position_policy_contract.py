@@ -2,7 +2,7 @@
 """StrategyPositionPolicy v1 的 contract-first 離線驗收。
 
 這支測試刻意先於實作加入。交接當下預期只有 availability 測試失敗、其餘因公共
-模組尚不存在而 skip；實作者建立 `strategies.position_policy` 後，所有 skip 會自動
+模組尚不存在而 skip；實作者建立 `strategy_kit.position_policy` 後，所有 skip 會自動
 解除。不得刪測試、永久 skip 或把 assert 改寬來取得綠燈。
 
 這裡釘住的不是內部類別怎麼拆，而是曾經會製造假績效的外部行為：
@@ -25,13 +25,13 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 from _offline_registry import common_stocks
 
 
 try:
-    _policy_module = importlib.import_module("strategies.position_policy")
+    _policy_module = importlib.import_module("strategy_kit.position_policy")
 except ModuleNotFoundError:
     _policy_module = None
 
@@ -48,7 +48,7 @@ def _spec(**overrides):
         "max_slots": 10,
         "slot_weight": 0.10,
         "single_name_cap": 0.15,
-        "hard_stop_pct": 0.08,
+        "hard_stop_pct": 0.20,
         "max_hold_days": 120,
         "risk_on_slots": 10,
         "caution_slots": 5,
@@ -121,7 +121,7 @@ def _frame(decision, attr):
     return value.copy()
 
 
-@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategies.position_policy")
+@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategy_kit.position_policy")
 class StrategyPositionPolicySpecTest(unittest.TestCase):
     def test_v1_defaults_are_frozen_and_serializable(self):
         spec = _spec()
@@ -131,7 +131,7 @@ class StrategyPositionPolicySpecTest(unittest.TestCase):
         self.assertEqual(spec.max_slots, 10)
         self.assertAlmostEqual(spec.slot_weight, 0.10)
         self.assertAlmostEqual(spec.single_name_cap, 0.15)
-        self.assertAlmostEqual(spec.hard_stop_pct, 0.08)
+        self.assertAlmostEqual(spec.hard_stop_pct, 0.20)
         self.assertEqual(spec.max_hold_days, 120)
         self.assertEqual(
             (spec.risk_on_slots, spec.caution_slots, spec.risk_off_slots),
@@ -163,7 +163,7 @@ class StrategyPositionPolicySpecTest(unittest.TestCase):
                 _spec(**overrides)
 
 
-@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategies.position_policy")
+@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategy_kit.position_policy")
 class WeeklyRankAndCashPolicyTest(unittest.TestCase):
     def test_top10_enters_top20_holds_and_rank21_exits(self):
         ranks = {f"S{i:02d}": i for i in range(1, 22)}
@@ -244,7 +244,7 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
 
         `LAGGARD` 的 close 於 2026-08-15 由 70 改成 95(entry 100):這條測試要
         測的是「權重掉到 7% 不得機械式攤平」,但 -30% 同時**穿過 hard stop**
-        (`hard_stop_pct=0.08`),而 fixture 用的是 §5 的最小 holdings(沒有
+        (`hard_stop_pct=0.20`),而 fixture 用的是 §5 的最小 holdings(沒有
         `exit_pending`)。舊實作靠「`exit_pending` 缺值預設 True」把那檔判成
         「早就跌破、意圖已在路上」才回 `hold`,於是這條測試反過來把「缺資訊時
         不停損」釘成了契約。close 改成 95 讓部位維持 -5%(在停損之上)、權重
@@ -275,12 +275,12 @@ class WeeklyRankAndCashPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(targets.loc["1101", "target_weight"], 0.15)
 
 
-@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategies.position_policy")
+@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategy_kit.position_policy")
 class RiskTimingAndAuditTest(unittest.TestCase):
     def test_close_confirmed_stop_creates_exit_even_off_weekly_decision_day(self):
         d = _decide(
             _policy(), ranks={"1101": 1},
-            holdings=(("1101", 0.10, 100.0, 91.9, 5),),
+            holdings=(("1101", 0.10, 100.0, 79.9, 5),),
             is_decision_day=False,
         )
         actions = _frame(d, "actions").set_index("stock_id")
@@ -389,7 +389,7 @@ def _signal_frame(decision_dates, snapshots):
     return pd.DataFrame(rows)
 
 
-@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategies.position_policy")
+@unittest.skipUnless(POLICY_AVAILABLE, "等待實作者新增 strategy_kit.position_policy")
 class EventBacktestPolicyIntegrationTest(unittest.TestCase):
     """policy 必須走現有事件引擎，不能只產生一張看起來正確的 target 表。"""
 
@@ -398,15 +398,15 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         with (
             # signal_frame 也過證券別閘門(fail-closed),測試代號要宣告證券別。
             common_stocks(*symbols),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
             mock.patch.object(
-                backtest.data, "fetch_price",
+                event_backtest.data, "fetch_price",
                 side_effect=lambda sid, *a, **k: prices[sid].copy(),
             ),
             mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=symbols,
                 sample=False,
                 start_date=str(min(df["date"].min() for df in prices.values()))[:10],
@@ -509,11 +509,11 @@ class EventBacktestPolicyIntegrationTest(unittest.TestCase):
         picks = {d: [("1101", 1.0, "1101")] for d in dates[:-1]}
         with (
             common_stocks("1101"),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price", return_value=prices["1101"].copy()),
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price", return_value=prices["1101"].copy()),
         ):
-            result = backtest.backtest_portfolio(
+            result = event_backtest.backtest_portfolio(
                 symbols=["1101"], sample=False, rebalance_every=5, top_n=1,
                 picks_by_date=picks, static_universe_comparator=True,
             )
@@ -525,7 +525,7 @@ class StrategyPositionPolicyAvailabilityTest(unittest.TestCase):
     def test_public_policy_module_exists(self):
         self.assertIsNotNone(
             _policy_module,
-            "尚未實作 strategies.position_policy；請依 "
+            "尚未實作 strategy_kit.position_policy；請依 "
             "STRATEGY_POSITION_POLICY_SPEC.md 完成後再跑本測試",
         )
         self.assertTrue(hasattr(_policy_module, "StrategyPositionPolicy"))

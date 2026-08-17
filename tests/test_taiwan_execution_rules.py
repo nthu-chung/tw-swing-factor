@@ -8,7 +8,7 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 from _offline_registry import common_stocks
 from execution.costs import OrderSizeMode, TaiwanStockCostModel, size_long_order
@@ -139,9 +139,9 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
         with (
             # 外部 picks 路徑的證券別閘門是 fail-closed,代號要顯式宣告證券別。
             common_stocks("1101"),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price", return_value=prices.copy()),
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price", return_value=prices.copy()),
             mock.patch.object(config, "BT_ORDER_SIZE_MODE", mode),
             mock.patch.object(config, "BT_INITIAL_CAPITAL", 250_000.0),
             mock.patch.object(config, "BT_MIN_COMMISSION", 0.0),
@@ -151,7 +151,7 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
             mock.patch.object(config, "BT_TAKE_PROFIT", 1.0),
             mock.patch.object(config, "BT_STOP_LOSS", 1.0),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=["1101"], sample=False, rebalance_every=2, top_n=1,
                 picks_by_date=picks,
             )
@@ -177,7 +177,7 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
     def test_official_mode_without_official_columns_fails_closed(self):
         with (
             mock.patch.object(config, "BT_PRICE_LIMIT_SOURCE", "official"),
-            mock.patch.object(backtest.data, "fetch_price_limits", return_value=pd.DataFrame()),
+            mock.patch.object(event_backtest.data, "fetch_price_limits", return_value=pd.DataFrame()),
         ):
             with self.assertRaisesRegex(RuntimeError, "TaiwanStockPriceLimit 為空"):
                 self._run(OrderSizeMode.REGULAR_LOT.value)
@@ -192,7 +192,7 @@ class BacktestExecutionIntegrationTest(unittest.TestCase):
         })
         with (
             mock.patch.object(config, "BT_PRICE_LIMIT_SOURCE", "official"),
-            mock.patch.object(backtest.data, "fetch_price_limits", return_value=limits),
+            mock.patch.object(event_backtest.data, "fetch_price_limits", return_value=limits),
         ):
             result = self._run(OrderSizeMode.REGULAR_LOT.value)
         self.assertTrue(result["summary"]["execution"]["price_and_lot_realistic"])

@@ -121,6 +121,42 @@ class ReferenceBarTest(unittest.TestCase):
         self.assertEqual(pd.Timestamp(row["date"]), self.REF)
         self.assertEqual(last_bar, self.REF)
 
+    def test_reference_day_bar_without_trading_is_not_a_candidate(self):
+        """參考日有列**還不夠**:全日無成交的 bar,收盤價不是可成交價。
+
+        原缺陷(2026-08-16 修):`reference_bar` 只檢查「參考日有沒有那一列」,
+        與本模組宣稱的「與 dynamic_universe.add_membership 語意一致」相反。
+        實測把某檔在參考日的 volume/turnover 設為 0,screener 仍把它放進候選、
+        `stale_bar` 計數是 0;同一份資料在 `add_membership` 是
+        `in_dynamic_universe=False`。兩份判定現在共用 `valid_bar_mask()`。
+        """
+        frame = _price_frame("2026-05-20")
+        zeroed = frame.copy()
+        last = pd.to_datetime(zeroed["date"]) == self.REF
+        zeroed.loc[last, ["volume", "turnover"]] = 0
+        row, status, last_bar = screener.reference_bar(zeroed, self.REF)
+        self.assertIsNone(row, "全日無成交不得回列")
+        self.assertEqual(status, screener.REFERENCE_NO_TRADE)
+        self.assertEqual(last_bar, self.REF)
+
+    def test_no_trade_and_membership_agree(self):
+        """同一份資料,screener 與 dynamic_universe 必須給同一個答案。"""
+        from universes import dynamic as dyn
+        frame = _price_frame("2026-05-20")
+        zeroed = frame.copy()
+        last = pd.to_datetime(zeroed["date"]) == self.REF
+        zeroed.loc[last, ["volume", "turnover"]] = 0
+        exact = zeroed[pd.to_datetime(zeroed["date"]) == self.REF]
+        self.assertFalse(bool(dyn.valid_bar_mask(exact).iloc[-1]))
+        self.assertEqual(screener.reference_bar(zeroed, self.REF)[1],
+                         screener.REFERENCE_NO_TRADE)
+
+    def test_missing_columns_are_not_treated_as_tradable(self):
+        frame = _price_frame("2026-05-20").drop(columns=["turnover"])
+        row, status, _ = screener.reference_bar(frame, self.REF)
+        self.assertIsNone(row)
+        self.assertEqual(status, screener.REFERENCE_NO_TRADE)
+
     def test_older_bar_is_stale_not_a_candidate(self):
         """停牌股只有更舊 bar → stale_bar,不回列。
 

@@ -46,6 +46,23 @@ def tag(obj: Any, density: str) -> Any:
     return obj
 
 
+def preserving_merge(left: Any, right: Any, **kwargs) -> Any:
+    """`left.merge(right, ...)` 但把左邊的稠密度標籤接回去。
+
+    為什麼需要:pandas 的 `attrs` 在 pickle/copy/concat/sort_values/reset_index/
+    取單欄/assign 都會保留,**但 merge 一定丟失**。稠密度閘門對「無標籤」是
+    fail-open(見模組 docstring 的理由),所以一個忘了補標的 merge 就等於閘門
+    靜默消失 —— 而補標目前是慣例、不是強制。
+
+    這個包裝把「記得補標」從人的紀律變成呼叫一個函式。已知的 merge 站點都應該
+    改用它;`tests/test_dense_panel_factors.py` 會擋住 strategies/ 與
+    rotation_research 直接呼叫 `DataFrame.merge`。
+    """
+    out = left.merge(right, **kwargs)
+    density = density_of(left)
+    return out if density is None else tag(out, density)
+
+
 def density_of(obj: Any) -> Optional[str]:
     """讀出稠密度標籤;沒有標籤或標籤壞掉都回 None(= 未知)。"""
     attrs = getattr(obj, "attrs", None)

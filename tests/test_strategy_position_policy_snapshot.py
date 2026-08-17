@@ -27,10 +27,10 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 from _offline_registry import common_stocks
-from strategies.position_policy import (
+from strategy_kit.position_policy import (
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
 )
@@ -132,7 +132,7 @@ class SnapshotCompletenessDefaultTest(unittest.TestCase):
     def test_incompleteness_does_not_suppress_risk_exits(self):
         """unknown 只擋「因為沒看到而賣」,不擋停損等每日強制退出。"""
         d = _decide(_signals({"1101": 1}),
-                    holdings=(("1102", 0.10, 100.0, 91.0, 5),),
+                    holdings=(("1102", 0.10, 100.0, 75.0, 5),),
                     is_decision_day=False)
         acts = _actions(d)
         self.assertEqual(acts.loc["1102", "action"], "exit")
@@ -233,15 +233,15 @@ class EngineSnapshotCompletenessTest(unittest.TestCase):
         with (
             # signal_frame 也過證券別閘門(fail-closed),測試代號要宣告證券別。
             common_stocks(*sorted(prices)),
-            mock.patch.object(backtest, "_assert_price_integrity",
+            mock.patch.object(event_backtest, "_assert_price_integrity",
                               lambda *a, **k: None),
-            mock.patch.object(backtest, "_load_disposition_days",
+            mock.patch.object(event_backtest, "_load_disposition_days",
                               lambda *a, **k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda sid, *a, **k: prices[sid].copy()),
             mock.patch.object(config, "BT_MODEL_LIMIT_LOCK", True),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=sorted(prices), sample=False,
                 start_date=str(min(df["date"].min() for df in prices.values()))[:10],
                 end_date=str(max(df["date"].max() for df in prices.values()))[:10],

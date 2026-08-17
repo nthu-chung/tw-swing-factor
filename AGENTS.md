@@ -5,6 +5,37 @@
 > 一個會產生假 Sharpe 的 bug,比一個會 crash 的 bug 嚴重得多 —— crash 看得見,
 > 假 Sharpe 會被當成結論寫進報告。
 
+## 專案使命與目前邊界（所有 AI 先讀）
+
+這個專案最終要形成一條**數學先篩選、AI 再研究、人類做決策**的投資研究流程：
+
+```text
+階段 A（本 repo 目前負責）
+PIT 市場資料 → 動態 universe → 因子／策略排名 → 事件驅動回測
+             → 可稽核的量化候選名單
+
+階段 B（規劃中，尚未實作）
+凍結候選名單 + 當時可得基本面／新聞 → AI 分析師研究
+                                      → 人工判斷 → 手動下單
+```
+
+目前程式碼的正式範圍只有**階段 A：台股 long-only 量化選股與回測**。這裡不含 AI
+新聞分析實作、不含券商連線，也不會自動下單。`analyst_research/` 只是
+`ARCHITECTURE.md` 裡的目標模組，尚未建立；不要把規劃文件描述成已完成能力。
+
+未來建立階段 B 時必須維持以下分界：
+
+- 量化層先產生不可事後改寫的候選名單、分數、因子貢獻、資料快照與 as-of 時間。
+- AI 只能在候選集合內補充基本面、公告與新聞證據；輸出另存，不得靜默修改量化分數。
+- 新聞與財報只能使用研究當時已公開的版本及時間戳，不能用今天的資料解釋過去。
+- 最終效果必須比較「純量化 A 組」與「量化＋AI B 組」，只用 untouched OOS 或
+  forward-only 評估；不能看過結果後回頭改 AI prompt 或篩選規則。
+- 最終投資決策與下單由人負責；任何輸出都不是自動交易指令或投資保證。
+
+AI 進入 repo 後的閱讀順序：`README.md`（目的與使用者邊界）→ 本檔（工作規則）→
+`ARCHITECTURE.md`（模組責任）→ `STRATEGY_REGISTRY.md`（證據狀態與已證偽假說）→
+`RESEARCH_OPERATING_PROTOCOL.md`（研究升級條件）。
+
 ## 環境鐵則
 
 ```bash
@@ -43,7 +74,7 @@ CI **不設 `FINMIND_TOKEN`**:若有測試不小心走真實抓取,會 fail-clos
 當成「價格乾淨」的證據。但除息缺口 3~5% 在 ±10% 漲跌停帶內,掃描結構上看不到。
 現在放行只看資料集是否還原,審計降級為診斷。
 
-## 已知會產生假結果的陷阱(六個,都真的發生過)
+## 已知會產生假結果的陷阱(七個,都真的發生過)
 
 ### 1. panel 稀疏 → ts_ 算子失真
 
@@ -85,7 +116,7 @@ ann = r.mean() * 252 ; vol = r.std(ddof=1) * np.sqrt(252)
 
 候選池(`outputs/universe_top*.json`)是**單一日期**的排名。用它回套整段歷史 =
 用今天知道誰熱門去決定兩年前能選誰。實測舊池 283 檔有 83 檔在回測起點連前 200
-名都排不進去。修法見 `pit_universe.py`(逐時點重建,含下市股)。
+名都排不進去。修法見 `universes/pit_snapshots.py`(逐時點重建,含下市股)。
 
 動態 universe(每日 top100)本身是 PIT 的、沒問題 —— 問題只在它上面那層候選池。
 
@@ -115,6 +146,28 @@ IS/OS 是在凍結資料**內部**畫的線,引擎不知道那條線存在。兩
 
 交易所端點會偶發 `ChunkedEncodingError`。若回空表會被當成「該期間無資料」,
 **靜默漏掉整年**。一律重試,耗盡後 raise。
+
+### 7. cs_ 的排名母體 = 「panel 剛好有哪些列」
+
+陷阱 1 為了 `ts_` 保留非成員列,結果讓橫斷面算子吃下整個 panel。而正式 panel 是
+**所有月份候選池的聯集**(753 檔、每日 722 檔有 bar),不是任何一天真實存在的
+橫斷面 —— 一檔數月後才進池的股票會影響今天的名次,而且母體會隨快照與回測區間漂移。
+
+```python
+# 錯:母體是 722 檔聯集
+ops = op.PanelOps(panel["date"], panel["stock_id"])
+0.6 * ops.cs_rank(a) + 0.4 * ops.cs_rank(b)
+
+# 對:母體是顯式且可凍結的決定
+ops = op.PanelOps(panel["date"], panel["stock_id"],
+                  ranking_mask=panel["in_candidate_pool"], ranking_universe="pool")
+```
+
+單一 `cs_rank` 看不出差別(同日單調轉換);**兩個以上 cs_ 加權組合**才會被不對稱
+扭曲 —— 多出來的列在兩個因子的分布位置不同,等於你寫的 0.6/0.4 不是實際的相對權重。
+實測 top10 有 27.9%(H1)~52.5%(H4)的日子會不同。H 系列已由
+`strategy_kit/signal_builder.py` 強制(`score()` 拿不到未 scope 的 ops);
+自己建 `PanelOps` 的研究腳本仍要自己傳 `ranking_mask`。
 
 ## 研究紀律
 
@@ -172,29 +225,42 @@ IS/OS 是在凍結資料**內部**畫的線,引擎不知道那條線存在。兩
 | 檔案 | 作用 |
 |---|---|
 | `config.py` | 所有可調參數。改參數只改這裡 |
-| `data.py` | FinMind 資料層 + 快取(含快照戳) |
-| `price_adjust.py` | **自建還原價**(除權息回溯) |
-| `price_integrity.py` | 斷點稽核(診斷用,非放行條件) |
-| `pit_universe.py` | 交易所逐日快照抓取／解析 + PIT 池建構(含下市股) |
+| `data/__init__.py` | FinMind 資料層 + 快取(含快照戳) |
+| `data/price_adjust.py` | **自建還原價**(除權息回溯) |
+| `data/price_integrity.py` | 斷點稽核(診斷用,非放行條件) |
+| `universes/pit_snapshots.py` | 交易所逐日快照抓取／解析 + PIT 池建構(含下市股) |
 | `universes/monthly_pit.py` | **正式候選池 provider**:M 月只用完整 M-1 曆月 |
-| `dynamic_universe.py` | 每日 top-N 成員(截至訊號日的 ADV20,不看未來) |
-| `universe.py` / `build_universe.py` | legacy static 候選池,**僅供對照,不得回套歷史** |
-| `factor_engine/legacy_factors.py` | 傳統因子與 0~1 分數；`factors.py` 為相容入口 |
+| `universes/dynamic.py` | 每日 top-N 成員(截至訊號日的 ADV20,不看未來) |
+| `universes/legacy_static.py` / `universes/build.py` | legacy static 候選池,**僅供對照,不得回套歷史** |
+| `factor_engine/legacy_factors.py` | 傳統因子與 0~1 分數 |
 | `factor_engine/data_fields.py` | 無視窗衍生欄位(vwap / returns / true_range 等) |
-| `factor_engine/operators.py` | WorldQuant 式算子庫；`operators.py` 為相容入口 |
-| `backtest.py` | 事件驅動回測引擎(T+1 開盤、漲跌停、處置禁倉) |
-| `execution/tradability.py` | 回測可成交性限制；不含券商下單 |
+| `factor_engine/operators.py` | WorldQuant 式算子庫(37 個 `ts_` / 8 個 `cs_` / 9 個 `group_`) |
+| **`backtest/event_backtest.py`** | **事件驅動引擎**(T+1 開盤、漲跌停、處置禁倉、整股、成本)。慢但精確,**唯一可作正式證據** |
+| `backtest/__init__.py` | 只有說明,**不轉出任何東西** —— 兩個引擎都必須指名,引擎身分才會出現在每個呼叫點 |
+| `execution/tradability.py` | 回測可成交性限制;不含券商下單 |
 | `execution/taiwan_rules.py` | 普通股升降單位、漲跌停與新上市例外規則 |
 | `execution/costs.py` | 整張／零股代理／研究小數股與券商成本 |
 | `evaluation/splits.py` | IS / embargo / OS 統一切割 |
-| `strategies/s19_chip_momentum.py` | S19 策略單元；舊檔名為相容入口 |
+| `evaluation/phases.py` | **唯一**的相位掃描實作(AST 守衛禁止第二份) |
+| `evaluation/holdout.py` | append-only 的 OS 揭露台帳 |
+| **`strategies/`** | **純策略** —— 這個資料夾裡每個 `.py` 都是一支策略,沒有任何機器 |
+| `strategies/h1..h9_*.py` | 可證偽假說;每支只寫 `score()`,其餘由 signal_builder 統一處理 |
+| `strategies/s19_chip_momentum.py` | legacy 端到端模組(**會改全域 config,不適合平行 GA**) |
+| **`strategy_kit/`** | **機器** —— 策略要用的東西,但它們不是策略 |
+| `strategy_kit/signal_builder.py` | 分數 → 合格 SignalFrame 的翻譯層(每支策略只寫 `score()`) |
+| `strategy_kit/registry.py` | allowlist:`strategy_id` → factory,**逐檔顯式註冊,不自動掃描目錄** |
+| `strategy_kit/position_policy.py` | 分數 → 想要的部位(含 -20% 災難停損與重新武裝) |
+| `strategy_kit/spec.py` / `contracts.py` | 凍結用 StrategySpec / DataRequirements |
+| **`research/golden_path.py`** | **唯一的正式執行入口**:strategy → validator → 五相位 → 引擎 → artifacts |
+| `research/signal_validation.py` | SignalFrame 的**唯一** validator(repo 內外共用,不開特例) |
+| `research/screening.py` | 人類可讀候選清單(signal artifact 的薄視圖,不重算不重排) |
+| `research/holdout.py` | 單次 IS／embargo／locked-OS 資料閘門 |
 | `live_signal.py` | 精簡資料路徑(只用 price+inst,省 API 額度) |
 | `preflight.py` | 公開前離線檢查:密鑰檔名/內容、資料產物誤追蹤、必要文件 |
 | `.github/workflows/ci.yml` | 離線 CI:語法 smoke + preflight + 全部 unittest |
-| `twse_disposition.py` / `tpex_disposition.py` | 注意/處置資料層 |
+| `data/twse_disposition.py` / `data/tpex_disposition.py` | 注意/處置資料層 |
 | `DATA_SOURCES.md` | **免費資料源實測盤點 —— 找資料先看這裡** |
 | `STRATEGY_REGISTRY.md` | 策略台帳(狀態/證據/已證偽) |
-| `PORTFOLIO_BUILDING.md` | 組合建構前置盤點(相關性矩陣) |
 | `RESEARCH_OPERATING_PROTOCOL.md` | 研究鐵則 |
 
 ## 架構備註

@@ -41,12 +41,12 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 import current_watchlist
-import pit_universe as pu
+from universes import pit_snapshots as pu
 import security_type as st
-import universe as uni
+from universes import legacy_static as uni
 
 
 # ── 合成的 TaiwanStockInfo(欄名同 data.fetch_stock_info 的輸出)────────────
@@ -324,19 +324,19 @@ class _PanelEnv:
     def __enter__(self):
         price = _factor_frame()
         self._patches = [
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.uni, "get_name_map", return_value={}),
-            mock.patch.object(backtest.uni, "get_industry_map", return_value={}),
-            mock.patch.object(backtest.data, "fetch_market_index",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.uni, "get_name_map", return_value={}),
+            mock.patch.object(event_backtest.uni, "get_industry_map", return_value={}),
+            mock.patch.object(event_backtest.data, "fetch_market_index",
                               return_value=pd.DataFrame()),
-            mock.patch.object(backtest.data, "fetch_bundle",
+            mock.patch.object(event_backtest.data, "fetch_bundle",
                               side_effect=lambda *_a, **_k: {"price": price.copy()}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "compute_factors",
+            mock.patch.object(event_backtest.factors, "compute_factors",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "composite_score",
+            mock.patch.object(event_backtest.factors, "composite_score",
                               new=lambda *_a, **_k: 80.0),
         ]
         for patch in self._patches:
@@ -364,7 +364,7 @@ class SummaryDisclosureTest(_CleanLog, unittest.TestCase):
         with st.exclusion_scope():
             st.filter_stock_info(_stock_info(), source="universe.get_universe")
             with _PanelEnv():
-                panel = backtest._prepare_panel(
+                panel = event_backtest._prepare_panel(
                     ["2330", "5481"], 0.0, None, None,
                     dynamic_enabled=False, static_universe_comparator=True)
         excluded = panel.attrs["universe"]["excluded_by_security_type"]
@@ -378,7 +378,7 @@ class SummaryDisclosureTest(_CleanLog, unittest.TestCase):
         with st.exclusion_scope():
             st.filter_stock_info(_stock_info(), source="universe.get_universe")
             with _PanelEnv():
-                res = backtest.backtest_portfolio(
+                res = event_backtest.backtest_portfolio(
                     symbols=["2330", "5481"], sample=False, dynamic_enabled=False,
                     rebalance_every=5, top_n=2, static_universe_comparator=True)
         excluded = res["summary"]["universe"]["excluded_by_security_type"]
@@ -388,9 +388,9 @@ class SummaryDisclosureTest(_CleanLog, unittest.TestCase):
     def test_engine_boundary_also_rejects_non_common_industries(self):
         """引擎邊界的次要防線:原本只認字串 'ETF'/'ETN',DR 與受益證券擋不住。"""
         with _PanelEnv(), mock.patch.object(
-                backtest.uni, "get_industry_map",
+                event_backtest.uni, "get_industry_map",
                 return_value={"9105": "存託憑證", "2330": "半導體業"}):
-            panel = backtest._prepare_panel(
+            panel = event_backtest._prepare_panel(
                 ["2330", "9105"], 0.0, None, None,
                 dynamic_enabled=False, static_universe_comparator=True)
         self.assertEqual(sorted(panel["stock_id"].unique()), ["2330"])
@@ -426,9 +426,9 @@ class _ExternalEnv:
         price = _flat_prices()
         self.dates = list(price["date"])
         self._patches = [
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
             # 固定持有天數:讓部位在窗內確實平掉,`trades` 才看得到被買進的是誰
             # (否則整段都是未平倉,測試會變成「沒人成交」的空包彈)。
@@ -438,13 +438,31 @@ class _ExternalEnv:
             mock.patch.object(config, "BT_STOP_LOSS", 1.0),
             mock.patch.object(config, "BT_MAX_POSITIONS", 3),
         ]
-        for p in self._patches:
-            p.start()
+        # 見 tests/test_zz_no_patch_leak.py:中途失敗時已啟動的 patch 必須停掉,
+        # 否則它們會留在整個 process 裡污染後面所有測試(而且不會 crash)。
+        started = []
+        try:
+            for p in self._patches:
+                p.start()
+                started.append(p)
+        except Exception:
+            for p in reversed(started):
+                p.stop()
+            raise
         return self
 
     def __exit__(self, *exc):
+        # **每一個都要停到。** 舊版一個 `p.stop()` 拋例外,後面的就全被跳過 ——
+        # 而 `_assert_price_integrity` / `_load_disposition_days` 排在清單最前面,
+        # reversed 之後最後才停,於是它們正是最容易漏掉的兩個。實測(2026-08-16
+        # CI)洩漏出去的就是這兩個,而症狀出現在字母序更後面、看起來毫不相關的
+        # `test_tpex_disposition`。
+        _stop_errors = []
         for p in reversed(self._patches):
-            p.stop()
+            try:
+                p.stop()
+            except Exception as _exc:                       # noqa: BLE001
+                _stop_errors.append(_exc)
         return False
 
 
@@ -461,13 +479,13 @@ def _held_ids(res) -> set:
 def _run_external_picks(dates, sids, **kwargs):
     picks = {d: [(sid, 90.0 - i, sid) for i, sid in enumerate(sids)]
              for d in dates}
-    return backtest.backtest_portfolio(
+    return event_backtest.backtest_portfolio(
         symbols=list(sids), sample=False, dynamic_enabled=True,
         rebalance_every=5, top_n=len(sids), picks_by_date=picks, **kwargs)
 
 
 def _run_policy(dates, sids, **kwargs):
-    from strategies.position_policy import (StrategyPositionPolicy,
+    from strategy_kit.position_policy import (StrategyPositionPolicy,
                                             StrategyPositionPolicySpec)
     frame = pd.DataFrame([
         {"date": dates[0], "stock_id": sid, "rank": i + 1,
@@ -480,7 +498,7 @@ def _run_policy(dates, sids, **kwargs):
         entry_rank=len(sids), exit_rank=len(sids) + 1, max_slots=len(sids),
         slot_weight=1.0 / len(sids), single_name_cap=1.0,
         risk_on_slots=len(sids), caution_slots=0, risk_off_slots=0))
-    return backtest.backtest_portfolio(
+    return event_backtest.backtest_portfolio(
         symbols=list(sids), sample=False,
         start_date=str(dates[0])[:10], end_date=str(dates[-1])[:10],
         signal_frame=frame, strategy_position_policy=policy,
@@ -516,7 +534,7 @@ class ExternalSignalPathsAreGatedTest(_CleanLog, unittest.TestCase):
         excluded = res["summary"]["universe"]["excluded_by_security_type"]
         self.assertEqual(excluded["by_reason"][st.REASON_DR], 1)
         self.assertEqual(excluded["sample_ids"][st.REASON_DR], ["9103"])
-        self.assertIn("backtest.picks_by_date", excluded["by_source"])
+        self.assertIn("event_backtest.picks_by_date", excluded["by_source"])
 
     def test_external_picks_with_only_a_dr_cannot_open_any_position(self):
         """整組 picks 都是 DR 時一筆都不能成交(修正前 open_positions_end == 1)。"""
@@ -544,7 +562,7 @@ class ExternalSignalPathsAreGatedTest(_CleanLog, unittest.TestCase):
         with _ExternalEnv() as env:
             with self.assertRaises(st.SecurityTypeError) as ctx:
                 _run_external_picks(env.dates, ["8888", "2330"])
-        self.assertIn("backtest.picks_by_date", str(ctx.exception))
+        self.assertIn("event_backtest.picks_by_date", str(ctx.exception))
 
     def test_policy_signal_frame_is_gated_the_same_way(self):
         """policy 路徑的 signal_frame 走同一道閘門(它同樣不經過 panel)。"""
@@ -555,7 +573,7 @@ class ExternalSignalPathsAreGatedTest(_CleanLog, unittest.TestCase):
         self.assertIn("2330", held, "普通股要照樣成交,證明擋掉的是證券別而非全擋")
         excluded = res["summary"]["universe"]["excluded_by_security_type"]
         self.assertEqual(excluded["by_reason"][st.REASON_DR], 1)
-        self.assertIn("backtest.signal_frame", excluded["by_source"])
+        self.assertIn("event_backtest.signal_frame", excluded["by_source"])
 
     def test_policy_signal_frame_with_only_non_common_stocks_fails_closed(self):
         """signal_frame 全被擋掉 → 沒有可持有的標的,不可以靜默跑出一份績效。"""
@@ -568,7 +586,7 @@ class ExternalSignalPathsAreGatedTest(_CleanLog, unittest.TestCase):
         with _ExternalEnv() as env:
             with self.assertRaises(st.SecurityTypeError) as ctx:
                 _run_policy(env.dates, ["8888", "2330"])
-        self.assertIn("backtest.signal_frame", str(ctx.exception))
+        self.assertIn("event_backtest.signal_frame", str(ctx.exception))
 
 
 class CrossRequestIsolationTest(_CleanLog, unittest.TestCase):
@@ -619,19 +637,41 @@ class CrossRequestIsolationTest(_CleanLog, unittest.TestCase):
             res["summary"]["universe"]["excluded_by_security_type"]["total"], 0)
 
     def test_parallel_threads_do_not_share_a_collector(self):
-        """平行搜尋:每條 thread 自己一本(contextvars),不會互相看見。"""
+        """平行搜尋:每條 thread 自己一本(contextvars),不會互相看見。
+
+        2026-08-16 修:原版是**每條 thread 各自 `with _ExternalEnv()`**,而
+        `mock.patch.object` 改的是 module 全域屬性,不是 thread-local。兩條
+        thread 同時進出就會競態:
+
+            A.start(): 存原值=真函式,      設 lambda_A
+            B.start(): 存原值=lambda_A,   設 lambda_B     ← 存錯了
+            A.stop() : 還原成真函式
+            B.stop() : 還原成 lambda_A                     ← 永久洩漏
+
+        洩漏出去的 `_load_disposition_days = lambda: {}` 會讓字母序在後面的
+        `test_tpex_disposition` 拿到空字典 —— 兩支「處置禁倉」的保護就這樣靜默
+        失效,而失敗訊息完全指不到這裡。時序相依,所以本機跑不出來、CI 才中。
+        競態空窗期還會有一瞬間 `fetch_price` 沒被 patch 而真的去打網路
+        (CI log 裡的 `TaiwanStockPrice 2330 ConnectionError` 就是它)。
+
+        改法:**patch 只在主執行緒做一次**,thread 只負責跑。這反而更貼近這支
+        測試的本意 —— 要驗的是 collector 的 contextvars 隔離,不是 patch 的
+        thread 安全性(mock 本來就不保證後者)。
+        """
         results: Dict[str, dict] = {}
 
-        def _worker(name, sids):
-            with _ExternalEnv() as env:
+        with _ExternalEnv() as env:
+            def _worker(name, sids):
                 results[name] = _run_external_picks(env.dates, sids)
 
-        threads = [threading.Thread(target=_worker, args=("dr", ["9103", "2330"])),
-                   threading.Thread(target=_worker, args=("clean", ["2330"]))]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            threads = [
+                threading.Thread(target=_worker, args=("dr", ["9103", "2330"])),
+                threading.Thread(target=_worker, args=("clean", ["2330"])),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
         self.assertEqual(
             results["dr"]["summary"]["universe"][
                 "excluded_by_security_type"]["by_reason"],

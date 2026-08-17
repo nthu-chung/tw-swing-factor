@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import chip_momentum_strategy as s19
+import strategies.s19_chip_momentum as s19
 from _offline_registry import use_common_stocks
 
 

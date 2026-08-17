@@ -15,7 +15,7 @@
 | Critical | 多個腳本各自切 60/40、70/30、日曆日近似或事件分位數 | 新增 `evaluation_split.py`；ratio 以排除 embargo 後的可用交易日維持真正 7:3，另支援固定 IS/OS 週數；所有 IS/OS 腳本改走單一入口 |
 | Critical | 外部 picks 的 IS 權益曲線可能跑進 OS | 引擎預設截到最後訊號日，明確 `end_date` 仍是硬上界；核心入口逐相位檢查實際 `eval_window` 不得越界 |
 | Critical | 核心 `main.py backtest` 仍只報全期單一路徑 | 改為 IS／embargo／OS，兩段都跑滿所有等價再平衡相位，輸出中位數與最小值 |
-| Critical | 指定 top-N／全市場失敗時靜默改跑 14 檔 sample | `universe.py` 改為 raise，不再替換研究問題 |
+| Critical | 指定 top-N／全市場失敗時靜默改跑 14 檔 sample | `universes/legacy_static.py` 改為 raise，不再替換研究問題 |
 | Critical | FinMind 連線、額度或認證失敗回空表 | 有界重試；401/402/403 等直接報錯；重試耗盡 raise，禁止把故障當「無資料」 |
 | Critical | 自建還原失敗會退回原始價 | 改為 raise；除權息請求走 Authorization header，不把 token 放在 URL |
 | Critical | 快照日期格式錯誤時退回 today | 改為 raise，避免環境變數 typo 讀到未來資料 |

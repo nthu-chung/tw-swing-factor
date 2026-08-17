@@ -1,0 +1,43 @@
+{
+  "schema_version": "single_holdout_protocol/v1",
+  "protocol_id": "replace-before-run",
+  "snapshot": {
+    "snapshot_id": "replace-before-run",
+    "snapshot_end": "YYYY-MM-DD",
+    "price_dataset": "replace-before-run",
+    "adjustment_anchor": "replace-before-run",
+    "content_fingerprint": "replace-before-run"
+  },
+  "split": {
+    "is_start": "YYYY-MM-DD",
+    "is_end": "YYYY-MM-DD",
+    "embargo_trading_days": 20,
+    "os_start": "YYYY-MM-DD",
+    "os_end": "YYYY-MM-DD"
+  },
+  "warmup": {
+    "source": "strictly_before_segment_start",
+    "bars": "derive-from-DataRequirements"
+  },
+  "evaluation": {
+    "engine": "event_driven",
+    "decision_frequency": "weekly",
+    "phases": [0, 1, 2, 3, 4],
+    "benchmark": "same_return_convention_equal_weight",
+    "capital_scenario": "replace-before-run",
+    "cost_model": "repo-default-frozen",
+    "segment_end_policy": "mark_to_market_at_segment_end"
+  },
+  "holdout": {
+    "research_access": "locked",
+    "reveal_policy": "explicit-owner-authorized-once",
+    "ledger": "evaluation/holdout.py"
+  },
+  "deferred": [
+    "train_valid_split",
+    "rolling_walk_forward",
+    "per_decision_date_data_sandbox",
+    "vectorized_fast_evaluator",
+    "search_and_ga"
+  ]
+}

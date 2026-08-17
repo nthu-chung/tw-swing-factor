@@ -64,14 +64,14 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
-import return_convention
+from data import return_convention
 from evaluation import build_evaluation_split
 from evaluation.phases import PhaseSweep, sweep_phases
 from factor_engine import operators as op
 from factor_engine import panel_density
-from strategies.spec import StrategySpec
+from strategy_kit.spec import StrategySpec
 
 # ── 凍結參數(由 IS 五相位 Sharpe 中位數選出;OS 未參與選擇)──────────────
 # 唯一真理是 `SPEC`。以前這些是散落的模組常數,而投組那半還是在 manifest 產生
@@ -86,6 +86,17 @@ SPEC = StrategySpec(
         "vol_window": 20,       # 流量正規化分母(均量)
         "w_momentum": 0.5,
         "w_flow": 0.5,
+        # cs_ 排名的母體。規格 §3.1 的不變式:非成員股票可以貢獻自身時間序列
+        # 歷史,但**不得改變正式可選股票當日的 cross-sectional rank**。
+        #   "eligible"(預設,合規):只在當日 dynamic universe 成員內排名。
+        #   "panel"(2026-08-16 之前的實際行為):對整個稠密 panel 排名,
+        #       等於讓當天不能買的股票決定可買股票的分數。
+        # 2026-08-16 實測(PIT top100 池、463 個決策日、348,493 列):
+        #   非成員列佔 86.7%(母體 722 檔/日 vs eligible 100 檔);
+        #   top10 有 76.7% 的日子會不同,平均重疊率 86.9%。
+        # 單因子不受影響(rank 是同日單調轉換),但 S19 是兩個 cs_rank 的加權
+        # 組合,非成員在兩個因子的分布位置不同,會不對稱地扭曲組合順序。
+        "ranking_universe": "eligible",
     },
     portfolio={
         "max_positions": 10,
@@ -94,7 +105,7 @@ SPEC = StrategySpec(
         "stop_loss": 0.15,
     },
     required_signal=("mom_window", "flow_window", "vol_window",
-                     "w_momentum", "w_flow"),
+                     "w_momentum", "w_flow", "ranking_universe"),
     required_portfolio=("max_positions", "rebalance_days", "ma_exit",
                         "stop_loss"),
 )
@@ -127,7 +138,7 @@ def compute_excluded(symbols: List[str], write: bool = True) -> set:
     仍會寫出檔案,但那是**產出物供人工檢視**,不是真理來源。
     """
     import data
-    import price_integrity as pi
+    from data import price_integrity as pi
 
     frames = {}
     for sid in symbols:
@@ -162,7 +173,7 @@ def build_signal(panel: pd.DataFrame, *,
                  spec: StrategySpec = SPEC) -> pd.Series:
     """回傳與 panel 同 index 的訊號分數。
 
-    ⚠ panel 必須是**稠密** panel(`backtest.build_research_panel()` 的預設)。
+    ⚠ panel 必須是**稠密** panel(`event_backtest.build_research_panel()` 的預設)。
     ts_ 類算子是對「相鄰列」做 rolling,若 panel 只留動態 universe 成員日,20 列
     會橫跨遠超過 20 個交易日 → 因子失真。成員過濾要留到選股時才做(見 build_picks)。
     稀疏 panel(標成 `members_only`)進來時 `PanelOps` 的 ts_ 算子會 fail-closed。
@@ -178,8 +189,23 @@ def build_signal(panel: pd.DataFrame, *,
     flow = (o.ts_sum(panel["foreign_net"], spec.sig("flow_window"))
             + o.ts_sum(panel["trust_net"], spec.sig("flow_window"))) / vol
 
-    return (spec.sig("w_momentum") * o.cs_rank(mom)
-            + spec.sig("w_flow") * o.cs_rank(flow))
+    scope = spec.sig("ranking_universe")
+    if scope not in ("eligible", "panel"):
+        raise ValueError(
+            f"[fail-closed] 未知的 ranking_universe={scope!r};只接受 "
+            "'eligible'(規格 §3.1)或 'panel'(2026-08-16 前的舊行為)")
+    if scope == "panel" or "in_dynamic_universe" not in panel.columns:
+        return (spec.sig("w_momentum") * o.cs_rank(mom)
+                + spec.sig("w_flow") * o.cs_rank(flow))
+
+    # 只在當日 eligible universe 內排名:非成員仍貢獻自己的 ts_ 歷史(mom/flow
+    # 在稠密 panel 上算完了),但不進當日的 cross-sectional 母體。
+    mask = panel["in_dynamic_universe"].fillna(False).astype(bool)
+    o_elig = op.PanelOps(panel.loc[mask, "date"], panel.loc[mask, "stock_id"])
+    score = pd.Series(np.nan, index=panel.index, dtype=float)
+    score.loc[mask] = (spec.sig("w_momentum") * o_elig.cs_rank(mom[mask])
+                       + spec.sig("w_flow") * o_elig.cs_rank(flow[mask])).values
+    return score
 
 
 def build_picks(panel: pd.DataFrame, score: pd.Series,
@@ -252,7 +278,7 @@ def run_once(panel: pd.DataFrame, score: pd.Series, symbols: List[str],
         universe_provider = panel.attrs.get("universe_provider")
     old = _apply_portfolio_config(spec)
     try:
-        r = backtest.backtest_portfolio(
+        r = event_backtest.backtest_portfolio(
             symbols=symbols, sample=False,
             start_date=start, end_date=end,     # ← 必傳:見下
             rebalance_every=spec.port("rebalance_days"),
@@ -365,7 +391,7 @@ def build_panel(symbols: Optional[List[str]] = None,
     """回傳 (稠密 panel, 乾淨 symbols)。
 
     三件事非做不可:
-      1. 走 `backtest.build_research_panel()`(預設稠密)—— ts_ 算子需要連續個股序列。
+      1. 走 `event_backtest.build_research_panel()`(預設稠密)—— ts_ 算子需要連續個股序列。
       2. 排除價格完整性名單 —— 否則引擎的未還原價 fail-closed 閘門會擋下。
       3. `use_pit_pool=True`(預設)—— M 月候選池只用完整 M-1 曆月重建。
 
@@ -379,7 +405,7 @@ def build_panel(symbols: Optional[List[str]] = None,
     偏誤把策略與基準**同時**灌水,所以超額(策略−基準)在 IS 幾乎不變
     (+0.50 → +0.48)、OS 反而變好(+0.18 → +0.42)。但絕對水準必須用 PIT 的。
     """
-    import universe as uni
+    from universes import legacy_static as uni
 
     if use_pit_pool:
         return _build_pit_panel()
@@ -393,7 +419,7 @@ def build_panel(symbols: Optional[List[str]] = None,
     # 必須顯式宣告,引擎才會放行並在 summary 標 formal_evidence_eligible=False。
     # 一律走公開入口 build_research_panel(預設稠密);策略模組不碰引擎私有的
     # _prepare_panel,免得哪天又拿到「只留成員日」的稀疏 panel 去算 ts_。
-    panel = backtest.build_research_panel(
+    panel = event_backtest.build_research_panel(
         symbols,
         dynamic_enabled=True,
         universe_top_n=config.DYNAMIC_UNIVERSE_TOP_N,
@@ -409,7 +435,7 @@ def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     撞爆 FinMind 的 600 次/小時。`live_signal.verify_equivalence` 已證明精簡路徑
     的 trend_ok / in_dynamic_universe 與 `_prepare_panel` 完全一致(136,841 列零差異)。
     """
-    import dynamic_universe as du
+    from universes import dynamic as du
     import live_signal
     from universes import historical_pit_universe
 
@@ -465,7 +491,9 @@ def attach_chip_fields(panel: pd.DataFrame) -> pd.DataFrame:
         return panel
     chip = pd.concat(frames, ignore_index=True)
     density = panel_density.density_of(panel)
-    out = panel.merge(chip, on=["date", "stock_id"], how="left")
+    # merge 會丟 attrs;用包裝把「記得補標」從人的紀律變成呼叫一個函式。
+    out = panel_density.preserving_merge(
+        panel, chip, on=["date", "stock_id"], how="left")
     for c in ["foreign_net", "trust_net", "dealer_net"]:
         out[c] = out[c].fillna(0.0)
     # merge 會把 attrs 丟掉,稠密度標籤要接回去 —— 標籤掉了 ts_ 的閘門就形同不存在。

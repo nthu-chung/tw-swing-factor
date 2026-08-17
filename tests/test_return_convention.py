@@ -33,10 +33,10 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 import data
-import return_convention as rc
+from data import return_convention as rc
 
 SNAP = "2026-06-22"
 
@@ -235,19 +235,19 @@ class _PanelEnv:
     def __enter__(self):
         price = _factor_frame()
         self._patches = [
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.uni, "get_name_map", return_value={}),
-            mock.patch.object(backtest.uni, "get_industry_map", return_value={}),
-            mock.patch.object(backtest.data, "fetch_market_index",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.uni, "get_name_map", return_value={}),
+            mock.patch.object(event_backtest.uni, "get_industry_map", return_value={}),
+            mock.patch.object(event_backtest.data, "fetch_market_index",
                               return_value=pd.DataFrame()),
-            mock.patch.object(backtest.data, "fetch_bundle",
+            mock.patch.object(event_backtest.data, "fetch_bundle",
                               side_effect=lambda *_a, **_k: {"price": price.copy()}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "compute_factors",
+            mock.patch.object(event_backtest.factors, "compute_factors",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "composite_score",
+            mock.patch.object(event_backtest.factors, "composite_score",
                               new=lambda *_a, **_k: 80.0),
         ]
         for patch in self._patches:
@@ -262,7 +262,7 @@ class _PanelEnv:
 
 def _run_backtest() -> dict:
     with _PanelEnv():
-        res = backtest.backtest_portfolio(
+        res = event_backtest.backtest_portfolio(
             symbols=["2330", "2317"], sample=False, dynamic_enabled=False,
             rebalance_every=5, top_n=2, static_universe_comparator=True)
     return res["summary"]

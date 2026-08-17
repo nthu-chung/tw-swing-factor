@@ -1,6 +1,6 @@
-# StrategyPositionPolicy v1 — 單策略持有、退出與資金槽規格
+# StrategyPositionPolicy v1.1 — 單策略持有、退出與資金槽規格
 
-> 狀態：contract-first implementation handoff
+> 狀態：v1 已實作；v1.1 累積災難損失上限與 re-arm 為 contract-first implementation handoff
 >
 > 本文件是交給實作者的行為邊界，不指定內部演算法或類別拆分細節。實作者可以調整
 > 內部設計，但不得改變本文件的外部語意、研究閘門與驗收案例。
@@ -17,7 +17,8 @@
 
 完成條件不是「能跑」，而是：
 
-1. `tests/test_strategy_position_policy_contract.py` 全綠。
+1. `tests/test_strategy_position_policy_contract.py` 與 v1.1 新增的災難停損／re-arm
+   回歸測試全綠。
 2. 現有完整離線 unittest 與 `preflight.py` 全綠。
 3. 關閉新 policy 時，legacy `picks_by_date` 路徑行為不變。
 4. policy 規則、desired state、realized state 與無法成交原因都能由結果重建。
@@ -61,7 +62,7 @@ Strategy.make_signals
 一般排名換股不在非決策日發生。下列強制或風險事件可以每日產生 `desired exit`：
 
 - 已確認失去上市／合法交易資格或進入既有 stale/delisting 處理。
-- close-confirmed hard stop。
+- close-confirmed 累積災難損失上限（v1.1 預設 -20%，不是單日跌幅）。
 - 已由外部、PIT 的 market-regime policy 宣告需要緊急降曝險。
 
 產生退出意圖不等於成交。一字跌停、停牌或無合法成交價時，部位仍須留在 realized
@@ -91,12 +92,24 @@ exit_rank = 20
 - v1 不用 MA20／MA60 作所有策略共用的 alpha exit。策略日後可明確宣告
   `thesis_break`，但不能由通用引擎暗中套用。
 
-### 3.4 固定風險與時間保護
+### 3.4 固定風險與時間保護（2026-08-16 owner 修訂）
 
-- `hard_stop_pct = 0.08` 作為 v1 凍結基準，不進 GA。
-- hard stop 使用**收盤確認、下一交易時點嘗試退出**；不得因日內 low 曾穿價就假設
-  手動投資人已在理論停損價成交。
-- 跳空時使用實際可成交價，不得回填理論停損價。
+- `hard_stop_pct = 0.20` 作為 v1.1 的固定**累積災難損失上限**，第一階段不進 GA。
+  欄位名暫時保留 `hard_stop_pct` 以避免無必要的相容性破壞，但語意不是「單日跌幅」：
+  它比較的是該部位相對**實際進場成本基礎**的累積經濟報酬。
+- 單日收盤 -8%、單日跌停，或隔日開低本身都**不是**自動停損理由；只有部位累積
+  close-confirmed return `<= -20%` 才形成 `risk_stop` 退出意圖。不得把一根跌停誤寫成
+  「隔天一定賣」。
+- 累積災難損失上限使用**收盤確認、下一交易時點嘗試退出**；不得因日內 low 曾穿價
+  就假設手動投資人已在理論停損價成交。
+- 跳空時使用實際可成交價，不得回填理論 -20% 價格。若一字跌停、停牌或其他交易
+  限制導致賣不掉，部位繼續持有與 MTM，退出意圖保留，下一個可交易日再嘗試。
+- 公司行動前後的 entry basis 與 close 必須在相同經濟價格口徑；除權息、分割或還原
+  錨點不得製造假的 -20%。正式判定可使用經公司行動調整的持倉成本或等價的 position
+  PnL ledger，但不可直接混用不同 price scale。
+- 災難停損後不得因該股下週仍在 top 10 就立即買回。v1.1 採 **rank re-arm**：該股
+  必須先在一個完整決策快照中掉出 `exit_rank=20`，之後重新進入 `entry_rank=10`，
+  才恢復進場資格。這是狀態重置，不是任意天數 cooldown，也不交給 GA 調參。
 - `max_hold_days = 120`，只作殭屍／資金長期占用保護，不宣稱是 alpha 的最佳持有期。
 - max-hold 於可得資料確認後形成退出意圖，仍受 T+1 與可成交性限制。
 - 所有退出必須保留單一主要 `reason_code`，並可另存次要觸發原因。優先序至少能區分：
@@ -315,10 +328,11 @@ PYTHONPATH=. .venv/bin/python preflight.py
 本節由實作者補上。三處都**不改變**上面任何一條外部語意或驗收案例，只把原文
 沒有寫死、但實作必須做選擇的地方記下來，避免下一個人以為是隨手寫的。
 
-### 9A.1 hard stop 的「跨越日」判定
+### 9A.1 累積災難損失上限的「跨越日」判定
 
-§3.4 只說 hard stop 是「收盤確認、下一交易時點嘗試退出」。policy 本身無狀態，
-每天都會重看同一批持股，所以必須能分辨兩件事：
+§3.4 的 `hard_stop_pct` 現在代表相對實際進場成本的累積災難損失上限；它仍是
+「收盤確認、下一交易時點嘗試退出」。policy 每天都會重看同一批持股，因此必須能
+分辨兩件事：
 
 * **今天才跌破**停損價 → 產生新的 `risk_stop` 退出意圖。
 * **早就跌破**、退出意圖還卡在成交端（一字跌停、停牌） → 不再產生一次新的
@@ -326,10 +340,11 @@ PYTHONPATH=. .venv/bin/python preflight.py
   真正的原因（那筆其實是「賣不掉」，不是「又跌破一次」）。
 
 判準用台股單日 ±10% 漲跌幅上限推出來，不需要額外參數：昨天收盤若還在停損價
-之上（報酬 > `-hard_stop_pct`），今天最差也只能再吃一根跌停，所以今天的報酬
+之上（累積報酬 > `-hard_stop_pct`），今天最差也只能再吃一根跌停，所以今天的報酬
 必然 > `0.9 × (1 - hard_stop_pct) - 1`，這個下界對任何 `hard_stop_pct` 都落在
 `-(hard_stop_pct + 10%)` 之內。反過來說：**跌幅已經超過
-`hard_stop_pct + 一根跌停` 的部位，今天不可能是它的跨越日。**
+`hard_stop_pct + 一根跌停` 的部位，今天不可能是它的跨越日。**在 v1.1 預設下這個
+「深跌區」約從 -30% 起算；它只用來判斷退出意圖是否早已存在，不是第二個停損門檻。
 
 這種部位只有兩種來源，用引擎提供的 `holdings.exit_pending` 分辨：
 
@@ -358,13 +373,16 @@ fail-closed 的定義是「資訊不足時不得放過風險控制」，不是�
 實測（預設 spec、§5 的最小 `holdings`、未帶 `exit_pending`）：
 
 ```text
-舊行為  -9% / -15% → exit/risk_stop
-        -19% / -25% / -50% → hold/stop_breached_earlier_exit_pending(_assumed)
-新行為  以上全部 → exit/risk_stop
+舊版 8% 門檻的歷史重現：-9% / -15% → exit/risk_stop；
+                         -19% / -25% / -50% → 可能被錯誤當成意圖已在路上。
+v1.1 的新契約：-8% / -10% / -19% → 不因災難停損退出；
+              -20% / -25% → exit/risk_stop；
+              深跌且已有 exit_pending → 不重複建立同一意圖。
 ```
 
 也就是說，任何照 §5 最小契約呼叫 `policy.decide()` 的人，手上跌超過
-`hard_stop_pct + 一根跌停`（預設 18%）的部位，在舊行為下一筆退出意圖都不會產生。
+`hard_stop_pct + 一根跌停`（v1.1 預設約 30%）的部位，仍必須靠顯式
+`exit_pending` 分辨「意圖已建立」或「資料斷層讓 policy 錯過跨越日」。
 
 新預設的代價是**重複**：呼叫端沒給 `exit_pending` 時，深跌部位可能每天都重新產生
 一次 `risk_stop`。這是刻意的取捨——重複的退出意圖看得見（`policy.state()` 的
@@ -409,7 +427,7 @@ policy 把「我今天沒看到這一列」當成「這檔已經掉出排名母�
 
 ### 9B.1 `snapshot_complete` 缺省值改為 `False`
 
-**原缺陷（重現）**：`strategies/position_policy.py` 舊版 `_normalize_signals()` 以
+**原缺陷（重現）**：`strategy_kit/position_policy.py` 舊版 `_normalize_signals()` 以
 `snapshot_complete = True` 起始，只有 signal frame 帶了 `snapshot_complete` 欄才會
 改變。於是「持有 B、今天的訊號只有 A、frame 沒有完整性旗標」會讓 B 被判
 `exit / not_ranked` 賣掉。§5 要求這種情況視為 unknown、不得自動賣出；舊行為會直接

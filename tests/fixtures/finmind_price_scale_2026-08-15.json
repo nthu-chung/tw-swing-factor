@@ -1,0 +1,509 @@
+{
+ "_meta": {
+  "purpose": "PRICE_SCALE_CONTRACT golden fixture",
+  "captured_context": "FinMind Backer level, TaiwanStockPrice / TaiwanStockPriceAdj",
+  "twse_official_2327": {
+   "halt_last_close": 546.0,
+   "resume_reference_price": 136.5,
+   "ratio": 4.0,
+   "source": "TWSE TWTB8U 停止買賣恢復參考價"
+  },
+  "note": "adj 為前復權(qfq,錨=資料集最新bar);本 fixture 凍結於擷取當下,值可能與日後重抓不同——這正是要釘住的性質",
+  "captured_on": "2026-08-15",
+  "why": "釘住 FinMind TaiwanStockPriceAdj 的**已量測性質**(前復權錨最新、量與金額不調整),不是斷言理想行為。供應商若改變行為,這些測試會紅 —— 那正是我們要知道的。"
+ },
+ "2327_raw": [
+  {
+   "date": "2025-08-08",
+   "open": 545.0,
+   "max": 550.0,
+   "min": 544.0,
+   "close": 545.0,
+   "Trading_Volume": 1571902,
+   "Trading_money": 858707948
+  },
+  {
+   "date": "2025-08-11",
+   "open": 542.0,
+   "max": 544.0,
+   "min": 532.0,
+   "close": 542.0,
+   "Trading_Volume": 1975380,
+   "Trading_money": 1068170347
+  },
+  {
+   "date": "2025-08-12",
+   "open": 542.0,
+   "max": 544.0,
+   "min": 538.0,
+   "close": 542.0,
+   "Trading_Volume": 1426843,
+   "Trading_money": 772481381
+  },
+  {
+   "date": "2025-08-13",
+   "open": 545.0,
+   "max": 550.0,
+   "min": 542.0,
+   "close": 546.0,
+   "Trading_Volume": 2996695,
+   "Trading_money": 1637693545
+  },
+  {
+   "date": "2025-08-25",
+   "open": 142.0,
+   "max": 145.5,
+   "min": 140.0,
+   "close": 143.0,
+   "Trading_Volume": 26586959,
+   "Trading_money": 3792278409
+  },
+  {
+   "date": "2025-08-26",
+   "open": 142.5,
+   "max": 142.5,
+   "min": 137.0,
+   "close": 138.5,
+   "Trading_Volume": 25422011,
+   "Trading_money": 3536782673
+  },
+  {
+   "date": "2025-08-27",
+   "open": 139.0,
+   "max": 139.5,
+   "min": 136.0,
+   "close": 136.5,
+   "Trading_Volume": 14075972,
+   "Trading_money": 1929524792
+  },
+  {
+   "date": "2025-08-28",
+   "open": 138.5,
+   "max": 139.5,
+   "min": 136.5,
+   "close": 137.0,
+   "Trading_Volume": 11597589,
+   "Trading_money": 1596646757
+  },
+  {
+   "date": "2025-08-29",
+   "open": 138.5,
+   "max": 141.0,
+   "min": 137.0,
+   "close": 139.5,
+   "Trading_Volume": 11297247,
+   "Trading_money": 1572302203
+  },
+  {
+   "date": "2025-09-01",
+   "open": 139.5,
+   "max": 139.5,
+   "min": 132.5,
+   "close": 135.0,
+   "Trading_Volume": 11001341,
+   "Trading_money": 1492714736
+  }
+ ],
+ "2327_adj": [
+  {
+   "date": "2025-08-08",
+   "open": 135.279336,
+   "max": 136.520431,
+   "min": 135.031117,
+   "close": 135.279336,
+   "Trading_Volume": 1571902,
+   "Trading_money": 858707948
+  },
+  {
+   "date": "2025-08-11",
+   "open": 134.534679,
+   "max": 135.031117,
+   "min": 132.05249,
+   "close": 134.534679,
+   "Trading_Volume": 1975380,
+   "Trading_money": 1068170347
+  },
+  {
+   "date": "2025-08-12",
+   "open": 134.534679,
+   "max": 135.031117,
+   "min": 133.541803,
+   "close": 134.534679,
+   "Trading_Volume": 1426843,
+   "Trading_money": 772481381
+  },
+  {
+   "date": "2025-08-13",
+   "open": 135.279336,
+   "max": 136.520431,
+   "min": 134.534679,
+   "close": 135.527555,
+   "Trading_Volume": 2996695,
+   "Trading_money": 1637693545
+  },
+  {
+   "date": "2025-08-25",
+   "open": 140.988372,
+   "max": 144.463438,
+   "min": 139.002621,
+   "close": 141.981248,
+   "Trading_Volume": 26586959,
+   "Trading_money": 3792278409
+  },
+  {
+   "date": "2025-08-26",
+   "open": 141.48481,
+   "max": 141.48481,
+   "min": 136.023993,
+   "close": 137.513307,
+   "Trading_Volume": 25422011,
+   "Trading_money": 3536782673
+  },
+  {
+   "date": "2025-08-27",
+   "open": 138.009745,
+   "max": 138.506183,
+   "min": 135.031117,
+   "close": 135.527555,
+   "Trading_Volume": 14075972,
+   "Trading_money": 1929524792
+  },
+  {
+   "date": "2025-08-28",
+   "open": 137.513307,
+   "max": 138.506183,
+   "min": 135.527555,
+   "close": 136.023993,
+   "Trading_Volume": 11597589,
+   "Trading_money": 1596646757
+  },
+  {
+   "date": "2025-08-29",
+   "open": 137.513307,
+   "max": 139.995496,
+   "min": 136.023993,
+   "close": 138.506183,
+   "Trading_Volume": 11297247,
+   "Trading_money": 1572302203
+  },
+  {
+   "date": "2025-09-01",
+   "open": 138.506183,
+   "max": 138.506183,
+   "min": 131.556052,
+   "close": 134.038241,
+   "Trading_Volume": 11001341,
+   "Trading_money": 1492714736
+  }
+ ],
+ "2317_raw": [
+  {
+   "date": "2025-08-08",
+   "open": 197.0,
+   "max": 197.0,
+   "min": 193.5,
+   "close": 194.5,
+   "Trading_Volume": 65469369,
+   "Trading_money": 12751231873
+  },
+  {
+   "date": "2025-08-11",
+   "open": 194.0,
+   "max": 198.0,
+   "min": 192.5,
+   "close": 198.0,
+   "Trading_Volume": 52291064,
+   "Trading_money": 10257696276
+  },
+  {
+   "date": "2025-08-12",
+   "open": 198.5,
+   "max": 199.0,
+   "min": 195.5,
+   "close": 197.0,
+   "Trading_Volume": 38689326,
+   "Trading_money": 7612313926
+  },
+  {
+   "date": "2025-08-13",
+   "open": 198.0,
+   "max": 199.0,
+   "min": 193.5,
+   "close": 198.5,
+   "Trading_Volume": 103356675,
+   "Trading_money": 20312528967
+  },
+  {
+   "date": "2025-08-14",
+   "open": 197.5,
+   "max": 200.0,
+   "min": 197.0,
+   "close": 199.5,
+   "Trading_Volume": 78943020,
+   "Trading_money": 15688176080
+  },
+  {
+   "date": "2025-08-15",
+   "open": 205.0,
+   "max": 208.0,
+   "min": 202.0,
+   "close": 207.0,
+   "Trading_Volume": 156672765,
+   "Trading_money": 32140128028
+  },
+  {
+   "date": "2025-08-18",
+   "open": 207.5,
+   "max": 210.0,
+   "min": 206.0,
+   "close": 210.0,
+   "Trading_Volume": 73566364,
+   "Trading_money": 15318133373
+  },
+  {
+   "date": "2025-08-19",
+   "open": 210.0,
+   "max": 212.0,
+   "min": 208.0,
+   "close": 208.0,
+   "Trading_Volume": 49978122,
+   "Trading_money": 10455248708
+  },
+  {
+   "date": "2025-08-20",
+   "open": 206.0,
+   "max": 206.5,
+   "min": 200.0,
+   "close": 200.5,
+   "Trading_Volume": 124219182,
+   "Trading_money": 25064469815
+  },
+  {
+   "date": "2025-08-21",
+   "open": 201.0,
+   "max": 206.0,
+   "min": 201.0,
+   "close": 206.0,
+   "Trading_Volume": 67845018,
+   "Trading_money": 13866663290
+  },
+  {
+   "date": "2025-08-22",
+   "open": 208.0,
+   "max": 208.0,
+   "min": 202.0,
+   "close": 202.5,
+   "Trading_Volume": 54944456,
+   "Trading_money": 11230285900
+  },
+  {
+   "date": "2025-08-25",
+   "open": 207.0,
+   "max": 208.0,
+   "min": 206.0,
+   "close": 207.5,
+   "Trading_Volume": 52074373,
+   "Trading_money": 10794411131
+  },
+  {
+   "date": "2025-08-26",
+   "open": 207.0,
+   "max": 209.0,
+   "min": 206.0,
+   "close": 209.0,
+   "Trading_Volume": 42252559,
+   "Trading_money": 8781319005
+  },
+  {
+   "date": "2025-08-27",
+   "open": 210.0,
+   "max": 210.0,
+   "min": 207.5,
+   "close": 208.0,
+   "Trading_Volume": 41852802,
+   "Trading_money": 8721224257
+  },
+  {
+   "date": "2025-08-28",
+   "open": 207.5,
+   "max": 207.5,
+   "min": 204.0,
+   "close": 206.0,
+   "Trading_Volume": 48681221,
+   "Trading_money": 10022449817
+  },
+  {
+   "date": "2025-08-29",
+   "open": 206.0,
+   "max": 207.0,
+   "min": 202.5,
+   "close": 203.5,
+   "Trading_Volume": 55250195,
+   "Trading_money": 11287102203
+  },
+  {
+   "date": "2025-09-01",
+   "open": 203.0,
+   "max": 204.5,
+   "min": 197.0,
+   "close": 198.5,
+   "Trading_Volume": 70459817,
+   "Trading_money": 14078205621
+  }
+ ],
+ "2317_adj": [
+  {
+   "date": "2025-08-08",
+   "open": 191.303052,
+   "max": 191.303052,
+   "min": 187.904267,
+   "close": 188.875349,
+   "Trading_Volume": 65469369,
+   "Trading_money": 12751231873
+  },
+  {
+   "date": "2025-08-11",
+   "open": 188.389808,
+   "max": 192.274134,
+   "min": 186.933186,
+   "close": 192.274134,
+   "Trading_Volume": 52291064,
+   "Trading_money": 10257696276
+  },
+  {
+   "date": "2025-08-12",
+   "open": 192.759675,
+   "max": 193.245215,
+   "min": 189.84643,
+   "close": 191.303052,
+   "Trading_Volume": 38689326,
+   "Trading_money": 7612313926
+  },
+  {
+   "date": "2025-08-13",
+   "open": 192.274134,
+   "max": 193.245215,
+   "min": 187.904267,
+   "close": 192.759675,
+   "Trading_Volume": 103356675,
+   "Trading_money": 20312528967
+  },
+  {
+   "date": "2025-08-14",
+   "open": 191.788593,
+   "max": 194.216297,
+   "min": 191.303052,
+   "close": 193.730756,
+   "Trading_Volume": 78943020,
+   "Trading_money": 15688176080
+  },
+  {
+   "date": "2025-08-15",
+   "open": 199.071704,
+   "max": 201.984949,
+   "min": 196.15846,
+   "close": 201.013867,
+   "Trading_Volume": 156672765,
+   "Trading_money": 32140128028
+  },
+  {
+   "date": "2025-08-18",
+   "open": 201.499408,
+   "max": 203.927112,
+   "min": 200.042786,
+   "close": 203.927112,
+   "Trading_Volume": 73566364,
+   "Trading_money": 15318133373
+  },
+  {
+   "date": "2025-08-19",
+   "open": 203.927112,
+   "max": 205.869275,
+   "min": 201.984949,
+   "close": 201.984949,
+   "Trading_Volume": 49978122,
+   "Trading_money": 10455248708
+  },
+  {
+   "date": "2025-08-20",
+   "open": 200.042786,
+   "max": 200.528326,
+   "min": 194.216297,
+   "close": 194.701838,
+   "Trading_Volume": 124219182,
+   "Trading_money": 25064469815
+  },
+  {
+   "date": "2025-08-21",
+   "open": 195.187378,
+   "max": 200.042786,
+   "min": 195.187378,
+   "close": 200.042786,
+   "Trading_Volume": 67845018,
+   "Trading_money": 13866663290
+  },
+  {
+   "date": "2025-08-22",
+   "open": 201.984949,
+   "max": 201.984949,
+   "min": 196.15846,
+   "close": 196.644,
+   "Trading_Volume": 54944456,
+   "Trading_money": 11230285900
+  },
+  {
+   "date": "2025-08-25",
+   "open": 201.013867,
+   "max": 201.984949,
+   "min": 200.042786,
+   "close": 201.499408,
+   "Trading_Volume": 52074373,
+   "Trading_money": 10794411131
+  },
+  {
+   "date": "2025-08-26",
+   "open": 201.013867,
+   "max": 202.95603,
+   "min": 200.042786,
+   "close": 202.95603,
+   "Trading_Volume": 42252559,
+   "Trading_money": 8781319005
+  },
+  {
+   "date": "2025-08-27",
+   "open": 203.927112,
+   "max": 203.927112,
+   "min": 201.499408,
+   "close": 201.984949,
+   "Trading_Volume": 41852802,
+   "Trading_money": 8721224257
+  },
+  {
+   "date": "2025-08-28",
+   "open": 201.499408,
+   "max": 201.499408,
+   "min": 198.100623,
+   "close": 200.042786,
+   "Trading_Volume": 48681221,
+   "Trading_money": 10022449817
+  },
+  {
+   "date": "2025-08-29",
+   "open": 200.042786,
+   "max": 201.013867,
+   "min": 196.644,
+   "close": 197.615082,
+   "Trading_Volume": 55250195,
+   "Trading_money": 11287102203
+  },
+  {
+   "date": "2025-09-01",
+   "open": 197.129541,
+   "max": 198.586163,
+   "min": 191.303052,
+   "close": 192.759675,
+   "Trading_Volume": 70459817,
+   "Trading_money": 14078205621
+  }
+ ]
+}

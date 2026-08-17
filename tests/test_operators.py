@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import operators as op
+import factor_engine.operators as op
 
 
 def _panel():

@@ -113,7 +113,10 @@ ALLOW_FUTURE_POOL = os.getenv("SWING_ALLOW_FUTURE_POOL", "").strip() == "1"
 
 # 價格來源。FinMind 的 TaiwanStockPrice 是未還原價；論文級研究建議改用
 # TaiwanStockPriceAdj（backer/sponsor）並用 SWING_PRICE_DATASET 覆寫。
-PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
+# 2026-08-16 切到付費還原資料集。它涵蓋分割/減資/面額變更(自建鏈修不到那些),
+# 但**不能直接用**:它只調價不調量、沒有 as-traded 欄位、錨在 latest_bar。
+# data._vendor_adjusted_with_raw 會另抓一份原始價補齊,並用 F[t]/F[0] 重新錨定。
+PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPriceAdj").strip()
 
 # ── 自建還原價（2026-08-03 加）──────────────────────────────────────────
 # TaiwanStockPriceAdj 需付費層（register 層打回 400），但 TaiwanStockDividendResult
@@ -125,6 +128,14 @@ PRICE_DATASET = os.getenv("SWING_PRICE_DATASET", "TaiwanStockPrice").strip()
 # 與下方 fail-closed 閘門的關係：自建還原**只涵蓋除權息**，分割/減資不在
 # DividendResult 裡，所以閘門仍對「還原後」序列跑殘留斷點掃描才放行。
 SELF_ADJUST_PRICES = os.getenv("SWING_SELF_ADJUST", "1").strip() != "0"
+# 自建還原的錨點。見 PRICE_SCALE_CONTRACT.md §1。
+#   series_start(預設,forward-adjusted):序列起點 = 真實價,**歷史凍結** ——
+#       新的除權息只影響它自己與之後的 bar,所以凍結的績效可以重現。
+#   latest_bar(back-adjusted):最新一根 = 今天的真實價,但每次事件都會回頭
+#       改寫整段歷史 → 同一個快照隔一次事件再抓,歷史價格就不一樣。
+# 兩種錨只差一個常數倍率,**所有報酬完全相同**,不影響任何策略損益。
+PRICE_ADJUST_ANCHOR = os.getenv("SWING_PRICE_ADJUST_ANCHOR", "series_start").strip()
+
 
 # ── 基準報酬口徑（2026-08-15 加）────────────────────────────────────────
 # 個股序列在「官方還原價」或「自建還原價」下是**含息**的（現金股利被還原回價格），
@@ -275,8 +286,15 @@ BT_STOP_LOSS = 0.08      # 停損 -8%
 # 組合 / 執行
 BT_MAX_POSITIONS = 5     # 同時最多持有檔數（等權重）
 BT_ENTRY_NEXT_OPEN = True  # 隔日開盤進場（避免用當日收盤訊號當日成交的未來函數）
-BT_FEE = 0.001425        # 手續費（單邊）
-BT_TAX = 0.003           # 證交稅（賣出）
+BT_FEE_STATUTORY = 0.001425   # 法定上限費率（單邊）；券商折扣另計,見下
+# 券商手續費折扣。電子下單常見 2.8 折;不同券商不同,所以是設定不是常數。
+# **分成「法定費率 × 折扣」兩個欄位而不是直接寫 0.000399**,是為了讓 provenance
+# 看得出「這個數字是怎麼來的」—— 折扣改了要看得出來,而不是只看到一個小數。
+BT_FEE_DISCOUNT = float(os.getenv("SWING_FEE_DISCOUNT", "0.28"))
+if not 0.0 < BT_FEE_DISCOUNT <= 1.0:
+    raise ValueError("SWING_FEE_DISCOUNT 必須落在 (0, 1]")
+BT_FEE = BT_FEE_STATUTORY * BT_FEE_DISCOUNT   # 實際單邊費率(預設 0.0399%)
+BT_TAX = 0.003           # 證交稅（賣出;法定,不打折）
 
 # 股數與資金模型。research_fractional 用於純 alpha 比較、不可宣稱可直接下單；
 # regular_lot 才會按普通交易 1,000 股整張下單。odd_lot_proxy 只把股數取整數，成交價
@@ -293,8 +311,11 @@ BT_INITIAL_CAPITAL = float(os.getenv("SWING_INITIAL_CAPITAL", "1000000"))
 if BT_INITIAL_CAPITAL <= 0:
     raise ValueError("SWING_INITIAL_CAPITAL 必須大於 0")
 BT_REGULAR_LOT_SHARES = 1000
-# 最低手續費屬券商收費，不是交易所統一規則；預設 0 保持中立，使用者應按券商設定。
-BT_MIN_COMMISSION = float(os.getenv("SWING_MIN_COMMISSION", "0"))
+# 最低手續費屬券商收費，不是交易所統一規則。
+# 2026-08-16 改預設 0 → 1:owner 的券商零股最低收 1 元。預設 0 等於假設「無論
+# 多小的單都不用錢」,那會讓零股/小數股模式的成本被系統性低估 —— 而零股正是
+# 100 萬本金買高價股時唯一可行的方式。
+BT_MIN_COMMISSION = float(os.getenv("SWING_MIN_COMMISSION", "1"))
 if BT_MIN_COMMISSION < 0:
     raise ValueError("SWING_MIN_COMMISSION 不得為負")
 

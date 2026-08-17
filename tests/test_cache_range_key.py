@@ -30,7 +30,7 @@ import pandas as pd
 
 import config
 import data
-import migrate_cache_range
+from data import migrate_cache_range
 
 SNAP = "2026-06-22"
 
@@ -374,7 +374,7 @@ class DispositionCacheRangeTest(unittest.TestCase):
         }])
 
     def test_wider_request_does_not_hit_a_narrow_cache(self):
-        import twse_disposition
+        from data import twse_disposition
 
         self._disp().to_pickle(
             twse_disposition.cache_path("2026-05-01", "2026-05-10"))
@@ -392,7 +392,7 @@ class DispositionCacheRangeTest(unittest.TestCase):
         self.assertTrue(out.empty)
 
     def test_same_range_hits_without_refetching(self):
-        import twse_disposition
+        from data import twse_disposition
 
         self._disp().to_pickle(twse_disposition.cache_path("2021-01-01", SNAP))
         with mock.patch.object(twse_disposition, "fetch_notice_history",
@@ -401,7 +401,7 @@ class DispositionCacheRangeTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
     def test_tpex_cache_key_carries_the_range_too(self):
-        import tpex_disposition
+        from data import tpex_disposition
 
         self._disp().to_pickle(
             tpex_disposition.cache_path("2026-05-01", "2026-05-10"))
@@ -414,8 +414,8 @@ class DispositionCacheRangeTest(unittest.TestCase):
 
     def test_backtest_consumer_refuses_a_cache_that_does_not_cover_the_window(self):
         """回測讀處置快取時也要驗涵蓋範圍,不能「有檔案就用」。"""
-        import tpex_disposition
-        import twse_disposition
+        from data import tpex_disposition
+        from data import twse_disposition
         from execution import tradability
 
         self._disp().to_pickle(
@@ -428,8 +428,8 @@ class DispositionCacheRangeTest(unittest.TestCase):
                 tradability.load_disposition_days(days)
 
     def test_backtest_consumer_uses_a_covering_cache(self):
-        import tpex_disposition
-        import twse_disposition
+        from data import tpex_disposition
+        from data import twse_disposition
         from execution import tradability
 
         self._disp("1111").to_pickle(

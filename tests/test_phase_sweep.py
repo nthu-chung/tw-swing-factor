@@ -5,7 +5,7 @@
 ------------------------------
 「每 N 日再平衡跑滿所有等價相位」這條規則有**三份**各自為政的實作:
 
-1. `backtest.run_full`:`for phase in range(rebalance_every)`,相位數來自 CLI
+1. `event_backtest.run_full`:`for phase in range(rebalance_every)`,相位數來自 CLI
    參數(預設 5);中位/最小/最差 MaxDD 是印出來時當場算的,沒有進回傳值,
    呼叫端拿不到。
 2. `strategies.s19_chip_momentum.evaluate`:`for ph in range(rebalance_days)`
@@ -32,7 +32,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
 import evaluation
 import forward_test
@@ -59,10 +59,42 @@ def _repo_sources():
         yield path
 
 
+# 「自己挑相位降頻」的呼叫名。policy 路徑的相位在降頻時就決定了。
+PHASE_SELECTION_CALLS = {"select_decision_snapshots"}
+# 事件引擎入口。判準是「同一個迴圈 body 裡既挑相位又跑引擎」——
+# 只挑相位不跑引擎是合法的(例如先建相位→日期對照表來檢查各相位不重複,
+# 再把單一相位包成 callback 交給 `sweep_phases`,見 `backtest_policy_phases`)。
+ENGINE_CALLS = {"backtest_portfolio"}
+
+
+def _callee_name(call: ast.Call) -> str:
+    """`f(...)` → "f";`mod.f(...)` → "f"。只要函式名,不管它掛在誰底下。"""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def _calls_named(node: ast.AST, names):
+    """在 body 裡找指定名字的呼叫,**不進入巢狀 def / lambda**(理由同下)。"""
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        for child in ast.iter_child_nodes(cur):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            if isinstance(child, ast.Call) and _callee_name(child) in names:
+                yield child
+            stack.append(child)
+
+
 def _calls_with_keyword(node: ast.AST, keyword: str):
     """在 `node` 的子樹裡找帶 `keyword=` 的呼叫,**不進入巢狀的 def / lambda**。
 
-    巢狀函式是「一個相位怎麼跑」的 callback(`backtest.run_full` 的 `_run_phase`
+    巢狀函式是「一個相位怎麼跑」的 callback(`event_backtest.run_full` 的 `_run_phase`
     就長在 `for segment ...` 迴圈裡),那是共用掃描的正確用法;真正要抓的是
     「迴圈 body 直接餵 `rebalance_phase=`」,也就是自己掃相位。
     """
@@ -207,7 +239,7 @@ class SinglePhaseDebugFlagTest(unittest.TestCase):
 # ── 4. 三個入口共用同一份實作 ─────────────────────────────────────────────
 class SingleImplementationTest(unittest.TestCase):
     def test_entrypoints_bind_the_same_sweep_function(self):
-        self.assertIs(backtest.sweep_phases, phases.sweep_phases)
+        self.assertIs(event_backtest.sweep_phases, phases.sweep_phases)
         self.assertIs(s19.sweep_phases, phases.sweep_phases)
         self.assertIs(evaluation.sweep_phases, phases.sweep_phases)
         # forward 不自己聚合,拿的是策略回傳的 PhaseSweep。
@@ -222,10 +254,23 @@ class SingleImplementationTest(unittest.TestCase):
         1. 迴圈變數叫 phase / ph / rebalance_phase(含 `for` 與推導式)。
         2. **任何**會重複執行的 body(`for` / `while` / 推導式)直接餵引擎的
            `rebalance_phase=`,不限迴圈變數名、不限 `range()`。
+        3. 任何迴圈 body 在**降頻**時自己指定相位,也就是呼叫
+           `select_decision_snapshots(..., phase=...)`。
 
         第 2 條原本只認「`for ... in range(...)`」,所以
         `offsets = list(range(n))` + `for off in offsets:` 或改寫成 `while`
         就整份繞過去 —— 閘門靠的是**形狀慣例**而不是行為。
+
+        第 3 條是 2026-08-16 補的:`research/golden_path.py` 當時寫成
+
+            for idx in range(event_backtest.WEEKLY_PHASES):
+                picked = event_backtest.select_decision_snapshots(..., phase=idx)
+                res = event_backtest.backtest_portfolio(signal_frame=sub, ...)
+
+        迴圈變數叫 `idx`(不在名單裡)、引擎收的是 `signal_frame` 而不是
+        `rebalance_phase=`,所以前兩條都抓不到,測試全綠但 repo 裡確實有第四份
+        手寫相位掃描。policy 路徑的相位是**在降頻時**決定的,所以要擋的是
+        「在迴圈裡自己挑星期幾」這個行為。
         """
         offenders = []
         for node in ast.walk(tree):
@@ -242,12 +287,32 @@ class SingleImplementationTest(unittest.TestCase):
                     f"{where}:{getattr(node, 'lineno', '?')} "
                     f"{type(node).__name__} body 直接餵 rebalance_phase")
                 break
+            picks_phase = any(
+                _callee_name(c) in PHASE_SELECTION_CALLS
+                for c in _calls_with_keyword(node, "phase"))
+            runs_engine = any(True for _ in _calls_named(node, ENGINE_CALLS))
+            if picks_phase and runs_engine:
+                offenders.append(
+                    f"{where}:{getattr(node, 'lineno', '?')} "
+                    f"{type(node).__name__} body 既挑相位又跑引擎"
+                    "(select_decision_snapshots(phase=...) + backtest_portfolio)")
         return offenders
 
     def test_no_module_hand_writes_another_phase_loop(self):
         """禁止再長出第四份手寫相位迴圈(AST 掃描)。
 
         要跑相位請用 `evaluation.phases.sweep_phases`。
+
+        **未解決的偶發誤報(2026-08-16 登記)**:本測試在某一輪 7 次完整
+        `unittest discover` 中失敗 1 次,而且失敗當下沒有留下 offender 清單;
+        事後以相同 repo 內容單獨重跑掃描結果為空,連續多次完整套件重跑亦全綠。
+        掃描本身是決定性的(`sorted(rglob)` + AST),所以失敗當下 repo 樹的內容
+        必然與事後不同 —— 最可能是同套件內某個測試以 `subprocess.run(cwd=repo)`
+        跑子行程時,`rglob` 正好走到瞬間存在的檔案。**此為推測,未證實。**
+
+        影響方向是「假警報」而非「漏放行」,但會偶爾誤報的閘門遲早會被 skip 掉。
+        待辦:讓掃描先把檔案列表快照下來再解析,並在失敗訊息中印出 offender 的
+        絕對路徑與 mtime。**查清楚之前不得放寬或 skip 此測試。**
         """
         offenders = []
         for path in _repo_sources():
@@ -257,6 +322,48 @@ class SingleImplementationTest(unittest.TestCase):
             offenders += self._phase_loop_offenders(
                 tree, str(path.relative_to(REPO_ROOT)))
         self.assertEqual(offenders, [], f"出現手寫相位迴圈:{offenders}")
+
+    def test_scanner_catches_the_golden_path_shape_that_slipped_through(self):
+        """2026-08-16 實際漏抓的形狀:迴圈變數 `idx` + 在降頻時自己挑相位。
+
+        這正是 `research/golden_path.py` 當時的寫法。它不叫 phase、也沒有把
+        `rebalance_phase=` 餵進引擎,所以原本兩條規則都放行,測試全綠但 repo 裡
+        確實存在第四份手寫相位掃描。
+        """
+        golden_path_shape = (
+            "for idx in range(event_backtest.WEEKLY_PHASES):\n"
+            "    picked = set(event_backtest.select_decision_snapshots(\n"
+            "        all_days, decision_frequency='weekly', phase=idx))\n"
+            "    sub = signals[signals['date'].isin(picked)]\n"
+            "    res = event_backtest.backtest_portfolio(signal_frame=sub)\n")
+        found = self._phase_loop_offenders(
+            ast.parse(golden_path_shape), "golden_path_shape")
+        self.assertTrue(found, "守衛必須抓到『在迴圈裡自己挑相位降頻』")
+
+        # 反向一:把單一相位包成 callback 交給共用掃描,不得被誤報。
+        callback_shape = (
+            "def _run_phase(phase):\n"
+            "    picked = event_backtest.select_decision_snapshots(\n"
+            "        all_days, decision_frequency='weekly', phase=phase)\n"
+            "    return event_backtest.backtest_portfolio(signal_frame=picked)\n"
+            "sweep = sweep_phases(_run_phase, n_phases=5)\n")
+        self.assertEqual(
+            self._phase_loop_offenders(ast.parse(callback_shape), "callback"),
+            [], "把單一相位包成 callback 交給 sweep_phases 是正確用法")
+
+        # 反向二:只建「相位 → 決策日」對照表(不跑引擎)也不得被誤報。
+        # `backtest_policy_phases` 就是這樣先檢查各相位是否選到同一批日子;
+        # 把它擋掉會逼人拿掉那道退化檢查,反而更糟。
+        precompute_shape = (
+            "selections = {\n"
+            "    idx: select_decision_snapshots(days, phase=idx)\n"
+            "    for idx in range(n_phases)\n"
+            "}\n"
+            "if len({tuple(v) for v in selections.values()}) < n_phases:\n"
+            "    raise ValueError('相位退化')\n")
+        self.assertEqual(
+            self._phase_loop_offenders(ast.parse(precompute_shape), "precompute"),
+            [], "只建相位對照表、不跑引擎,是合法用法")
 
     def test_scanner_catches_loops_that_are_not_for_x_in_range(self):
         """掃描器本身的回歸測試:它擋的是**行為**,不是某一種寫法。
@@ -290,7 +397,7 @@ class SingleImplementationTest(unittest.TestCase):
     def test_scanner_allows_a_callback_defined_inside_an_unrelated_loop(self):
         """反向:`for segment in ...:` 裡定義的單相位 callback 不是手寫相位迴圈。
 
-        `backtest.run_full` 就長這樣(掃描交給 `sweep_phases`,迴圈跑的是 IS/OS
+        `event_backtest.run_full` 就長這樣(掃描交給 `sweep_phases`,迴圈跑的是 IS/OS
         兩段)。掃描器若把它判成違規,大家只會把它加進白名單,閘門就白做了。
         """
         src = ("for segment in ('IS', 'OS'):\n"
@@ -331,14 +438,14 @@ class RunFullPhaseSweepTest(unittest.TestCase):
         spy = mock.Mock(side_effect=phases.sweep_phases)
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.uni, "get_universe", return_value=["A"]),
-                mock.patch.object(backtest, "backtest_portfolio",
+                mock.patch.object(event_backtest.uni, "get_universe", return_value=["A"]),
+                mock.patch.object(event_backtest, "backtest_portfolio",
                                   side_effect=_fake_engine(dates)),
-                mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
-                mock.patch.object(backtest, "sweep_phases", spy),
+                mock.patch.object(event_backtest, "factor_ic", return_value=pd.DataFrame()),
+                mock.patch.object(event_backtest, "sweep_phases", spy),
                 mock.patch.object(config, "OUTPUT_DIR", Path(tmp)),
             ):
-                result, _ = backtest.run_full(
+                result, _ = event_backtest.run_full(
                     sample=True, top_n=1, rebalance_every=3,
                     dynamic_enabled=False, **kwargs)
         return result, spy
@@ -440,7 +547,7 @@ class ForwardUsesSharedSweepTest(unittest.TestCase):
             mock.patch.object(config, "OUTPUT_DIR", self.out),
             mock.patch.object(s19, "build_panel",
                               return_value=(self.panel, ["A", "B", "C", "D"])),
-            mock.patch.object(backtest, "backtest_portfolio",
+            mock.patch.object(event_backtest, "backtest_portfolio",
                               side_effect=lambda **kw: fake_bt(**kw)),
             mock.patch.object(s19, "sweep_phases", spy),
         ):

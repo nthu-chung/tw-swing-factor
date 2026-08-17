@@ -19,10 +19,11 @@
    換一組權重重跑,兩份結果沒有任何欄位分得出來。
 4. **IS/embargo/OS 邊界、git commit 不在 summary**:數字對不回切割,也對不回
    任何一份程式碼。
-5. **全域 config 被就地改寫且還原不完整**:`regime_strategy_lab` 只還原
-   `MARKET_FILTER_ENABLED`,把 `MARKET_FILTER_RULE` 永久留在 "vol";
-   `market_filter_eval` 把 rule/weight 留在最後一個變體(`('ma60', 0.5)`)。
-   summary 現在記**實際生效值**,污染事後看得見;還原漏洞本身也一併修掉。
+5. **全域 config 被就地改寫且還原不完整**:summary 現在記**實際生效值**,
+   污染事後看得見。(2026-08-16:當年犯這個錯的兩個模組 `regime_strategy_lab`
+   與 `market_filter_eval` 已隨 legacy 研究鏈一併刪除,對應的
+   `ConfigRestoreLeakTest` 也移除;summary 記錄實際生效值這條規則仍然有效,
+   由本檔其餘測試守著。)
 """
 from __future__ import annotations
 
@@ -35,12 +36,10 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import backtest
+from backtest import event_backtest
 import config
-import market_filter_eval
 import provenance
-import regime_strategy_lab
-import universe as uni
+from universes import legacy_static as uni
 from _offline_registry import common_stocks
 from evaluation.splits import build_evaluation_split
 from universes import MonthlyPITUniverseProvider
@@ -63,28 +62,52 @@ class _PanelEnv:
     def __enter__(self):
         price = _factor_frame()
         self._patches = [
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.uni, "get_name_map", return_value={}),
-            mock.patch.object(backtest.uni, "get_industry_map", return_value={}),
-            mock.patch.object(backtest.data, "fetch_market_index",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.uni, "get_name_map", return_value={}),
+            mock.patch.object(event_backtest.uni, "get_industry_map", return_value={}),
+            mock.patch.object(event_backtest.data, "fetch_market_index",
                               return_value=pd.DataFrame()),
-            mock.patch.object(backtest.data, "fetch_bundle",
+            mock.patch.object(event_backtest.data, "fetch_bundle",
                               side_effect=lambda *_a, **_k: {"price": price.copy()}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "compute_factors",
+            mock.patch.object(event_backtest.factors, "compute_factors",
                               side_effect=lambda *_a, **_k: price.copy()),
-            mock.patch.object(backtest.factors, "composite_score",
+            mock.patch.object(event_backtest.factors, "composite_score",
                               new=lambda *_a, **_k: 80.0),
         ]
-        for p in self._patches:
-            p.start()
+        # 逐一 start,並記住「已經成功啟動」的那些。若中途某個 start() 失敗
+        # (例如目標屬性在某個環境下不存在),前面已啟動的 patch 必須立刻停掉 ——
+        # 否則 `__enter__` 拋出 → with 區塊沒進去 → `__exit__` 永遠不會執行 →
+        # 那些 patch 會**留在整個 process 裡**污染後面所有測試。
+        #
+        # 這不是理論問題:`_load_disposition_days` 被 patch 成 `lambda: {}`,
+        # 一旦洩漏,字母序在後面的 `test_tpex_disposition` 就會拿到空字典而失敗,
+        # 而且失敗訊息完全看不出跟這裡有關(2026-08-16 CI 偶發紅燈)。
+        started = []
+        try:
+            for p in self._patches:
+                p.start()
+                started.append(p)
+        except Exception:
+            for p in reversed(started):
+                p.stop()
+            raise
         return self
 
     def __exit__(self, *exc):
+        # **每一個都要停到。** 舊版一個 `p.stop()` 拋例外,後面的就全被跳過 ——
+        # 而 `_assert_price_integrity` / `_load_disposition_days` 排在清單最前面,
+        # reversed 之後最後才停,於是它們正是最容易漏掉的兩個。實測(2026-08-16
+        # CI)洩漏出去的就是這兩個,而症狀出現在字母序更後面、看起來毫不相關的
+        # `test_tpex_disposition`。
+        _stop_errors = []
         for p in reversed(self._patches):
-            p.stop()
+            try:
+                p.stop()
+            except Exception as _exc:                       # noqa: BLE001
+                _stop_errors.append(_exc)
         return False
 
 
@@ -130,14 +153,33 @@ class _PoolFiles:
             mock.patch.object(config, "DYNAMIC_UNIVERSE_CANDIDATE_POOL", self.pool_n),
             mock.patch.object(config, "SNAPSHOT_END_DATE", self.snapshot),
         ]
-        for p in self._patches:
-            p.start()
+        # 見 tests/test_zz_no_patch_leak.py:中途失敗時已啟動的 patch 必須停掉,
+        # 否則它們會留在整個 process 裡污染後面所有測試(而且不會 crash)。
+        started = []
+        try:
+            for p in self._patches:
+                p.start()
+                started.append(p)
+        except Exception:
+            for p in reversed(started):
+                p.stop()
+            self._tmp.cleanup()
+            raise
         uni.reset_future_pool_bypass_log()
         return self
 
     def __exit__(self, *exc):
+        # **每一個都要停到。** 舊版一個 `p.stop()` 拋例外,後面的就全被跳過 ——
+        # 而 `_assert_price_integrity` / `_load_disposition_days` 排在清單最前面,
+        # reversed 之後最後才停,於是它們正是最容易漏掉的兩個。實測(2026-08-16
+        # CI)洩漏出去的就是這兩個,而症狀出現在字母序更後面、看起來毫不相關的
+        # `test_tpex_disposition`。
+        _stop_errors = []
         for p in reversed(self._patches):
-            p.stop()
+            try:
+                p.stop()
+            except Exception as _exc:                       # noqa: BLE001
+                _stop_errors.append(_exc)
         self._tmp.cleanup()
         uni.reset_future_pool_bypass_log()
         return False
@@ -148,7 +190,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
 
     def test_pool_asof_is_not_the_daily_top_n_file(self):
         with _PoolFiles() as pools:
-            prov = backtest._legacy_pool_provenance(
+            prov = event_backtest._legacy_pool_provenance(
                 pools.ids, dynamic_enabled=True, universe_top_n=pools.daily_n)
         self.assertEqual(prov["candidate_pool_asof"], pools.pool_asof)
         self.assertEqual(prov["candidate_pool_top_n"], pools.pool_n)
@@ -165,7 +207,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
     def test_blacklisted_subset_still_resolves_to_the_same_pool(self):
         """扣掉資料品質黑名單(子集)仍算同一份池,as_of 不變。"""
         with _PoolFiles() as pools:
-            prov = backtest._legacy_pool_provenance(
+            prov = event_backtest._legacy_pool_provenance(
                 pools.ids[:-1], dynamic_enabled=True,
                 universe_top_n=pools.daily_n)
         self.assertEqual(prov["candidate_pool_asof"], pools.pool_asof)
@@ -182,7 +224,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         也跟著變成 False —— 未來池冒充乾淨池,只是換了觸發條件。
         """
         with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools:
-            prov = backtest._legacy_pool_provenance(
+            prov = event_backtest._legacy_pool_provenance(
                 pools.ids[:2], dynamic_enabled=True,
                 universe_top_n=pools.daily_n)
         self.assertEqual(prov["candidate_pool_resolved_by"],
@@ -195,7 +237,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         """接續上一條:戳對池之後,未來池偵測必須跟著成立。"""
         with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools, \
                 _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=pools.ids[:2], sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
                 static_universe_comparator=True)
@@ -212,7 +254,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         """
         with _PoolFiles(pool_asof="2026-08-03", snapshot="2026-03-31") as pools, \
                 _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=["NOT_IN_ANY_POOL"], sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=1,
                 static_universe_comparator=True)
@@ -228,7 +270,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
             # config 宣告的候選池檔根本不存在 → 只能往其他池猜
             with mock.patch.object(config, "DYNAMIC_UNIVERSE_CANDIDATE_POOL",
                                    pools.pool_n + 4):
-                prov = backtest._legacy_pool_provenance(
+                prov = event_backtest._legacy_pool_provenance(
                     pools.ids[:2], dynamic_enabled=True,
                     universe_top_n=pools.daily_n)
         self.assertTrue(prov["candidate_pool_asof_ambiguous"])
@@ -236,7 +278,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         self.assertEqual(prov["candidate_pool_asof_source"],
                          "ambiguous_not_expected_pool")
         meta = dict(prov, formal_evidence_eligible=True)
-        backtest._apply_pool_asof_downgrade(meta)
+        event_backtest._apply_pool_asof_downgrade(meta)
         self.assertFalse(meta["formal_evidence_eligible"])
         self.assertIn("無法確定", meta["evidence_note"])
 
@@ -247,7 +289,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         `SNAPSHOT_END_DATE` 當 fallback)。
         """
         with _PoolFiles() as pools:
-            prov = backtest._legacy_pool_provenance(
+            prov = event_backtest._legacy_pool_provenance(
                 ["NOT_IN_ANY_POOL"], dynamic_enabled=True,
                 universe_top_n=pools.daily_n)
         self.assertIsNone(prov["candidate_pool_asof"])
@@ -257,7 +299,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
     def test_summary_reports_the_real_pool_asof(self):
         """走完整引擎:static comparator 的 summary 要拿到真正那份池的 as_of。"""
         with _PoolFiles() as pools, _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=pools.ids, sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
                 static_universe_comparator=True)
@@ -271,7 +313,7 @@ class CandidatePoolAsOfTest(unittest.TestCase):
         """PIT provider 路徑:候選池規則 / pool size / pool as-of 由 provider 決定,
         不可被 legacy 池檔的日期蓋掉。"""
         with _PoolFiles(), _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=["1101", "1102"], sample=False, dynamic_enabled=True,
                 universe_top_n=10, rebalance_every=5, top_n=2,
                 universe_provider=_provider(top_n=2))
@@ -285,6 +327,38 @@ class CandidatePoolAsOfTest(unittest.TestCase):
 
 class FuturePoolBypassTest(unittest.TestCase):
     """未來池逃生門必須在 summary 留下痕跡(對齊價格逃生門的 integrity_bypassed)。"""
+
+    def test_unrelated_process_bypass_does_not_downgrade_a_clean_run(self):
+        """別的回測放行過未來池,不得把這一份乾淨結果標成 bypassed。
+
+        原缺陷(2026-08-16 修):`uni.future_pool_bypass_log()` 是 process 級
+        紀錄簿,而 `_future_pool_provenance` 無條件把整份 log 併進每一份 summary。
+        實測先跑一次 legacy 對照(放行 top300 的未來池),接著跑完全不相干的
+        PIT 回測,那份乾淨結果也會 `future_pool_bypassed=True` 並降級。方向雖然
+        保守,但會訓練人忽略這個旗標,平行搜尋時每個 candidate 還會互相污染。
+        """
+        uni.reset_future_pool_bypass_log()
+        self.addCleanup(uni.reset_future_pool_bypass_log)
+        uni._record_future_pool_bypass("2026-08-03", "2026-06-22", 300)
+
+        clean = event_backtest._future_pool_provenance(
+            "2026-06-20", "2026-06-22", pool_top_n=100)
+        self.assertFalse(clean["future_pool_bypassed"],
+                         "不相干的 process 事件不得降級這一份結果")
+        self.assertEqual(clean["future_pool_bypass_events"], [])
+        self.assertEqual(len(clean["process_future_pool_bypass_events"]), 1,
+                         "但仍要看得見:這個 process 曾經放行過")
+
+    def test_matching_pool_still_triggers_the_downgrade(self):
+        """反向確認:修過頭把真的未來池也放過,同樣是缺陷。"""
+        uni.reset_future_pool_bypass_log()
+        self.addCleanup(uni.reset_future_pool_bypass_log)
+        uni._record_future_pool_bypass("2026-08-03", "2026-06-22", 300)
+
+        dirty = event_backtest._future_pool_provenance(
+            "2026-08-03", "2026-06-22", pool_top_n=300)
+        self.assertTrue(dirty["future_pool_bypassed"])
+        self.assertEqual(dirty["process_future_pool_bypass_events"], [])
 
     def test_bypass_event_is_recorded_by_universe_loader(self):
         with mock.patch.object(config, "SNAPSHOT_END_DATE", "2026-06-22"), \
@@ -301,7 +375,7 @@ class FuturePoolBypassTest(unittest.TestCase):
         """池建構日晚於快照 → summary 標 future_pool_bypassed,且不可作正式證據。"""
         with _PoolFiles(pool_asof="2026-09-09", snapshot="2026-03-31") as pools, \
                 mock.patch.object(config, "ALLOW_FUTURE_POOL", True), _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=pools.ids, sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
                 static_universe_comparator=True)
@@ -314,7 +388,7 @@ class FuturePoolBypassTest(unittest.TestCase):
 
     def test_clean_pool_is_not_flagged(self):
         with _PoolFiles() as pools, _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=pools.ids, sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
                 static_universe_comparator=True)
@@ -336,12 +410,12 @@ class _ExternalPicksRun:
         # 外部 picks 路徑有證券別閘門(fail-closed),代號要顯式宣告證券別。
         with (
             common_stocks("1101"),
-            mock.patch.object(backtest, "_assert_price_integrity", lambda *_a, **_k: None),
-            mock.patch.object(backtest, "_load_disposition_days", lambda *_a, **_k: {}),
-            mock.patch.object(backtest.data, "fetch_price",
+            mock.patch.object(event_backtest, "_assert_price_integrity", lambda *_a, **_k: None),
+            mock.patch.object(event_backtest, "_load_disposition_days", lambda *_a, **_k: {}),
+            mock.patch.object(event_backtest.data, "fetch_price",
                               side_effect=lambda *_a, **_k: price.copy()),
         ):
-            return backtest.backtest_portfolio(
+            return event_backtest.backtest_portfolio(
                 symbols=["1101"], sample=False, dynamic_enabled=True,
                 rebalance_every=5, top_n=1, picks_by_date=self.picks, **kwargs)
 
@@ -374,7 +448,7 @@ class SummaryProvenanceFieldsTest(unittest.TestCase):
 
     def test_engine_path_marks_factor_weights_as_applied(self):
         with _PoolFiles() as pools, _PanelEnv():
-            res = backtest.backtest_portfolio(
+            res = event_backtest.backtest_portfolio(
                 symbols=pools.ids, sample=False, dynamic_enabled=True,
                 universe_top_n=pools.daily_n, rebalance_every=5, top_n=2,
                 static_universe_comparator=True)
@@ -531,13 +605,13 @@ class EvaluationSplitProvenanceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.uni, "get_universe", return_value=["1101"]),
-                mock.patch.object(backtest, "backtest_portfolio",
+                mock.patch.object(event_backtest.uni, "get_universe", return_value=["1101"]),
+                mock.patch.object(event_backtest, "backtest_portfolio",
                                   side_effect=fake_portfolio),
-                mock.patch.object(backtest, "factor_ic", return_value=pd.DataFrame()),
+                mock.patch.object(event_backtest, "factor_ic", return_value=pd.DataFrame()),
                 mock.patch.object(config, "OUTPUT_DIR", Path(tmp)),
             ):
-                backtest.run_full(sample=False, top_n=1, rebalance_every=1,
+                event_backtest.run_full(sample=False, top_n=1, rebalance_every=1,
                                   dynamic_enabled=False, pool=100,
                                   static_comparator=True)
         segments = [c.get("segment") for c in calls if c.get("segment")]
@@ -546,102 +620,6 @@ class EvaluationSplitProvenanceTest(unittest.TestCase):
             if c.get("segment"):
                 self.assertIsNotNone(c.get("evaluation_split_info"),
                                      "段結果沒有帶切割邊界 = 事後無法判斷它是哪一段")
-
-
-class ConfigRestoreLeakTest(unittest.TestCase):
-    """全域 config 被就地改寫的模組必須完整還原,而且污染要在 summary 看得見。"""
-
-    def setUp(self):
-        self.orig = (config.MARKET_FILTER_ENABLED, config.MARKET_FILTER_RULE,
-                     config.MARKET_FILTER_RISKOFF_WEIGHT)
-
-    def tearDown(self):
-        (config.MARKET_FILTER_ENABLED, config.MARKET_FILTER_RULE,
-         config.MARKET_FILTER_RISKOFF_WEIGHT) = self.orig
-
-    def test_summary_records_effective_filter_config_even_when_disabled(self):
-        """濾網關著也要記實際的 config 值 —— 這是污染唯一看得見的地方。"""
-        config.MARKET_FILTER_ENABLED = False
-        config.MARKET_FILTER_RULE = "vol"
-        config.MARKET_FILTER_RISKOFF_WEIGHT = 0.5
-        mf = _ExternalPicksRun().run()["summary"]["market_filter"]
-        self.assertFalse(mf["enabled"])
-        self.assertIsNone(mf["rule"], "沒生效的規則不可寫進 rule 欄位")
-        self.assertEqual(mf["config_rule"], "vol")
-        self.assertEqual(mf["config_riskoff_weight"], 0.5)
-
-    def test_regime_strategy_lab_restores_rule_not_just_enabled(self):
-        """原 bug:只還原 MARKET_FILTER_ENABLED,RULE 被永久留在 "vol"。"""
-        config.MARKET_FILTER_ENABLED = False
-        config.MARKET_FILTER_RULE = "ma200"
-        with mock.patch.object(regime_strategy_lab.backtest, "backtest_portfolio",
-                               return_value={"summary": {}}) as bt:
-            regime_strategy_lab._run(["1101"], {"d": []}, filt=True)
-        bt.assert_called_once()
-        self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
-        self.assertFalse(config.MARKET_FILTER_ENABLED)
-
-    def test_regime_strategy_lab_restores_on_exception(self):
-        config.MARKET_FILTER_ENABLED = False
-        config.MARKET_FILTER_RULE = "ma200"
-        with mock.patch.object(regime_strategy_lab.backtest, "backtest_portfolio",
-                               side_effect=RuntimeError("boom")):
-            with self.assertRaises(RuntimeError):
-                regime_strategy_lab._run(["1101"], {"d": []}, filt=True)
-        self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
-
-    def test_market_filter_eval_restores_rule_and_weight(self):
-        """原 bug:收尾用 `_set_filter(*orig)`,而它在 enabled=False 時不碰
-        rule/weight → 跑完之後全域參數停在最後一個變體 ('ma60', 0.5)。"""
-        config.MARKET_FILTER_ENABLED = False
-        config.MARKET_FILTER_RULE = "ma200"
-        config.MARKET_FILTER_RISKOFF_WEIGHT = 0.0
-        # 用一組跟腳本內部基線({"momentum": 1.0})不同的權重,否則「還原了」與
-        # 「沒還原」長得一樣,測試會變成空包彈。
-        with mock.patch.object(config, "FACTOR_WEIGHTS", {"flow": 0.7}):
-            self._run_market_filter_eval()
-            self.assertEqual(config.FACTOR_WEIGHTS, {"flow": 0.7})
-        self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
-        self.assertEqual(config.MARKET_FILTER_RISKOFF_WEIGHT, 0.0)
-        self.assertFalse(config.MARKET_FILTER_ENABLED)
-
-    def test_market_filter_eval_restores_on_exception(self):
-        config.MARKET_FILTER_ENABLED = False
-        config.MARKET_FILTER_RULE = "ma200"
-        config.MARKET_FILTER_RISKOFF_WEIGHT = 0.0
-        with mock.patch.object(config, "FACTOR_WEIGHTS", {"flow": 0.7}):
-            with self.assertRaises(RuntimeError):
-                self._run_market_filter_eval(boom=True)
-            self.assertEqual(config.FACTOR_WEIGHTS, {"flow": 0.7},
-                             "中途 raise 時舊版直接跳過還原")
-        self.assertEqual(config.MARKET_FILTER_RULE, "ma200")
-        self.assertEqual(config.MARKET_FILTER_RISKOFF_WEIGHT, 0.0)
-
-    def _run_market_filter_eval(self, boom: bool = False):
-        dates = pd.bdate_range("2026-01-01", periods=60)
-        eq = pd.DataFrame({"date": dates,
-                           "equity": np.linspace(1.0, 1.2, len(dates))})
-        fake_split = {"is": (str(dates[0].date()), str(dates[30].date())),
-                      "os": (str(dates[40].date()), str(dates[-1].date())),
-                      "n": len(dates), "split": {"n_embargo": 5}, "eq_full": eq}
-        res = {"summary": {"n_trades": 1, "exit_breakdown": {},
-                           "market_filter": {"n_filter_exits": 0,
-                                             "n_regime_switches": 0}},
-               "equity_curve": eq}
-
-        def _run(*_a, **_k):
-            if boom:
-                raise RuntimeError("boom")
-            return res
-
-        with (
-            mock.patch.object(market_filter_eval.uni, "get_research_candidates",
-                              return_value=["1101"]),
-            mock.patch.object(market_filter_eval, "_split", return_value=fake_split),
-            mock.patch.object(market_filter_eval, "_run", side_effect=_run),
-            mock.patch.object(market_filter_eval, "_report", lambda *_a, **_k: None),
-        ):
-            market_filter_eval.run(pool=5, rebalance=5, pick=2)
 
 
 if __name__ == "__main__":

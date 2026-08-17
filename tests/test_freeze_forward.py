@@ -33,7 +33,7 @@ import pandas as pd
 
 import config
 import freeze_manifest
-from strategies import StrategySpec
+from strategy_kit.spec import StrategySpec
 from strategies import s19_chip_momentum as s19
 
 
@@ -429,7 +429,7 @@ class ForwardTestPathTest(unittest.TestCase):
 
     def _run(self, manifest: Path, *, now=None, summary_factory=None,
              panel=None, baseline=None):
-        import backtest
+        from backtest import event_backtest
         import forward_test
 
         def fake_bt(**kwargs):
@@ -448,7 +448,7 @@ class ForwardTestPathTest(unittest.TestCase):
             mock.patch.object(s19, "build_panel",
                               return_value=(self.panel if panel is None else panel,
                                             ["A", "B", "C", "D"])),
-            mock.patch.object(backtest, "backtest_portfolio",
+            mock.patch.object(event_backtest, "backtest_portfolio",
                               side_effect=lambda **kw: fake_bt(**kw)),
         ]
         if baseline is not None:

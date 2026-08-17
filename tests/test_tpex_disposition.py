@@ -7,7 +7,7 @@ from unittest import mock
 
 import pandas as pd
 
-import tpex_disposition as tp
+from data import tpex_disposition as tp
 
 
 DISP_FIELDS = ["編號", "公布日期", "證券代號", "證券名稱", "累計",
@@ -116,6 +116,26 @@ class TpexFetchRetryTest(unittest.TestCase):
         self.assertEqual(data_rows, [])
 
 
+
+def _loader_diagnostics(engine, tmp_dir) -> str:
+    """失敗時說出「為什麼」,不是只說「不相等」。
+
+    這兩支測試在 CI 綠、本機紅過一次,而 `out == {}` 只對應一種情況:
+    `_load_disposition_days` 在被呼叫時不是真的那個函式,或旗標沒生效。
+    把這三件事印出來,下一次紅燈就不必再猜。
+    """
+    import config
+    import execution.tradability as tr
+
+    loader = getattr(engine, "_load_disposition_days", None)
+    files = sorted(p.name for p in tmp_dir.glob("*")) if hasattr(tmp_dir, "glob") else []
+    return (f"loader_is_real={loader is tr.load_disposition_days} "
+            f"loader={loader!r} "
+            f"BT_MODEL_DISPOSITION={getattr(config, 'BT_MODEL_DISPOSITION', None)!r} "
+            f"SNAPSHOT_END_DATE={getattr(config, 'SNAPSHOT_END_DATE', None)!r} "
+            f"CACHE_DIR={getattr(config, 'CACHE_DIR', None)} "
+            f"tmp_files={files}")
+
 class BacktestMergeTest(unittest.TestCase):
     """回測端必須合併兩市場,且單邊缺檔時要出聲而不是靜默半套。"""
 
@@ -138,23 +158,24 @@ class BacktestMergeTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        import backtest
-        import tpex_disposition
-        import twse_disposition
+        from backtest import event_backtest
+        from data import tpex_disposition
+        from data import twse_disposition
 
         days = pd.date_range("2026-04-13", "2026-05-01", freq="B")
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.config, "CACHE_DIR", Path(tmp)),
-                mock.patch.object(backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
-                mock.patch.object(backtest.config, "BT_MODEL_DISPOSITION", True),
+                mock.patch.object(event_backtest.config, "CACHE_DIR", Path(tmp)),
+                mock.patch.object(event_backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
+                mock.patch.object(event_backtest.config, "BT_MODEL_DISPOSITION", True),
             ):
                 self._disp_frame("2330", "2026-04-15", "2026-04-20").to_pickle(
                     twse_disposition.cache_path("2026-01-01", "2026-06-22"))
                 self._disp_frame("6182", "2026-04-22", "2026-04-28").to_pickle(
                     tpex_disposition.cache_path("2026-01-01", "2026-06-22"))
-                out = backtest._load_disposition_days(days)
-        self.assertIn("2330", out)
+                out = event_backtest._load_disposition_days(days)
+                _diag = _loader_diagnostics(event_backtest, Path(tmp))
+        self.assertIn("2330", out, f"out={out!r} | {_diag}")
         self.assertIn("6182", out)
         self.assertIn(pd.Timestamp("2026-04-24"), out["6182"])
 
@@ -163,20 +184,22 @@ class BacktestMergeTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        import backtest
-        import twse_disposition
+        from backtest import event_backtest
+        from data import twse_disposition
 
         days = pd.date_range("2026-04-13", "2026-05-01", freq="B")
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.object(backtest.config, "CACHE_DIR", Path(tmp)),
-                mock.patch.object(backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
-                mock.patch.object(backtest.config, "BT_MODEL_DISPOSITION", True),
+                mock.patch.object(event_backtest.config, "CACHE_DIR", Path(tmp)),
+                mock.patch.object(event_backtest.config, "SNAPSHOT_END_DATE", "2026-06-22"),
+                mock.patch.object(event_backtest.config, "BT_MODEL_DISPOSITION", True),
             ):
                 self._disp_frame("2330", "2026-04-15", "2026-04-20").to_pickle(
                     twse_disposition.cache_path("2026-01-01", "2026-06-22"))
-                with self.assertRaisesRegex(RuntimeError, "半套市場"):
-                    backtest._load_disposition_days(days)
+                _diag = _loader_diagnostics(event_backtest, Path(tmp))
+                with self.assertRaisesRegex(RuntimeError, "半套市場",
+                                            msg=_diag):
+                    event_backtest._load_disposition_days(days)
 
 
 if __name__ == "__main__":

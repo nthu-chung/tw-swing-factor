@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from price_integrity import detect_price_discontinuities
+from data.price_integrity import detect_price_discontinuities
 
 
 REQUIRED_PRICE_COLUMNS = {"date", "stock_id", "close", "turnover", "volume"}

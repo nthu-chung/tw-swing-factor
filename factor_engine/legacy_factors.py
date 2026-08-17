@@ -334,6 +334,34 @@ SCORE_COLUMNS = {
 }
 
 
+def legacy_selection(panel, *, min_composite: float,
+                     trend_guard: bool):
+    """legacy 九因子策略**自己的**選股規則:綜合分數門檻 ∧ 趨勢硬門檻。
+
+    為什麼這個函式存在(2026-08-17 從引擎搬出來):這兩條規則本來寫在
+    `backtest.event_backtest` 的 legacy 分支裡,也就是**引擎內部藏著一支策略**。
+    那會造成一個具體的問題 —— `MIN_COMPOSITE` 與 `TREND_GUARD_ENABLED` 都是
+    全域 config,所以它們進的是 evaluation_run 身分,不是 strategy_rule 身分:
+
+        兩次 `strategy_rule_hash` 相同的 run,可以買到不同的股票。
+
+    那正是兩層身分制要防的事。引擎該強制的是**市場強制你的事**(T+1、漲跌停、
+    處置、整股、現金),而「MA20 要不要在 MA60 之上」是一個**看法**,屬於策略。
+
+    搬過來不改變任何數字 —— 同樣兩條規則、同樣的順序、同樣的 config 來源。
+    改變的是它們住在誰名下:現在它們明確屬於九因子這支 legacy 策略,
+    引擎只是呼叫它。新的假說策略走 `strategy_kit.signal_builder`,
+    在那裡趨勢閘門是 per-strategy 參數 `trend_guard`(進 rules hash)。
+
+    註:這支策略在 `STRATEGY_REGISTRY.md` 是 S01 `rejected`。保留可執行是因為
+    它是偏誤對照組,不是因為它是候選。
+    """
+    sig = panel[panel["composite"] >= float(min_composite)].copy()
+    if trend_guard and "trend_ok" in sig.columns:
+        sig = sig[sig["trend_ok"] == True]  # noqa: E712
+    return sig
+
+
 def composite_score(row) -> float:
     """把一列的各因子分數依 config.FACTOR_WEIGHTS 加權，正規化成 0~100。"""
     total_w = 0.0

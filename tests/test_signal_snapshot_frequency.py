@@ -17,8 +17,8 @@ from unittest import mock
 
 import pandas as pd
 
-import backtest
-from strategies.position_policy import (
+from backtest import event_backtest
+from strategy_kit.position_policy import (
     StrategyPositionPolicy,
     StrategyPositionPolicySpec,
 )
@@ -40,7 +40,7 @@ class SnapshotFrequencyTest(unittest.TestCase):
         """原缺陷:日頻快照 + weekly 宣告會靜默變成日頻換股。"""
         days = list(pd.bdate_range("2026-01-05", periods=4))   # 同一個 ISO 週
         with self.assertRaises(ValueError) as ctx:
-            backtest._prepare_signal_snapshots(
+            event_backtest._prepare_signal_snapshots(
                 _frame(days), decision_frequency="weekly")
         msg = str(ctx.exception)
         self.assertIn("fail-closed", msg)
@@ -48,7 +48,7 @@ class SnapshotFrequencyTest(unittest.TestCase):
 
     def test_one_snapshot_per_iso_week_passes(self):
         days = list(pd.bdate_range("2026-01-05", periods=15))[::5]
-        snapshots, dates = backtest._prepare_signal_snapshots(
+        snapshots, dates = event_backtest._prepare_signal_snapshots(
             _frame(days), decision_frequency="weekly")
         self.assertEqual(len(dates), len(days))
         self.assertEqual(len(snapshots), len(days))
@@ -56,64 +56,64 @@ class SnapshotFrequencyTest(unittest.TestCase):
     def test_skipping_a_whole_week_is_allowed(self):
         """假日週(春節)整週沒有決策日是合法的,判準是「同週不得多次」。"""
         days = [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-19")]
-        _, dates = backtest._prepare_signal_snapshots(
+        _, dates = event_backtest._prepare_signal_snapshots(
             _frame(days), decision_frequency="weekly")
         self.assertEqual(len(dates), 2)
 
     def test_daily_declaration_allows_daily_snapshots(self):
         days = list(pd.bdate_range("2026-01-05", periods=4))
-        _, dates = backtest._prepare_signal_snapshots(
+        _, dates = event_backtest._prepare_signal_snapshots(
             _frame(days), decision_frequency="daily")
         self.assertEqual(len(dates), 4)
 
     def test_unknown_frequency_fails_closed(self):
         with self.assertRaises(ValueError):
-            backtest._prepare_signal_snapshots(
+            event_backtest._prepare_signal_snapshots(
                 _frame([pd.Timestamp("2026-01-05")]),
                 decision_frequency="fortnightly")
 
     def test_missing_declaration_skips_the_check(self):
         """沒有宣告就無從驗證;這條釘住「不驗」與「驗過了」不會被混為一談。"""
         days = list(pd.bdate_range("2026-01-05", periods=4))
-        _, dates = backtest._prepare_signal_snapshots(_frame(days))
+        _, dates = event_backtest._prepare_signal_snapshots(_frame(days))
         self.assertEqual(len(dates), 4)
 
 
 class SelectDecisionSnapshotsTest(unittest.TestCase):
     def test_each_phase_picks_one_trading_day_per_iso_week(self):
         days = list(pd.bdate_range("2026-01-05", periods=15))
-        weeks = {backtest._iso_week(d) for d in days}
-        for idx in range(backtest.WEEKLY_PHASES):
-            picked = backtest.select_decision_snapshots(days, phase=idx)
+        weeks = {event_backtest._iso_week(d) for d in days}
+        for idx in range(event_backtest.WEEKLY_PHASES):
+            picked = event_backtest.select_decision_snapshots(days, phase=idx)
             self.assertEqual(len(picked), len(weeks))
-            self.assertEqual(len({backtest._iso_week(d) for d in picked}),
+            self.assertEqual(len({event_backtest._iso_week(d) for d in picked}),
                              len(weeks))
 
     def test_phases_select_different_days(self):
         days = list(pd.bdate_range("2026-01-05", periods=15))
         selections = {
-            idx: tuple(backtest.select_decision_snapshots(days, phase=idx))
-            for idx in range(backtest.WEEKLY_PHASES)
+            idx: tuple(event_backtest.select_decision_snapshots(days, phase=idx))
+            for idx in range(event_backtest.WEEKLY_PHASES)
         }
         self.assertEqual(len(set(selections.values())),
-                         backtest.WEEKLY_PHASES)
+                         event_backtest.WEEKLY_PHASES)
 
     def test_short_week_clamps_to_last_valid_trading_day(self):
         """§3.1:假日週以該週最後一個有效交易日為決策日。"""
         days = [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-06")]
         for idx in (2, 3, 4):
-            picked = backtest.select_decision_snapshots(days, phase=idx)
+            picked = event_backtest.select_decision_snapshots(days, phase=idx)
             self.assertEqual(picked, [pd.Timestamp("2026-01-06")])
 
     def test_daily_frequency_returns_every_day(self):
         days = list(pd.bdate_range("2026-01-05", periods=6))
         self.assertEqual(
-            backtest.select_decision_snapshots(days, decision_frequency="daily"),
+            event_backtest.select_decision_snapshots(days, decision_frequency="daily"),
             sorted(days))
 
     def test_out_of_range_phase_fails_closed(self):
         with self.assertRaises(ValueError):
-            backtest.select_decision_snapshots(
+            event_backtest.select_decision_snapshots(
                 list(pd.bdate_range("2026-01-05", periods=5)), phase=5)
 
 
@@ -135,22 +135,22 @@ class PolicyPhaseSweepTest(unittest.TestCase):
             return self._summary()
 
         with (
-            mock.patch.object(backtest, "backtest_portfolio", side_effect=_fake),
-            mock.patch.object(backtest, "sweep_phases",
-                              wraps=backtest.sweep_phases) as spy,
+            mock.patch.object(event_backtest, "backtest_portfolio", side_effect=_fake),
+            mock.patch.object(event_backtest, "sweep_phases",
+                              wraps=event_backtest.sweep_phases) as spy,
         ):
-            sweep = backtest.backtest_policy_phases(
+            sweep = event_backtest.backtest_policy_phases(
                 signal_frame=_frame(days),
                 strategy_position_policy=_policy(),
                 symbols=["A"], sample=False)
 
         spy.assert_called_once()
         self.assertEqual(spy.call_args.kwargs["n_phases"],
-                         backtest.WEEKLY_PHASES)
-        self.assertEqual(len(sweep), backtest.WEEKLY_PHASES)
+                         event_backtest.WEEKLY_PHASES)
+        self.assertEqual(len(sweep), event_backtest.WEEKLY_PHASES)
         self.assertFalse(sweep.single_phase_debug)
         # 每個相位真的餵了不同的決策日,不是同一批重複五次
-        self.assertEqual(len({tuple(x) for x in seen}), backtest.WEEKLY_PHASES)
+        self.assertEqual(len({tuple(x) for x in seen}), event_backtest.WEEKLY_PHASES)
 
     def test_stats_report_median_min_and_worst_drawdown(self):
         days = list(pd.bdate_range("2026-01-05", periods=15))
@@ -160,8 +160,8 @@ class PolicyPhaseSweepTest(unittest.TestCase):
         def _fake(**kwargs):
             return self._summary(sharpe=next(sharpes), max_drawdown=next(dds))
 
-        with mock.patch.object(backtest, "backtest_portfolio", side_effect=_fake):
-            sweep = backtest.backtest_policy_phases(
+        with mock.patch.object(event_backtest, "backtest_portfolio", side_effect=_fake):
+            sweep = event_backtest.backtest_policy_phases(
                 signal_frame=_frame(days),
                 strategy_position_policy=_policy(),
                 symbols=["A"], sample=False)
@@ -177,10 +177,10 @@ class PolicyPhaseSweepTest(unittest.TestCase):
         實際上是同一個數字重複五次。
         """
         weekly = list(pd.bdate_range("2026-01-05", periods=15))[::5]
-        with mock.patch.object(backtest, "backtest_portfolio",
+        with mock.patch.object(event_backtest, "backtest_portfolio",
                                side_effect=AssertionError("不該被呼叫")):
             with self.assertRaises(ValueError) as ctx:
-                backtest.backtest_policy_phases(
+                event_backtest.backtest_policy_phases(
                     signal_frame=_frame(weekly),
                     strategy_position_policy=_policy(),
                     symbols=["A"], sample=False)
@@ -188,9 +188,9 @@ class PolicyPhaseSweepTest(unittest.TestCase):
 
     def test_daily_policy_runs_a_single_phase(self):
         days = list(pd.bdate_range("2026-01-05", periods=6))
-        with mock.patch.object(backtest, "backtest_portfolio",
+        with mock.patch.object(event_backtest, "backtest_portfolio",
                                side_effect=lambda **k: self._summary()):
-            sweep = backtest.backtest_policy_phases(
+            sweep = event_backtest.backtest_policy_phases(
                 signal_frame=_frame(days),
                 strategy_position_policy=_policy(decision_frequency="daily"),
                 symbols=["A"], sample=False)
