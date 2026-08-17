@@ -4,18 +4,16 @@
 這支腳本回答的問題只有一個:**現在 push 到公開 GitHub 會不會外洩或誤導。**
 它不驗證策略正確性(那是 `tests/` 與研究紀律的事),也不呼叫任何網路端點。
 
-檢查四類:
+檢查五類:
 
 1. Git 追蹤中的檔名是否命中常見密鑰／私鑰型態(`.env`、`*.pem`、`id_rsa` …)。
 2. Git 追蹤中的文字檔是否含私鑰 PEM 標頭或已填值的 token 指派。
 3. `_cache/` 與 `outputs/` 的資料產物是否被追蹤(只有少數刻意的 fixture 例外)。
 4. 公開 repo 必要文件是否存在、`.gitignore` 是否真的擋得住、`.env.example` 是否空值。
+5. LICENSE、個人使用附加許可、商業政策、CLA 與風險聲明是否一起被追蹤。
 
 **設計鐵則:任何命中只印「規則 + 檔案 + 行號」,永遠不印比對到的內容。**
 把疑似 token 印進 CI log 等於再洩一次;preflight 自己不能變成洩漏管道。
-
-授權(LICENSE)刻意**不列為失敗**:公開授權條款要由 repo owner 決定,
-稽核腳本不能代替決定,所以只在輸出末端列成 owner decision 提醒。
 
 用法:
 
@@ -127,6 +125,15 @@ DATA_ARTIFACT_ALLOWLIST = (
 # --- 4. 公開文件與 gitignore ----------------------------------------------
 REQUIRED_PUBLIC_FILES = (
     "README.md",
+    "LICENSE",
+    "ADDITIONAL_PERMISSION.md",
+    "COMMERCIAL_LICENSE.md",
+    "CONTRIBUTING.md",
+    "CLA.md",
+    "DISCLAIMER.md",
+    "DATA_LICENSE.md",
+    "TRADEMARKS.md",
+    "SPONSORING.md",
     "AGENTS.md",
     "ARCHITECTURE.md",
     "DATA_SOURCES.md",
@@ -141,6 +148,7 @@ REQUIRED_PUBLIC_FILES = (
     "preflight.py",
     "tests/test_preflight.py",
     ".github/workflows/ci.yml",
+    ".github/pull_request_template.md",
 )
 # 這些 pattern 必須真的在 .gitignore 出現,否則乾淨 clone 很容易誤提交。
 REQUIRED_GITIGNORE_PATTERNS = (
@@ -160,16 +168,15 @@ class Finding:
 
     `detail` 只描述「命中哪一條規則」,不得含檔案內容;`line` 讓人自己去看。
 
-    三個 level 的分工:
+    兩個 level 的分工:
 
     - `fail`:公開出去就會出事(密鑰、資料產物、文件根本不存在)。exit code 1。
     - `warn`:目前工作樹狀態下的待辦,commit 之後就會消失(例如必要文件還沒
       `git add`)。**不擋 CI** —— 在 CI 上檔案本來就已經 commit,這條自然不會亮;
       在本機亮起來是提醒,不是錯誤。
-    - `owner_decision`:稽核腳本不能代替 repo owner 決定的事(授權條款)。
     """
 
-    level: str      # "fail" | "warn" | "owner_decision"
+    level: str      # "fail" | "warn"
     rule: str
     path: str
     detail: str
@@ -328,18 +335,6 @@ def check_env_example(root: Path = ROOT) -> List[Finding]:
     return findings
 
 
-def owner_decisions(root: Path = ROOT) -> List[Finding]:
-    """不是失敗,是必須由 repo owner 本人決定、不能由稽核腳本代決的事項。"""
-    items = []
-    if not any((root / name).is_file() for name in ("LICENSE", "LICENSE.md", "LICENSE.txt")):
-        items.append(Finding(
-            level="owner_decision", rule="license_undecided", path="LICENSE",
-            detail="repo 尚無授權條款。公開前需 owner 選定(MIT / Apache-2.0 / 其他),"
-                   "preflight 不代為決定,詳見 PUBLIC_REPO_AUDIT.md",
-        ))
-    return items
-
-
 def run_preflight(root: Path = ROOT, tracked: Sequence[str] | None = None) -> List[Finding]:
     """跑完所有檢查。`tracked` 可注入,讓測試不必真的建一個 git repo。"""
     files = list(tracked) if tracked is not None else list_tracked_files(root)
@@ -350,7 +345,6 @@ def run_preflight(root: Path = ROOT, tracked: Sequence[str] | None = None) -> Li
     findings += check_required_files(files, root)
     findings += check_gitignore(root)
     findings += check_env_example(root)
-    findings += owner_decisions(root)
     return findings
 
 
@@ -362,13 +356,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings = run_preflight()
     failures = [f for f in findings if f.level == "fail"]
     warnings = [f for f in findings if f.level == "warn"]
-    decisions = [f for f in findings if f.level == "owner_decision"]
 
     if args.json:
         print(json.dumps(
             {"failures": [asdict(f) for f in failures],
-             "warnings": [asdict(f) for f in warnings],
-             "owner_decisions": [asdict(f) for f in decisions]},
+             "warnings": [asdict(f) for f in warnings]},
             ensure_ascii=False, indent=2,
         ))
         return 1 if failures else 0
@@ -386,10 +378,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if warnings:
         print(f"\n⚠️  {len(warnings)} 項 commit 前待辦(不擋 CI):\n")
         for f in warnings:
-            print(f"  {f.render()}")
-    if decisions:
-        print(f"\n🔸 {len(decisions)} 項 owner decision(不影響通過與否):\n")
-        for f in decisions:
             print(f"  {f.render()}")
     print()
     return 1 if failures else 0

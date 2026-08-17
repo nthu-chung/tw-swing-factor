@@ -172,7 +172,7 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 
 > ⚠️ 這是**目標**狀態，不是現況。目前實際存在的套件只有 `universes/`、
 > `factor_engine/`、`strategies/`、`execution/`、`evaluation/`；
-> `market_data/`、`portfolio/`、`backtesting/`、`analyst_research/`、`research/`
+> `market_data/`、`portfolio/`、`backtesting/`、`research/`
 > **尚未建立**，其責任目前仍散在根目錄的 `data/__init__.py`、`backtest/event_backtest.py` 與研究腳本裡。
 > 下一節列出已完成的部分與搬遷順序。
 
@@ -188,8 +188,11 @@ screener 缺的那半，收斂成同一份仍未做；改動任何一份時三�
 | `execution/` | 台股成交可行性、價格合法化、成本與交割模擬 | Alpha 訊號、自動下單 |
 | `backtesting/` | 事件迴圈、部位、現金、成交紀錄與權益曲線 | 選參數、資料抓取 |
 | `evaluation/` | IS/embargo/OS、walk-forward、基準與穩健性統計 | 依 OS 修改策略 |
-| `analyst_research/` | AI 基本面／新聞研究封包與稽核紀錄 | 靜默改寫量化排名 |
 | `research/` | 尚未採用的實驗與負面結果 | 被 live 流程直接匯入 |
+
+AI 基本面、新聞評分、prompt、模型與人工決策紀錄不是本公共 repo 的目標模組。它們若
+由 Project Owner 建立，會位於獨立私人專案，僅消費本系統凍結且可稽核的候選輸出；
+不得反向修改量化分數或把事後資料送回歷史回測。
 
 ## 目前已完成的第一階段搬遷
 
@@ -339,8 +342,11 @@ golden path remediation、screener completion)與過期的 `HANDOFF_2026-08-01.m
 | `preflight.py` | 對 **git 追蹤中**的檔案檢查密鑰檔名／私鑰內容、`_cache`／`outputs` 資料產物誤追蹤、必要公開文件、`.gitignore` 覆蓋、`.env.example` 空值。命中只印規則與行號，不印內容 |
 | `tests/` | `unittest`（非 pytest）、離線、HTTP 全 mock。修完 bug 要留回歸測試並在 docstring 說明原 bug |
 
-授權條款（LICENSE）**刻意未定**，由 repo owner 決定；`preflight.py` 將其列為
-owner decision 而非失敗，稽核腳本不代替決定。
+公共框架採 [PolyForm Noncommercial License 1.0.0](./LICENSE) 的 source-available
+非商業授權；[ADDITIONAL_PERMISSION.md](./ADDITIONAL_PERMISSION.md)另行允許個人以
+本人自有資金自主交易。商業權利由 Project Owner 保留，外部貢獻必須接受
+[CLA.md](./CLA.md)，確保公共修正仍可被納入未來商業版本。AI 分析師階段是獨立的私人
+研究層，不因量化框架公開而自動落入本授權。
 
 ## 後續搬遷順序
 
@@ -361,5 +367,6 @@ owner decision 而非失敗，稽核腳本不代替決定。
    在成交紀錄 parity 測試通過前，根目錄引擎仍是唯一正式入口。
 4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略台帳，不因整理資料夾而
    消失或改名成已驗證策略。
-5. 建立 `analyst_research/` 的候選封包；AI 研究結果獨立保存，並用純量化 A 組對照
-   「量化＋AI 篩選」B 組，未經 untouched OOS／forward 證明前不覆寫量化核心。
+5. 公共 repo 只維持可凍結、可稽核的候選輸出契約。Project Owner 的私人 AI 專案可
+   消費該輸出並獨立保存研究結果；仍以純量化 A 組對照「量化＋AI 篩選」B 組，未經
+   untouched OOS／forward 證明前不得覆寫量化核心。

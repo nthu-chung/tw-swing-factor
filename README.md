@@ -13,12 +13,12 @@
 PIT 資料 → 動態 universe → 數學因子／策略排名 → 事件驅動回測
          → 可稽核的候選股票
 
-階段 B：AI 分析師（未來規劃，尚未實作）
+階段 B：AI 分析師（Project Owner 的私人下游流程，不屬本 repo）
 量化候選 + 當時可得的財報／公告／新聞 → AI 基本面與事件研究
                                         → 人工決策 → 手動買賣
 ```
 
-因此，**目前這個 repo 是量化選股與回測系統，不是 AI 選股產品**。它的責任是先用
+因此，**這個公共 repo 是量化選股與回測系統，不是 AI 選股產品**。它的責任是先用
 可重現的數學規則縮小研究範圍，並誠實回答策略是否真的勝過基準。未來 AI 層只會針對
 量化候選補充公司基本面、產業脈絡、公告與新聞風險，幫助人類做第二層判斷。
 
@@ -28,13 +28,18 @@ PIT 資料 → 動態 universe → 數學因子／策略排名 → 事件驅動�
 - B 組：相同候選名單再經 AI 研究後的人工篩選組合。
 
 兩組只能以凍結後的 forward／untouched OOS 比較。AI 研究輸出必須保留 as-of 時間、
-來源與理由，不能回頭改寫量化分數，也不能把事後新聞塞回歷史回測。目前規劃中的
-`analyst_research/` 尚未建立；`execution/` 只是回測成交模擬，不是券商下單系統。
+來源與理由，不能回頭改寫量化分數，也不能把事後新聞塞回歷史回測。AI 層若建立，會
+放在 Project Owner 的獨立私人專案，不是本 repo 的目標模組；`execution/` 只是回測
+成交模擬，不是券商下單系統。
 
 > 這個 repo 公開的是**研究平台本身**——策略骨架、事件驅動回測引擎，以及那一整套
 > 會擋住你自己說謊的閘門。策略的證據狀態逐支記在
 > [STRATEGY_REGISTRY.md](./STRATEGY_REGISTRY.md)；請以那份為準，不要從 repo 裡
 > 任何一個數字反推「這套有效」。
+
+本專案採 **source-available 非商業授權**，不是 MIT／Apache，也不是 OSI-approved
+open source。研究、教學、非商業修改，以及個人以本人自有資金自主交易的權利與限制，
+請見本文件末端的「授權、個人使用與貢獻」。
 
 ---
 
@@ -365,11 +370,30 @@ Live monitor 會把 >20% 價格斷點及後續20個該股觀察日先 quarantine
 - [ ] **universe 設計的系統性驗證**：候選池大小、每日 top-N、閘門與持股數的交互作用
 - [ ] **參數搜尋（GA）**：放在獨立 repo，import 這裡的引擎與閘門，不反向修改本 repo
 
-> 授權條款（LICENSE）**尚未決定**，需由 repo owner 選定；在那之前本 repo 沒有
-> 明示授權。詳見 [PUBLIC_REPO_AUDIT.md](./PUBLIC_REPO_AUDIT.md) 的 owner decision。
+## 授權、個人使用與貢獻
+
+公共版本採 [PolyForm Noncommercial License 1.0.0](./LICENSE)：可以研究、教學、
+實驗、非商業修改與依條款散布，但不得把本系統或修改版拿去營利。這不是 OSI-approved
+open source，而是公開原始碼、保留商業權利的 **source-available** 專案。
+
+[ADDITIONAL_PERMISSION.md](./ADDITIONAL_PERMISSION.md)另外允許自然人使用本系統研究，
+並以**本人自有資金**自主交易。使用者自行建立且未提交給本 repo 的策略、參數與結果
+仍歸使用者；實盤盈虧也完全由使用者承擔。這項許可不包含代客操作、第三方資金、企業
+內部使用、付費訊號、顧問服務、SaaS/API 或把本系統包裝成商業產品。
+
+任何商業使用都必須事先取得 Project Owner 的獨立書面授權，詳見
+[COMMERCIAL_LICENSE.md](./COMMERCIAL_LICENSE.md)。Sponsor 是維護贊助，不等於購買
+商業授權、投資訊號或私人 AI 模組，詳見 [SPONSORING.md](./SPONSORING.md)。
+
+歡迎提交回測規則、資料防護、文件與測試修正。貢獻流程見
+[CONTRIBUTING.md](./CONTRIBUTING.md)；所有 pull request 必須接受 [CLA.md](./CLA.md)，
+讓 Project Owner 保有未來商業授權與整體移轉專案的能力。市場資料、使用者策略與
+未來私人 AI 層的權利邊界見 [DATA_LICENSE.md](./DATA_LICENSE.md)。
 
 ---
 
 ## 免責聲明
 
-本專案為**研究與學習用途**，所有回測結果僅供參考，不構成投資建議。回測有效不代表未來有效，實盤請自負風險。
+本專案為**研究與學習用途**，所有回測結果僅供參考，不構成投資建議。回測有效不代表
+未來有效，個人使用許可也不代表 Project Owner 鼓勵或認可實盤。完整風險與責任邊界
+見 [DISCLAIMER.md](./DISCLAIMER.md)。

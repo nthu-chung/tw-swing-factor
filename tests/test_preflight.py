@@ -207,19 +207,32 @@ class EnvExampleTest(unittest.TestCase):
             self.assertEqual(preflight.check_env_example(root), [])
 
 
-class OwnerDecisionTest(unittest.TestCase):
-    def test_absent_license_is_owner_decision_not_failure(self):
-        """授權條款由 owner 決定;preflight 提醒但不代為決定,也不因此擋 CI。"""
-        with tempfile.TemporaryDirectory() as tmp:
-            items = preflight.owner_decisions(Path(tmp))
-            self.assertEqual([f.rule for f in items], ["license_undecided"])
-            self.assertEqual(items[0].level, "owner_decision")
+class LicensePackageTest(unittest.TestCase):
+    def test_license_package_is_required_public_material(self):
+        """授權決定已完成;任何一份邊界文件被刪除都必須讓 preflight 失敗。"""
+        required = set(preflight.REQUIRED_PUBLIC_FILES)
+        self.assertTrue({
+            "LICENSE",
+            "ADDITIONAL_PERMISSION.md",
+            "COMMERCIAL_LICENSE.md",
+            "CONTRIBUTING.md",
+            "CLA.md",
+            "DISCLAIMER.md",
+            "DATA_LICENSE.md",
+            "TRADEMARKS.md",
+            "SPONSORING.md",
+            ".github/pull_request_template.md",
+        }.issubset(required))
 
-    def test_present_license_clears_the_reminder(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _write(root, "LICENSE", "MIT")
-            self.assertEqual(preflight.owner_decisions(root), [])
+    def test_repo_uses_unmodified_polyform_license_identity(self):
+        """基礎條文必須保持標準 PolyForm 名稱與官方版本 URL。"""
+        text = (preflight.ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("# PolyForm Noncommercial License 1.0.0", text)
+        self.assertIn(
+            "https://polyformproject.org/licenses/noncommercial/1.0.0",
+            text,
+        )
+        self.assertIn("Required Notice: Copyright (c) 2026 Hank Chung.", text)
 
 
 class ThisRepoTest(unittest.TestCase):

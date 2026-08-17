@@ -57,7 +57,7 @@ export SWING_OS_WEEKS=26
 5. **歷史漲跌停／成交容量仍是近似。** 一字鎖停以 OHLC 判斷；沒有逐日委託簿、完整
    撮合量與個別股票特殊漲跌幅資料。結果仍需滑價與容量敏感度。
 
-（原第 6 項「公開授權尚未決定」已移到本文件最後的 owner decision 一節。）
+（原第 6 項「公開授權尚未決定」已於 2026-08-17 完成 owner decision，見下節。）
 
 ## 2026-08-15 補記：公開工程包（第一階段）
 
@@ -81,7 +81,8 @@ export SWING_OS_WEEKS=26
 3. `_cache/` 一律不得追蹤；`outputs/` 只允許 `*.md`、`universe_top*.json`、
    `FROZEN_MANIFEST_*.json`；資料產物副檔名（csv/pkl/parquet/log…）不得追蹤。
 4. 必要公開文件存在（不存在＝fail；存在但尚未 `git add`＝warn，因為那是 commit 前的
-   正常中間狀態）、`.gitignore` 涵蓋必要規則、`.env.example` 的密鑰欄位為空值。
+   正常中間狀態），包含 LICENSE、個人使用附加許可、商業政策、CLA、貢獻指南與免責
+   聲明；另檢查 `.gitignore` 涵蓋必要規則、`.env.example` 的密鑰欄位為空值。
 
 **設計鐵則：命中時只輸出「規則 + 檔案 + 行號」，不輸出比對到的內容。**
 把疑似 token 印進 CI log 等於再洩一次；`tests/test_preflight.py` 有一條測試專門
@@ -90,13 +91,13 @@ export SWING_OS_WEEKS=26
 `preflight.py` 不取代託管平台的 secret scanning，也不是對任意自訂 token 格式的
 數學保證——它擋的是**已知型態與誤提交路徑**。
 
-## Owner decision（審計者不代為決定）
+## Owner decisions
 
-- [ ] **公開授權條款（LICENSE）。** repo 目前沒有 `LICENSE`，因此**預設為保留所有
-      權利**，外部使用者沒有明示授權可用。公開前需 owner 選定（常見選項：MIT ——
-      最寬鬆；Apache-2.0 —— 含專利授權條款；或不開放授權僅公開閱覽）。
-      `preflight.py` 把這件事列為 `owner_decision`、**不擋 CI**，因為授權是法律與
-      意願問題，不是稽核腳本能替代的判斷。
+- [x] **公開授權條款（2026-08-17）。** 公共框架採 PolyForm Noncommercial License
+      1.0.0，定位為 source-available、非 OSI open source。另以
+      `ADDITIONAL_PERMISSION.md` 允許自然人用本人自有資金自主交易；企業、SaaS、
+      API、付費訊號、顧問、代客或其他商業使用須另取得書面授權。外部 PR 必須接受
+      CLA，讓 Project Owner 可以將貢獻用於非商業公共版與未來商業版。
 - [ ] **公開前旋轉曾經外流風險的 token。** 任何曾出現在終端輸出、截圖或未追蹤檔案裡的
       `FINMIND_TOKEN` 都應旋轉；掃描沒命中不等於沒外流過。
 - [ ] **在託管平台開啟 secret scanning 與 push protection**，作為 `preflight.py` 之外的
