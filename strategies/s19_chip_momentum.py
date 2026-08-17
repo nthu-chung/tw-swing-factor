@@ -518,11 +518,11 @@ def _fmt(df: pd.DataFrame) -> str:
 
 def _record_os_reveal(spec: StrategySpec, *, is_window, os_start, os_end,
                       n_phases: int) -> Dict:
-    """把「這次報告看了哪一段 OS」記進 append-only 的 holdout 台帳。
+    """把「這次報告看了哪一段 OS」記進 append-only 的 holdout 揭露紀錄。
 
     S19 的 OS 早就不是乾淨 holdout(評估窗洩漏 → 參數選擇間接看過 OS),
     這個狀態由 `evaluation.holdout.KNOWN_CONSUMED_HOLDOUTS` 宣告,重跑報告
-    不會把它洗回 clean;台帳只是把「又看了一次」也記下來。
+    不會把它洗回 clean;揭露紀錄只是把「又看了一次」也記下來。
     """
     import freeze_manifest       # 延後 import:freeze_manifest → strategies → 本模組
     from evaluation import holdout as holdout_ledger
@@ -537,7 +537,7 @@ def _record_os_reveal(spec: StrategySpec, *, is_window, os_start, os_end,
         context={"n_phases": n_phases,
                  "report": "outputs/CHIP_MOMENTUM_REPORT.md"},
     )
-    print(f"[S19] holdout 台帳 #{rec['seq']}:{rec['holdout_status']}"
+    print(f"[S19] holdout 揭露紀錄 #{rec['seq']}:{rec['holdout_status']}"
           f"(previously_seen={rec['holdout_previously_seen']})")
     return rec
 

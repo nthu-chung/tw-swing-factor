@@ -30,7 +30,7 @@ import config
 # runner 擁有、不得由呼叫端 kwargs 覆寫的欄位。
 # `segment` 在這裡的理由和其他欄位一樣但更直接:它決定這次結果被記成 IS 還是
 # OS。能被 kwargs 蓋掉的話,一份 IS run 可以自稱 OS(或反過來),而 holdout
-# 台帳記的就是這個欄位 —— 整個單次揭露的紀律會建立在一個可以被覆寫的字串上。
+# 揭露紀錄記的就是這個欄位 —— 整個單次揭露的紀律會建立在一個可以被覆寫的字串上。
 REQUEST_OWNED_KEYS: Tuple[str, ...] = (
     "signal_frame", "strategy_position_policy", "symbols", "universe_provider",
     "sample", "dynamic_enabled", "initial_capital", "order_size_mode",

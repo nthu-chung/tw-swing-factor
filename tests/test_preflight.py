@@ -127,7 +127,7 @@ class DataArtifactTest(unittest.TestCase):
         self.assertEqual(preflight.check_data_artifacts(allowed), [])
 
     def test_audit_ledgers_are_allowed_and_gitignore_agrees(self):
-        """holdout 台帳與 forward 執行紀錄是稽核紀錄,必須可以進版控。
+        """holdout 揭露紀錄與 forward 執行紀錄是稽核紀錄,必須可以進版控。
 
         原本 `outputs/*` 被 .gitignore 全數排除、preflight 白名單也沒有它們 ——
         於是「這段 OS 已經被看過」只存在某一台機器的檔案裡:一個 `rm` 或換一台

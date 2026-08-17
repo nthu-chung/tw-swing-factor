@@ -124,7 +124,7 @@ tw-swing-factor/
 ├── execution/           # 回測成交限制;不是券商下單或自動交易
 │   └── taiwan_rules.py / tradability.py / costs.py
 ├── evaluation/
-│   └── splits.py / phases.py / holdout.py  # 切割 / 唯一相位掃描 / 揭露台帳
+│   └── splits.py / phases.py / holdout.py  # 切割 / 唯一相位掃描 / 揭露紀錄
 ├── config.py            # 可調參數與凍結資料邊界
 ├── security_type.py provenance.py         # 普通股白名單 / git 指紋
 ├── main.py screener.py current_watchlist.py  # legacy CLI(僅供對照)

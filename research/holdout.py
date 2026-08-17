@@ -252,7 +252,7 @@ def record_os_reveal(*, strategy_rule_hash: str, strategy_id: str,
                      protocol: SingleHoldoutProtocol, source: str,
                      manifest: Optional[str] = None,
                      now=None, path=None) -> Dict[str, Any]:
-    """把這次揭露 append 進 append-only 台帳(第二次會被標 previously_seen)。"""
+    """把這次揭露 append 進 append-only 揭露紀錄(第二次會被標 previously_seen)。"""
     return record_reveal(
         strategy_hash=strategy_rule_hash, strategy_name=strategy_id,
         os_start=protocol.os_start, os_end=protocol.os_end,
@@ -297,7 +297,7 @@ def reveal_locked_os(*, strategy_id: str, protocol: SingleHoldoutProtocol,
                      frozen: Optional[FrozenCandidate], authorization: str,
                      output_dir, fixture_name: str = "synthetic",
                      stamp: str = "os", now=None, ledger_path=None, **kwargs):
-    """揭露入口:需要 owner 獨立授權 + 已凍結的 rule + 台帳。
+    """揭露入口:需要 owner 獨立授權 + 已凍結的 rule + 揭露紀錄。
 
     順序刻意是「先擋、後跑」:授權與凍結檢查都在建立任何 OS panel **之前**,
     所以未授權的呼叫連 OS 資料都不會被載入(規格 §8.5)。

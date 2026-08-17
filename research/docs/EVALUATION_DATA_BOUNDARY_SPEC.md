@@ -85,7 +85,7 @@ OS run 可以有不同 run identity，但必須指向同一個 strategy rule has
 5. runner 只載入 OS 所需資料，使用同一份凍結策略函式與參數重新計算 OS 訊號。
 6. 用唯一事件引擎跑滿所有等價 weekly phases，輸出 benchmark、Sharpe、Sortino、
    MaxDD、turnover、交易紀錄、equity curve 與完整 boundary audit。
-7. 成功揭露後 append `evaluation/holdout.py` 台帳。相同／重疊區間再跑只能標為
+7. 成功揭露後 append `evaluation/holdout.py` 揭露紀錄。相同／重疊區間再跑只能標為
    `reproduction`／`previously_seen`，不能重新宣稱 fresh OS。
 
 「同一個訊號」是指同一個凍結的 `make_signals()` 程式與參數在 OS 資料上重算，

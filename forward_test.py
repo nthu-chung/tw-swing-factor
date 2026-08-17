@@ -232,8 +232,8 @@ def run(manifest_path: Optional[str] = None, *,
     run_at = now or datetime.now()
 
     # 同名輸出不可覆寫:forward 紀錄是 append-only(否則可以重跑到好看再留)。
-    # 這一步刻意排在寫 holdout 台帳**之前**:被擋下來的重跑什麼都沒揭露,
-    # 不該在台帳留下一筆「看過」。
+    # 這一步刻意排在寫 holdout 揭露紀錄**之前**:被擋下來的重跑什麼都沒揭露,
+    # 不該在揭露紀錄留下一筆「看過」。
     out = _output_path(freeze_date, label, str(m.get("rules_sha256_16")),
                        run_at.strftime("%Y%m%dT%H%M%S"))
     if out.exists():
@@ -244,7 +244,7 @@ def run(manifest_path: Optional[str] = None, *,
 
     # forward 窗也是 holdout —— 而且是最不能被重複宣稱的那一種:第二次跑同一段
     # forward 只是重現,不是新的樣本外。實際評估到的右界取「資料最後一天」,
-    # 不用 `end=None` 蒙混過去(台帳上一段沒有右界的區間等於沒有紀錄)。
+    # 不用 `end=None` 蒙混過去(揭露紀錄上一段沒有右界的區間等於沒有紀錄)。
     revealed_end = pd.Timestamp(panel["date"].max())
     if end:
         revealed_end = min(revealed_end, pd.Timestamp(end))
@@ -295,7 +295,7 @@ def run(manifest_path: Optional[str] = None, *,
         # 「策略−基準」只有在兩條序列同口徑時才是超額報酬。這個區塊記兩邊各自
         # 含不含息,口徑不一致時 summary_block() 直接 raise(見 return_convention)。
         "return_convention": return_convention.summary_block(),
-        # holdout 使用紀錄跟著結果走:讀這份檔案的人不必去翻台帳,就看得到
+        # holdout 使用紀錄跟著結果走:讀這份檔案的人不必去翻揭露紀錄,就看得到
         # 這段 forward 窗是不是第一次被這套規則揭露。
         "holdout": holdout,
         "manifest_holdout_boundaries": m.get("holdout"),
@@ -303,7 +303,7 @@ def run(manifest_path: Optional[str] = None, *,
         "evidence_note": (
             "forward-only 期間的結果。相位中位數/最小值與基準都在同一份檔案裡;"
             "交易數不足時不構成 edge 證據,也不自動升級任何策略的證據等級。"
-            # 擋下 fresh OOS 宣稱的理由直接引用台帳的判定,不在這裡重寫一份 ——
+            # 擋下 fresh OOS 宣稱的理由直接引用揭露紀錄的判定,不在這裡重寫一份 ——
             # 舊版寫死「此窗與已消耗的 holdout 重疊」,遇到「別套規則看過」這種
             # 情況會指著錯的原因(holdout_status 其實是 fresh)。
             + ("" if holdout["fresh_oos_claim_allowed"] else
@@ -325,14 +325,14 @@ def run(manifest_path: Optional[str] = None, *,
             "sharpe_min": stats["sharpe_min"],
             "benchmark_sharpe": benchmark.get("sharpe"),
             "output": out.name,
-            # 指向 holdout 台帳的那一列。兩份 ledger 語意不重疊:這份記
-            # 「跑出什麼」,holdout 台帳記「看過哪一段」。
+            # 指向 holdout 揭露紀錄的那一列。兩份 ledger 語意不重疊:這份記
+            # 「跑出什麼」,holdout 揭露紀錄記「看過哪一段」。
             "holdout_ledger_seq": holdout["seq"],
             "holdout_previously_seen": holdout["holdout_previously_seen"],
         }, ensure_ascii=False, default=str) + "\n")
     print(f"[forward] 已存:{out}")
     print(f"[forward] 已追加紀錄:{ledger}")
-    print(f"[forward] holdout 台帳 #{holdout['seq']}:"
+    print(f"[forward] holdout 揭露紀錄 #{holdout['seq']}:"
           f"{holdout['holdout_status']}｜"
           f"{holdout_ledger.ledger_path()}")
     return payload

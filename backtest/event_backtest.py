@@ -2796,14 +2796,14 @@ def _print_ic(ic_df: pd.DataFrame):
 
 
 def _run_full_rules_hash(**engine: Any) -> str:
-    """`run_full` 這條路徑的規則識別碼(holdout 台帳的 `strategy_hash`)。
+    """`run_full` 這條路徑的規則識別碼(holdout 揭露紀錄的 `strategy_hash`)。
 
     為什麼不是 manifest 的 `rules_sha256_16`:`run_full` 不吃凍結的
     `StrategySpec` —— 它跑的是 config 的 `FACTOR_WEIGHTS` 合成分數 + CLI 傳進來
     的投組參數。所以識別碼取「凍結時會凍的那一整組 config」+「這次的引擎參數」,
     兩者都是會改變 OS 數字的東西。雜湊本身走
     `evaluation.holdout.rules_fingerprint`(和 `freeze_manifest.rules_hash` 同一份
-    實作),換規則就換 hash,台帳才分得出「同一套規則又看了一次」與「另一套規則
+    實作),換規則就換 hash,揭露紀錄才分得出「同一套規則又看了一次」與「另一套規則
     第一次看」。
     """
     # 延後 import:freeze_manifest 會經 strategies 反向指回 backtest,模組層
@@ -2963,8 +2963,8 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
               f"最小 {st['sharpe_min']:.2f}；MaxDD 最差 "
               f"{st['worst_max_drawdown']:.1%}{debug}")
 
-    # ── holdout 揭露:跑出 OS 數字 = 看過那段 holdout,一律 append 進台帳 ──
-    # OS 邊界隨快照滑動(見 evaluation/holdout.py 的說明),沒有台帳的話,
+    # ── holdout 揭露:跑出 OS 數字 = 看過那段 holdout,一律 append 進揭露紀錄 ──
+    # OS 邊界隨快照滑動(見 evaluation/holdout.py 的說明),沒有揭露紀錄的話,
     # 「上次已經當 OS 看過」這件事下次就查不到,重疊區間會被當成 fresh OOS 再報一次。
     os_sweep = sweeps.get("OS")
     holdout_record = None
@@ -3004,7 +3004,7 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
                 f"真正沒看過的起點 {holdout_record['fresh_os_start']})"
                 if holdout_record["holdout_previously_seen"]
                 else "這套規則第一次揭露這段 OS")
-        print(f"  holdout 台帳 #{holdout_record['seq']}："
+        print(f"  holdout 揭露紀錄 #{holdout_record['seq']}："
               f"{holdout_record['holdout_status']}｜{seen}")
     print("=" * 94)
 
@@ -3043,7 +3043,7 @@ def run_full(sample: bool = True, top_n: int = 3, rebalance_every: int = 5,
     return {"split": split.to_dict(), "phases": phase_df,
             "phase_stats": segment_stats,
             "single_phase_debug": bool(single_phase_debug),
-            # 這次揭露 OS 的台帳紀錄(previously_seen 代表這段不是 fresh holdout)。
+            # 這次揭露 OS 的紀錄(previously_seen 代表這段不是 fresh holdout)。
             "holdout": holdout_record,
             "results": results}, ic_results
 

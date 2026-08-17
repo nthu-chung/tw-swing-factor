@@ -19,7 +19,7 @@
   - manifest 只凍切割**參數**,沒有釘住解出來的 IS/embargo/OS **日期**。
   - append-only 只靠「用 'a' 模式開檔」,既有列被事後改寫沒有任何人看得出來。
 
-⚠ 這裡的假 summary / 合成 panel 只驗證台帳與旗標的行為,不代表任何策略績效;
+⚠ 這裡的假 summary / 合成 panel 只驗證揭露紀錄與旗標的行為,不代表任何策略績效;
 S19 的證據等級仍是 blocked,其既有 OS 仍是 consumed / pseudo-OOS。
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ T0 = datetime(2026, 8, 15, 9, 0, 0)
 
 
 class _LedgerCase(unittest.TestCase):
-    """每個測試都用自己的 outputs/,絕不碰真實台帳。"""
+    """每個測試都用自己的 outputs/,絕不碰真實揭露紀錄。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -121,7 +121,7 @@ class RevealLedgerTest(_LedgerCase):
                           - pd.Timestamp("2026-01-05")).days + 1)
 
     def test_disjoint_window_is_fresh(self):
-        """完全沒重疊的新窗仍是 fresh —— 台帳不可保守到讓 forward 永遠無法累積。"""
+        """完全沒重疊的新窗仍是 fresh —— 揭露紀錄不可保守到讓 forward 永遠無法累積。"""
         self.reveal(os_start="2025-11-19", os_end="2026-06-18")
         nxt = self.reveal(os_start="2026-06-19", os_end="2026-08-04",
                           now=datetime(2026, 8, 16, 9, 0, 0))
@@ -218,7 +218,7 @@ class LedgerImmutabilityTest(_LedgerCase):
         self.assertEqual(json.loads(rows[0])["reveal_at"], first["reveal_at"])
 
     def test_tampered_row_is_detected(self):
-        """靜默重寫是這份台帳唯一的致命傷 —— 改過必須讀不出來,而不是照常回傳。"""
+        """靜默重寫是這份揭露紀錄唯一的致命傷 —— 改過必須讀不出來,而不是照常回傳。"""
         self.reveal(os_start="2025-11-19", os_end="2026-06-18")
         self.reveal(os_start="2026-06-19", os_end="2026-08-04",
                     now=datetime(2026, 8, 16, 9, 0, 0))
@@ -241,7 +241,7 @@ class LedgerImmutabilityTest(_LedgerCase):
             holdout.read_ledger()
 
     def test_broken_ledger_blocks_new_reveals(self):
-        """台帳壞掉時不可以「當成空的」繼續寫 —— 那等於用一次寫入洗掉歷史。"""
+        """揭露紀錄壞掉時不可以「當成空的」繼續寫 —— 那等於用一次寫入洗掉歷史。"""
         self.reveal(os_start="2025-11-19", os_end="2026-06-18")
         self.ledger.write_text("{ not json\n", encoding="utf-8")
         with self.assertRaises(holdout.HoldoutLedgerError):
@@ -267,7 +267,7 @@ class LedgerImmutabilityTest(_LedgerCase):
             holdout.reveal_status(strategy_hash=first["strategy_hash"],
                                   strategy_name=None,
                                   os_start="2026-09-01", os_end="2026-10-31")
-        # 更不得靠「再寫一列」重新開始(那會把台帳洗成 seq=1 的新鏈)
+        # 更不得靠「再寫一列」重新開始(那會把揭露紀錄洗成 seq=1 的新鏈)
         with self.assertRaises(holdout.HoldoutLedgerError):
             self.reveal(os_start="2026-09-01", os_end="2026-10-31",
                         now=datetime(2026, 8, 16, 9, 0, 0))
@@ -295,7 +295,7 @@ class LedgerImmutabilityTest(_LedgerCase):
         self.assertEqual(len(self.lines()), 3)
 
     def test_corrupt_checkpoint_fails_closed(self):
-        """指紋壞掉不得當成「沒有指紋」放行 —— 否則刪台帳只要順手弄壞指紋。"""
+        """指紋壞掉不得當成「沒有指紋」放行 —— 否則刪揭露紀錄只要順手弄壞指紋。"""
         self.reveal(os_start="2026-09-01", os_end="2026-10-31")
         holdout.checkpoint_path().write_text("{ not json", encoding="utf-8")
         with self.assertRaises(holdout.HoldoutLedgerError):
@@ -309,7 +309,7 @@ class LedgerImmutabilityTest(_LedgerCase):
     def test_concurrent_reveals_do_not_overwrite_each_other(self):
         """併發揭露:每一次都要留下自己的一列,而且整條鏈仍然接得起來。
 
-        沒有檔案鎖時,兩個 process 會同時讀到「台帳是空的」→ 兩列都寫
+        沒有檔案鎖時,兩個 process 會同時讀到「揭露紀錄是空的」→ 兩列都寫
         `prev_sha256=genesis`、`seq=1`,鏈斷掉、而且兩邊都宣稱 fresh。
         """
         errors: list = []
@@ -341,7 +341,7 @@ class S19ConsumedHoldoutTest(_LedgerCase):
     def test_s19_existing_os_stays_consumed_even_with_empty_ledger(self):
         """S19 現有 OS 明確維持 consumed / pseudo-OOS,不得重設為 clean。
 
-        台帳是空的(乾淨 clone、或 outputs/ 被清掉)時尤其重要:consumed 狀態
+        揭露紀錄是空的(乾淨 clone、或 outputs/ 被清掉)時尤其重要:consumed 狀態
         寫在程式碼的 `KNOWN_CONSUMED_HOLDOUTS`,不是某台機器上的 jsonl。
         """
         self.assertEqual(holdout.read_ledger(), [])
@@ -384,7 +384,7 @@ class S19ConsumedHoldoutTest(_LedgerCase):
         self.assertEqual(rec["source"], "strategies.s19_chip_momentum.main")
         self.assertTrue(rec["holdout_previously_seen"])
         self.assertEqual(rec["holdout_status"], "consumed")
-        # 台帳的 strategy_hash 與 manifest 的 rules_sha256_16 必須是同一個
+        # 揭露紀錄的 strategy_hash 與 manifest 的 rules_sha256_16 必須是同一個
         m = freeze_manifest.build_manifest("s19", freeze_date="2026-08-15")
         self.assertEqual(rec["strategy_hash"], m["rules_sha256_16"])
 
@@ -518,7 +518,7 @@ class ManifestHoldoutBoundaryTest(_LedgerCase):
         self.assertFalse(freeze_manifest.validate_manifest(m).ok)
 
     def test_rules_hash_has_a_single_implementation(self):
-        """manifest 的 `rules_sha256_16` 與台帳的 `strategy_hash` 必須是同一個
+        """manifest 的 `rules_sha256_16` 與揭露紀錄的 `strategy_hash` 必須是同一個
         東西,否則「這段 OS 是哪一套規則看的」對不起來。"""
         payload = {"config": {"A": 1}, "strategy": {"name": "x"}}
         self.assertEqual(freeze_manifest.rules_hash(payload),
@@ -666,7 +666,7 @@ class ForwardHoldoutTest(_LedgerCase):
         self.assertFalse(self.ledger.exists(), "被拒的 forward 不得留下揭露紀錄")
 
     def test_refused_duplicate_run_records_no_reveal(self):
-        """被同名輸出擋下來的重跑什麼都沒揭露,不該在台帳留下一筆「看過」。"""
+        """被同名輸出擋下來的重跑什麼都沒揭露,不該在揭露紀錄留下一筆「看過」。"""
         self._forward(freeze_date="2026-08-25", panel_start="2026-09-01",
                       snapshot="2026-11-30", now=T0)
         with self.assertRaises(FileExistsError):

@@ -226,7 +226,7 @@ class C9PrefixInvarianceTest(unittest.TestCase):
 
 
 class C6RevealLedgerTest(unittest.TestCase):
-    """§8.6:第一次 reveal 寫台帳;第二次同一段 OS 只能是 reproduction。"""
+    """§8.6:第一次 reveal 寫揭露紀錄;第二次同一段 OS 只能是 reproduction。"""
 
     def _real_rule_hash(self, proto, td):
         res = run_golden_path(
