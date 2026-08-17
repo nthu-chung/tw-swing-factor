@@ -69,8 +69,18 @@ def _register_builtin() -> None:
     from strategies.s19_reference import S19ReferenceStrategy
     register("s19_reference_make_signals", S19ReferenceStrategy)
 
-    # 假說策略在下一個 commit 加入。這裡先只有管線驗收載體 —— registry 是
-    # allowlist,新增策略 = 明確加一行,不自動掃描目錄。
+    # 這裡只註冊**已被證偽**的假說,它們是平台的可執行範例。仍在驗證中的研究
+    # 不在這個 repo(owner 決定,見 STRATEGY_REGISTRY.md 開頭的公開範圍說明)。
+    # 所以這份 registry **不是候選池,也不是研究全貌** —— 沒有被列出來不代表
+    # 沒試過,更不代表那個方向有效或無效。
+    from strategies.h1_volume_breakout import H1VolumeBreakout
+    from strategies.h3_short_reversal import H3ShortReversal
+    from strategies.h11_oversold_bounce import H11OversoldBounce
+    from strategies.h13_margin_washout import H13MarginWashout
+    register("h1_volume_breakout", H1VolumeBreakout)
+    register("h3_short_reversal", H3ShortReversal)
+    register("h11_oversold_bounce", H11OversoldBounce)
+    register("h13_margin_washout", H13MarginWashout)
 
 
 _register_builtin()

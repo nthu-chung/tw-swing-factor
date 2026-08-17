@@ -40,7 +40,7 @@ PIT 資料 → 動態 universe → 數學因子／策略排名 → 事件驅動�
 
 ## 為什麼做這個
 
-市面上的台股選股開源專案（已研究 5 個，見最下方）共同弱點是：**選股邏輯花俏，但回測太陽春**（常常只用固定持有 N 天算個勝率就說「有效」）。本專案反過來，把重心放在**驗證**：
+市面上的台股選股開源專案共同弱點是：**選股邏輯花俏，但回測太陽春**（常常只用固定持有 N 天算個勝率就說「有效」）。本專案反過來，把重心放在**驗證**：
 
 - 整體回測：勝率 / 平均報酬 / 累積報酬 / 最大回撤 / 類 Sharpe
 - 逐因子 IC（資訊係數）：每個因子對未來報酬的 Spearman 相關，看誰真的有用
@@ -367,17 +367,6 @@ Live monitor 會把 >20% 價格斷點及後續20個該股觀察日先 quarantine
 
 > 授權條款（LICENSE）**尚未決定**，需由 repo owner 選定；在那之前本 repo 沒有
 > 明示授權。詳見 [PUBLIC_REPO_AUDIT.md](./PUBLIC_REPO_AUDIT.md) 的 owner decision。
-
----
-
-## 參考的開源專案
-
-| 專案 | 借鑑的點 |
-|---|---|
-| `taiynlee/institutional-investors` | 主力未撤回檔邏輯、籌碼用股本正規化、雙時間窗確認 |
-| `vivianlin0529-coder/taiwan-chip-wave-screener` | 籌碼集中度 + 法人 + 資券比 + 黃金回撤的加權評分 |
-| `hu0937/FinPilot` | 多因子自動探索、三關驗證、防未來函數（公告日對齊） |
-| `kevin801221/stock-strategies-only` | 基本面+技術面+夜盤期貨、GitHub Actions 自動化 |
 
 ---
 
