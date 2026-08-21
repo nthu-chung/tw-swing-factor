@@ -344,6 +344,45 @@ def _market_benchmark(equity: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+# ── 規則身分(唯一建構點)──────────────────────────────────────────────────
+def build_candidate_spec(*, strategy_id: str,
+                         params: Optional[Mapping[str, Any]] = None,
+                         policy_spec: Optional[StrategyPositionPolicySpec] = None,
+                         eligibility_rule_id: str) -> CandidateSpec:
+    """規則身分的唯一建構點:**只吃宣告性輸入,不吃 panel、不吃資料窗**。
+
+    抽出來的理由是一條紀律,不是整潔:`strategy_rule_hash` 的七個欄位全部在
+    run 之前就已知(策略版本、參數、投組/退出規則、universe 規則、
+    eligibility id、git commit),所以「凍結的規則有沒有被改過」這個問題
+    **可以在載入任何 OS 資料之前**回答。它原本埋在 `run_golden_path()` 中段,
+    於是只能在 OS 已經跑完之後才比對得出來 —— 2026-08-17 control_h4 就是這樣
+    在 git commit 與 `signal_params`(多了 `trend_guard=True`)都變了的情況下,
+    整段 OS 先被算完才被擋下。
+
+    唯一一個要跑過才知道的欄位是 `eligibility_rule_id`(訊號欄的常數),因此
+    它由呼叫端傳入:揭露前用凍結時記下的值,run 之後再用實際值比對一次。
+    """
+    strategy = registry.resolve(strategy_id)
+    spec = policy_spec if policy_spec is not None else StrategyPositionPolicySpec()
+    if not isinstance(spec, StrategyPositionPolicySpec):
+        raise TypeError(
+            "[fail-closed] policy_spec 必須是 StrategyPositionPolicySpec")
+    return CandidateSpec(
+        strategy_id=strategy_id,
+        strategy_version=str(getattr(strategy, "version", "unknown")),
+        signal_params=dict(params or strategy.default_parameters()),
+        portfolio_params={k: v for k, v in spec.rules().items()
+                          if k not in ("hard_stop_pct", "max_hold_days")},
+        exit_params={"hard_stop_pct": spec.hard_stop_pct,
+                     "max_hold_days": spec.max_hold_days},
+        eligibility_rule_id=str(eligibility_rule_id),
+        # `provenance.git_state()` 的鍵是 `git_commit`,不是 `commit`。
+        # 原本取錯鍵 → 這裡永遠是空字串 → 規則指紋從來沒有綁到程式碼版本,
+        # 而且因為預設值是 ""(合法),沒有任何地方會報錯。
+        code_fingerprint=str(provenance.git_state().get("git_commit", "")),
+    )
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────
 def run_golden_path(*, strategy_id: str, fixture_name: str = "synthetic",
                     capital: str = "research", output_dir,
@@ -431,20 +470,12 @@ def run_golden_path(*, strategy_id: str, fixture_name: str = "synthetic",
                 f"[fail-closed] 計分窗 [{lo.date()}, {hi.date()}] 內沒有訊號")
 
     spec = policy_spec
-    candidate = CandidateSpec(
-        strategy_id=strategy_id,
-        strategy_version=str(getattr(strategy, "version", "unknown")),
-        signal_params=dict(params or strategy.default_parameters()),
-        portfolio_params={k: v for k, v in spec.rules().items()
-                          if k not in ("hard_stop_pct", "max_hold_days")},
-        exit_params={"hard_stop_pct": spec.hard_stop_pct,
-                     "max_hold_days": spec.max_hold_days},
-        eligibility_rule_id=str(signals["eligibility_rule_id"].iloc[0]),
-        # `provenance.git_state()` 的鍵是 `git_commit`,不是 `commit`。
-        # 原本取錯鍵 → 這裡永遠是空字串 → 規則指紋從來沒有綁到程式碼版本,
-        # 而且因為預設值是 ""(合法),沒有任何地方會報錯。
-        code_fingerprint=str(provenance.git_state().get("git_commit", "")),
-    )
+    # 走**同一個**建構點 —— reveal_locked_os() 的前置閘門也呼叫它。
+    # 兩份等價實作遲早會分岔,而分岔的症狀是「揭露前算的 hash 與 run 後算的
+    # hash 不同」,那樣閘門會變成噪音,最後被關掉。
+    candidate = build_candidate_spec(
+        strategy_id=strategy_id, params=params, policy_spec=spec,
+        eligibility_rule_id=str(signals["eligibility_rule_id"].iloc[0]))
     protocol = EvaluationProtocol(
         data_snapshot=str(getattr(config, "SNAPSHOT_END_DATE", "")),
         price_dataset=str(getattr(config, "PRICE_DATASET", "")),

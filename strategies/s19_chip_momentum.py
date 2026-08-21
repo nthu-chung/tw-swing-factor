@@ -445,7 +445,13 @@ def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     provider = pit.provider
     union = sorted(set(pit.symbols) - compute_excluded(pit.symbols))
 
-    panel = live_signal.build_light_panel(union, apply_membership=False)
+    # `chip_sources=()` —— 這支的 docstring 就寫著「走精簡資料路徑(price + inst)」,
+    # 但在加上 `chip_sources` 參數之前,它其實還會抓 margin / lending / foreign_holding,
+    # 也就是每檔 6 次而不是 3 次。753 檔的 PIT 聯集 × 6 = 4,518 次,遠超 FinMind 額度 ——
+    # 正是這個 docstring 說要避開的事。2026-08-20 修:讓實際行為對上宣告的意圖。
+    # (同一個根因也曾讓 live 的整池抓取必然在第 ~267 檔撞 402,見 live/h4/snapshot.py。)
+    panel = live_signal.build_light_panel(union, apply_membership=False,
+                                          chip_sources=())
     if panel.empty:
         return panel, []
 

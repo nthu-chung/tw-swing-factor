@@ -111,8 +111,26 @@ def _attach_display_fields(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_light_panel(symbols: List[str], verbose: bool = False,
-                      apply_membership: bool = True) -> pd.DataFrame:
-    """只用 price + inst 建 panel,欄位對齊 _prepare_panel 中 S19 需要的部分。"""
+                      apply_membership: bool = True,
+                      chip_sources=None) -> pd.DataFrame:
+    """只用 price + inst 建 panel,欄位對齊 _prepare_panel 中 S19 需要的部分。
+
+    `chip_sources`:要附掛哪些籌碼資料源。`None` = 預設全帶(`_CHIP_SOURCES`),
+    傳 `()` 則只抓 price + inst。**這個參數存在的理由是 API 額度**:
+
+      每檔的呼叫數 = price_adj + price(`_vendor_adjusted_with_raw` 兩次)
+                     + inst + margin + lending + foreign_holding = **6 次**
+      300 檔 × 6 = 1,800 次 > FinMind 上限,所以整池必然在第 ~267 檔撞 402。
+      只帶 price + inst 是 300 × 3 = **900 次**,一個視窗打得完。
+
+    2026-08-19 實測:margin / lending / foreign_holding 三欄沒有任何現行策略在用,
+    在 2026-08-17 的完整快取上對拍 full(34 欄)vs slim(25 欄),H4 的名次
+    **0 筆不符**、Δscore = 0.0。所以砍掉它們不影響訊號,只省額度。
+
+    刻意做成參數而不是改模組全域:呼叫端各自需要什麼欄位,由呼叫端宣告。
+    在執行期改 `_CHIP_SOURCES` 會讓「這次跑用了哪些欄位」無法從程式碼看出來。
+    """
+    sources = _CHIP_SOURCES if chip_sources is None else tuple(chip_sources)
     rows = []
     for i, sid in enumerate(symbols, 1):
         px = data.fetch_price(sid)
@@ -151,7 +169,7 @@ def build_light_panel(symbols: List[str], verbose: bool = False,
         # `short_chg20`(融券增加)的 top10 報酬是所有籌碼因子最高的,而它的
         # IC 幾乎是 0 —— 只看 IC 會整個錯過。缺資料留 NaN,不補 0:
         # 「沒申報」與「餘額為零」是兩件事,補 0 會讓前者冒充後者。
-        for fetch, cols in _CHIP_SOURCES:
+        for fetch, cols in sources:
             try:
                 c = fetch(sid)
             except Exception:
