@@ -255,6 +255,12 @@ def apply_window(fixture: Fixture, window: Optional[tuple]) -> Fixture:
     return fixture
 
 
+#: 合法的 fixture 名稱。抽成常數是為了讓呼叫端能**事前**驗證,而不是等到
+#: `build_fixture()` 裡面才 raise —— `reveal_locked_os` 需要在寫揭露紀錄之前
+#: 就知道名字對不對(打錯一個字母不該燒掉一次 fresh OOS 宣稱)。
+KNOWN_FIXTURES = ("synthetic", "local")
+
+
 def build_fixture(name: str, *, window: Optional[tuple] = None,
                   **kwargs) -> Fixture:
     if name == "synthetic":

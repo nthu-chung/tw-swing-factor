@@ -63,7 +63,7 @@ def _register_builtin() -> None:
 
     每一行的 module 路徑就是那支策略的檔案位置,一眼看得出對應關係。
     """
-    # s19:legacy 籌碼×風險調整動能。台帳 `blocked`(IS 20 相位只有 3/20 勝過
+    # s19:legacy 籌碼×風險調整動能。揭露紀錄 `blocked`(IS 20 相位只有 3/20 勝過
     # 被動基準),留在公開是因為它同時是**平台的管線驗收載體** —— 9 份測試靠它
     # 證明 make_signals → validator → 五相位 → 事件引擎 → artifacts 這條鏈是通的。
     from strategies.s19_reference import S19ReferenceStrategy

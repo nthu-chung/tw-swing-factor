@@ -58,7 +58,7 @@
 否則 IS 會借用 OS 的績效。
 
 第三條評估邊界是 **holdout 只有第一次是 holdout**：`evaluation/holdout.py` 是
-append-only 的揭露台帳（`outputs/holdout_ledger.jsonl`）。`backtest.run_full`
+append-only 的揭露紀錄（`outputs/holdout_ledger.jsonl`）。`backtest.run_full`
 的 OS 段、`s19.main` 與 `forward_test.run` 每次跑出 OS／forward 數字就 append
 一列，記 strategy hash、OS 起訖、reveal time 與 git commit；重疊到看過的區間就
 標 `holdout_previously_seen=True`、`fresh_oos_claim_allowed=False`，並回報
@@ -67,10 +67,10 @@ append-only 的揭露台帳（`outputs/holdout_ledger.jsonl`）。`backtest.run_
 `SNAPSHOT_END_DATE` 滑動（`start = end - HISTORY_DAYS`）——實測快照 2026-06-22
 的 OS 是 2025-11-19~2026-06-18，推進到 2026-08-06 之後 OS 起點變成 2026-01-05，
 **2025-11-19~2026-01-04 從 OS 變成 IS**，同一段資料會被第二次當成 holdout 報成
-fresh OOS。五個設計點各對應一種會讓台帳失效的失敗模式：比對用**區間交集**
+fresh OOS。五個設計點各對應一種會讓揭露紀錄失效的失敗模式：比對用**區間交集**
 （滑動窗永遠不會日期字串相等）、每列帶 `prev_sha256` 形成雜湊鏈（既有列被靜默
 改寫或抽掉就讀不出來——這正是它存在的意義）、寫入時取排他檔案鎖（併發揭露不會
-雙方都讀到空台帳而各自宣稱 fresh）、另存一份**長度指紋**
+雙方都讀到空揭露紀錄而各自宣稱 fresh）、另存一份**長度指紋**
 `holdout_ledger.jsonl.checkpoint.json`（列數＋末列 `record_sha256`；雜湊鏈只在
 檔案還在時有意義，實測 `os.remove(ledger)` 之後同 hash 同窗立刻回報 fresh、零
 警告——列數倒退或末列對不上一律 fail-closed），以及 `fresh_oos_claim_allowed`
@@ -80,9 +80,9 @@ fresh OOS。五個設計點各對應一種會讓台帳失效的失敗模式：�
 沒看過才允許宣稱 fresh OOS。沒有第二個口徑會怎樣：規則 hash 涵蓋 79 個 config
 參數，而參數研究迴圈正是消耗 holdout 的主要途徑——實測同一段 OS 用 H1 揭露後，
 只把 `config.BBANDS_K` 從 2.0 改成 2.5（S19 與 FACTOR_WEIGHTS 都不讀它）重算
-hash，同一段 OS 就回報 `fresh`、`fresh_oos_claim_allowed=True`。台帳**刻意不放
+hash，同一段 OS 就回報 `fresh`、`fresh_oos_claim_allowed=True`。揭露紀錄**刻意不放
 績效數字**：它回答「這段未來資料被誰看過幾次」，`outputs/forward_test_runs.jsonl`
-才記「那次跑出什麼」，兩份用 `strategy_hash`／`output` 對照、語意不重疊。台帳
+才記「那次跑出什麼」，兩份用 `strategy_hash`／`output` 對照、語意不重疊。揭露紀錄
 上線前就已消耗的 holdout（S19 的 OS）寫在 `KNOWN_CONSUMED_HOLDOUTS` 常數而不是
 某台機器的 jsonl——狀態只存在檔案裡的話，換一台 clone 就變回 clean。同理，這兩份
 jsonl（與那份指紋）是**稽核紀錄不是資料產物**，已加進 `.gitignore` 例外與
@@ -209,11 +209,11 @@ AI 基本面、新聞評分、prompt、模型與人工決策紀錄不是本公�
 - `evaluation/phases.py`：統一相位掃描與聚合（`sweep_phases` / `PhaseSweep` /
   `phase_stats`）。正式 IS/OS、策略 `evaluate_sweep` 與 forward 共用這一份；
   呼叫端只提供「一個相位怎麼跑」，掃滿與中位／最小／最差 MaxDD 由它負責。
-- `evaluation/holdout.py`：append-only 的 holdout 揭露台帳（雜湊鏈 + 檔案鎖 +
+- `evaluation/holdout.py`：append-only 的 holdout 揭露紀錄（雜湊鏈 + 檔案鎖 +
   長度指紋 `*.checkpoint.json`，整檔刪除／截斷會 fail-closed）與
-  `KNOWN_CONSUMED_HOLDOUTS`（台帳上線前就已消耗的 holdout，例如 S19 的 OS）。
+  `KNOWN_CONSUMED_HOLDOUTS`（揭露紀錄上線前就已消耗的 holdout，例如 S19 的 OS）。
   `rules_fingerprint()` 是規則雜湊的唯一實作，`freeze_manifest.rules_hash` 轉呼叫
-  它——台帳的 `strategy_hash` 與 manifest 的 `rules_sha256_16` 必須是同一個東西。
+  它——揭露紀錄的 `strategy_hash` 與 manifest 的 `rules_sha256_16` 必須是同一個東西。
 - `provenance.py`：git 狀態的單一實作（回測 `summary["provenance"]` 與
   `freeze_manifest` 共用；dirty 工作樹 = 對不到 commit = 無法重現，必須看得見）。
 - `security_type.py`：「哪些證券可以進池」的**單一判定**（上市／上櫃普通股白名單，
@@ -365,7 +365,7 @@ golden path remediation、screener completion)與過期的 `HANDOFF_2026-08-01.m
    `pit_universe.pitsnap__{YYYYMMDD}`（檔名本身就是那一天）。
 3. 把 `backtest/event_backtest.py` 拆成 `backtesting/engine.py`、`portfolio/` 與 `execution/`。
    在成交紀錄 parity 測試通過前，根目錄引擎仍是唯一正式入口。
-4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略台帳，不因整理資料夾而
+4. 最後才搬研究腳本。已證偽與 blocked 策略仍保留在策略揭露紀錄，不因整理資料夾而
    消失或改名成已驗證策略。
 5. 公共 repo 只維持可凍結、可稽核的候選輸出契約。Project Owner 的私人 AI 專案可
    消費該輸出並獨立保存研究結果；仍以純量化 A 組對照「量化＋AI 篩選」B 組，未經

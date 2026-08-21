@@ -1,9 +1,9 @@
 {
  "checkpoint_schema": 1,
  "ledger": "holdout_ledger.jsonl",
- "rows": 1,
+ "rows": 3,
  "genesis": "genesis",
- "last_record_sha256": "9eea45455693ce236877c43412c9ea707e732ac6b8116ac00410eababc9c4f1d",
- "updated_at": "2026-08-16T14:36:54",
+ "last_record_sha256": "ef3622058432b44ff9e036b69a28c7f5056e929407ed9f3fa137ff1d373f2ed5",
+ "updated_at": "2026-08-17T19:54:30",
  "note": "台帳長度指紋:列數只能增加。列數倒退或末列 hash 對不上 = 台帳被整段刪除或截斷,`read_ledger` 會 fail-closed。"
 }

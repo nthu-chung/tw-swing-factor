@@ -445,7 +445,13 @@ def _build_pit_panel() -> Tuple[pd.DataFrame, List[str]]:
     provider = pit.provider
     union = sorted(set(pit.symbols) - compute_excluded(pit.symbols))
 
-    panel = live_signal.build_light_panel(union, apply_membership=False)
+    # `chip_sources=()` —— 這支的 docstring 就寫著「走精簡資料路徑(price + inst)」,
+    # 但在加上 `chip_sources` 參數之前,它其實還會抓 margin / lending / foreign_holding,
+    # 也就是每檔 6 次而不是 3 次。753 檔的 PIT 聯集 × 6 = 4,518 次,遠超 FinMind 額度 ——
+    # 正是這個 docstring 說要避開的事。2026-08-20 修:讓實際行為對上宣告的意圖。
+    # (同一個根因也曾讓 live 的整池抓取必然在第 ~267 檔撞 402,見 live/h4/snapshot.py。)
+    panel = live_signal.build_light_panel(union, apply_membership=False,
+                                          chip_sources=())
     if panel.empty:
         return panel, []
 
@@ -518,11 +524,11 @@ def _fmt(df: pd.DataFrame) -> str:
 
 def _record_os_reveal(spec: StrategySpec, *, is_window, os_start, os_end,
                       n_phases: int) -> Dict:
-    """把「這次報告看了哪一段 OS」記進 append-only 的 holdout 台帳。
+    """把「這次報告看了哪一段 OS」記進 append-only 的 holdout 揭露紀錄。
 
     S19 的 OS 早就不是乾淨 holdout(評估窗洩漏 → 參數選擇間接看過 OS),
     這個狀態由 `evaluation.holdout.KNOWN_CONSUMED_HOLDOUTS` 宣告,重跑報告
-    不會把它洗回 clean;台帳只是把「又看了一次」也記下來。
+    不會把它洗回 clean;揭露紀錄只是把「又看了一次」也記下來。
     """
     import freeze_manifest       # 延後 import:freeze_manifest → strategies → 本模組
     from evaluation import holdout as holdout_ledger
@@ -537,7 +543,7 @@ def _record_os_reveal(spec: StrategySpec, *, is_window, os_start, os_end,
         context={"n_phases": n_phases,
                  "report": "outputs/CHIP_MOMENTUM_REPORT.md"},
     )
-    print(f"[S19] holdout 台帳 #{rec['seq']}:{rec['holdout_status']}"
+    print(f"[S19] holdout 揭露紀錄 #{rec['seq']}:{rec['holdout_status']}"
           f"(previously_seen={rec['holdout_previously_seen']})")
     return rec
 

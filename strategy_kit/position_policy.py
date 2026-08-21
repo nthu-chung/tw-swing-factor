@@ -148,7 +148,7 @@ class StrategyPositionPolicySpec:
     def rules(self) -> Dict[str, Any]:
         """回傳**新的** dict(每次呼叫都是新物件)。
 
-        故意不快取:呼叫端(summary、rules hash、台帳)拿到的若是同一個 dict,
+        故意不快取:呼叫端(summary、rules hash、揭露紀錄)拿到的若是同一個 dict,
         任何一處就地改一個 key,其他所有地方的 provenance 都會被靜默改寫,
         而那正是 hash 存在的意義。
         """
@@ -553,7 +553,7 @@ class StrategyPositionPolicy:
         return dict(self._state)
 
     def rules_hash(self) -> str:
-        """規則指紋。與 holdout 台帳／freeze manifest 共用同一份實作。"""
+        """規則指紋。與 holdout 揭露紀錄／freeze manifest 共用同一份實作。"""
         return rules_fingerprint(self._spec.rules())
 
     # ── 決策 ────────────────────────────────────────────────────────────

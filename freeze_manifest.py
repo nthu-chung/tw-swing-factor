@@ -36,7 +36,7 @@ manifest 只凍了切割的**參數**(`EVAL_SPLIT_MODE`/`IS_OS_SPLIT`/`EMBARGO_D
 2025-11-19~2026-06-18,推進到 2026-08-06 之後 OS 起點變成 2026-01-05 ——
 2025-11-19~2026-01-04 這段**從 OS 變成 IS**,而同一份 manifest 的參數一個字都
 沒變。所以邊界必須跟著 manifest 一起釘住(`manifest["holdout"]`),揭露時再由
-`evaluation/holdout.py` 的 append-only 台帳記「這段被誰在何時看過」。
+`evaluation/holdout.py` 的 append-only 揭露紀錄記「這段被誰在何時看過」。
 
 `holdout` 刻意**不進 `rules` / hash**:解出來的日期是資料的函數,放進 hash 會讓
 同一套規則在不同快照下變成不同規則(SNAPSHOT_END_DATE 不進 hash 是同一個理由)。
@@ -181,7 +181,7 @@ def rules_payload(spec: StrategySpec) -> Dict[str, Any]:
 def rules_hash(rules: Dict[str, Any]) -> str:
     """規則 hash。實作在 `evaluation.holdout.rules_fingerprint`(唯一一份)。
 
-    為什麼要共用:holdout 台帳記的 `strategy_hash` 必須和 manifest 的
+    為什麼要共用:holdout 揭露紀錄記的 `strategy_hash` 必須和 manifest 的
     `rules_sha256_16` 是同一個東西,否則「這段 OS 是哪一套規則看的」對不起來。
     """
     return holdout_ledger.rules_fingerprint(rules)
@@ -269,7 +269,7 @@ def holdout_boundaries(calendar: Optional[Any] = None) -> Dict[str, Any]:
     if calendar is None:
         out["unresolved_reason"] = (
             "凍結時沒有提供交易日曆,只釘住切割規則;實際 OS 日期由揭露當下的"
-            "資料視窗決定,會記進 holdout 台帳"
+            "資料視窗決定,會記進 holdout 揭露紀錄"
         )
         return out
     split = build_evaluation_split(

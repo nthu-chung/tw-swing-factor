@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""holdout 使用紀錄:誰、在什麼時候、看過哪一段 OS 資料(append-only 台帳)。
+"""holdout 使用紀錄:誰、在什麼時候、看過哪一段 OS 資料(append-only 揭露紀錄)。
 
-為什麼非有這個台帳不可
+為什麼非有這個揭露紀錄不可
 ----------------------
 IS/OS 的切點**完全由凍結資料自身的首尾日決定**(`evaluation/splits.py` 的 ratio
 與 weeks 兩種模式都錨在 `dts[-1]`),而資料視窗的兩端會隨 `SNAPSHOT_END_DATE`
@@ -17,22 +17,22 @@ IS/OS 的切點**完全由凍結資料自身的首尾日決定**(`evaluation/spl
 ——而 forward-only 已經是唯一剩下的證據升級路徑(見 `STRATEGY_REGISTRY.md` 的
 S19:它的 OS 早已被評估窗洩漏污染)。
 
-這份台帳就是那個記憶體:**每次正式揭露 OS 都 append 一列**,記策略 hash、OS
+這份揭露紀錄就是那個記憶體:**每次正式揭露 OS 都 append 一列**,記策略 hash、OS
 日期、揭露時間與 git commit。第二次揭露同一段 OS 不會被擋(重現既有結果是正當
 需求),但一定會被標成 `holdout_previously_seen=True`,不得再稱 fresh OOS。
 
-三個設計決定(每一個都對應一種會讓台帳失效的失敗模式)
+三個設計決定(每一個都對應一種會讓揭露紀錄失效的失敗模式)
 ------------------------------------------------------
 1. **重疊即算看過,不是「日期字串相等」才算。** 上面的滑動窗讓兩次 OS 幾乎
-   永遠不會完全相等;用等值比對等於這個台帳從第一天就永遠回報 fresh。所以
+   永遠不會完全相等;用等值比對等於這個揭露紀錄從第一天就永遠回報 fresh。所以
    比的是**區間交集**,並回報 `fresh_os_start`(這次真正沒被看過的起點)與
    `holdout_status`(fresh / partially_consumed / consumed)。
 2. **雜湊鏈防靜默改寫。** append-only 的意義不在於「程式只用 'a' 模式開檔」,
    而在於**事後被改過看得出來**。每一列帶 `prev_sha256`,指向前一列的
    `record_sha256`;任何一列被改寫或抽掉,後面整條鏈就對不上,讀取時直接
-   raise。台帳被靜默重寫的話,它記的東西就一文不值。
+   raise。揭露紀錄被靜默重寫的話,它記的東西就一文不值。
 3. **reveal time 由呼叫端注入(`now=`)。** 需要時間戳,但不可引入不可重現的
-   隨機性:測試必須能斷言同一份台帳的內容。時間戳不進任何策略 hash。
+   隨機性:測試必須能斷言同一份揭露紀錄的內容。時間戳不進任何策略 hash。
 4. **另存一份「長度指紋」擋整檔刪除。** 雜湊鏈只在檔案還在時有意義:實測
    `os.remove(outputs/holdout_ledger.jsonl)` 之後,同 hash 同窗立刻回報
    `fresh`、零警告 —— append-only 的紀錄被一個 `rm` 洗掉。所以每次 append 會
@@ -42,7 +42,7 @@ S19:它的 OS 早已被評估窗洩漏污染)。
    `.gitignore` 例外與 `preflight.OUTPUT_ALLOWLIST`:進了版控,刪除才會在
    `git status` 裡看得見,而且乾淨 clone 也帶著歷史。
 
-台帳裡**刻意不放績效數字**。它回答的是「這段未來資料被誰看過幾次」,不是
+揭露紀錄裡**刻意不放績效數字**。它回答的是「這段未來資料被誰看過幾次」,不是
 「跑出多少 Sharpe」;把績效放進來只會讓人有動機挑好看的那一列來引用。
 forward 的執行結果另有 `outputs/forward_test_runs.jsonl`(每次 forward 一列,
 帶 Sharpe 與基準),兩份用 `strategy_hash` + `output` 互相對照,語意不重疊:
@@ -73,11 +73,11 @@ except ImportError:                      # pragma: no cover - 本 repo 只跑 ma
 
 LEDGER_NAME = "holdout_ledger.jsonl"
 LEDGER_SCHEMA = 1
-# 台帳的「長度指紋」。雜湊鏈擋得住改列/刪列/插列,擋不住**刪整個檔**:
+# 揭露紀錄的「長度指紋」。雜湊鏈擋得住改列/刪列/插列,擋不住**刪整個檔**:
 # `read_ledger` 對不存在的檔回 [],於是同一段 OS 又變回 fresh(實測:
 # `os.remove(ledger)` 之後同 hash 同窗回報 fresh,零警告)。指紋是獨立的一
 # 小份檔案,記「已經有幾列 + 最後一列的 record_sha256」,列數倒退或末列對不上
-# 就 fail-closed。它不重複雜湊鏈的工作,只回答「台帳有沒有整段消失」。
+# 就 fail-closed。它不重複雜湊鏈的工作,只回答「揭露紀錄有沒有整段消失」。
 CHECKPOINT_SUFFIX = ".checkpoint.json"
 CHECKPOINT_SCHEMA = 1
 
@@ -87,15 +87,15 @@ GENESIS = "genesis"
 
 
 class HoldoutLedgerError(RuntimeError):
-    """台帳讀寫或完整性問題。一律 fail-closed:寧可擋住,不可靜默接受被改過的台帳。"""
+    """揭露紀錄讀寫或完整性問題。一律 fail-closed:寧可擋住,不可靜默接受被改過的揭露紀錄。"""
 
 
 # ── 揭露前就已經被消耗掉的 holdout(程式碼層的既成事實宣告)────────────────
 @dataclass(frozen=True)
 class ConsumedHoldout:
-    """在這個台帳存在**之前**就已經被看過的資料窗。
+    """在這個揭露紀錄存在**之前**就已經被看過的資料窗。
 
-    為什麼要寫在程式碼裡而不是塞一列進台帳:`outputs/` 不進版控
+    為什麼要寫在程式碼裡而不是塞一列進揭露紀錄:`outputs/` 不進版控
     (`preflight.py` 會擋資料產物被追蹤),所以一份「事實上已經消耗」的宣告
     如果只存在於某台機器的 jsonl,換一台 clone 就變成 clean —— 那正是這裡
     要防的事。寫成模組常數之後,任何 clone、任何新 checkout 都會得到同一個
@@ -123,10 +123,10 @@ class ConsumedHoldout:
         }
 
 
-# S19 的 OS 已經不是乾淨 holdout,這件事在台帳上線前就成立(見
+# S19 的 OS 已經不是乾淨 holdout,這件事在揭露紀錄上線前就成立(見
 # STRATEGY_REGISTRY.md 的 S19 條目與 strategies/s19_chip_momentum.py 的
 # 「已作廢的數字」)。這裡把它寫死,任何 S19 的 OS 揭露都會被標成
-# consumed / pseudo-OOS —— **不得**因為台帳是空的就重設成 clean。
+# consumed / pseudo-OOS —— **不得**因為揭露紀錄是空的就重設成 clean。
 KNOWN_CONSUMED_HOLDOUTS: Tuple[ConsumedHoldout, ...] = (
     ConsumedHoldout(
         strategy="s19_chip_momentum",
@@ -147,11 +147,11 @@ KNOWN_CONSUMED_HOLDOUTS: Tuple[ConsumedHoldout, ...] = (
     ),
     ConsumedHoldout(
         # 策略本身已撤出公開 repo;**這筆消耗紀錄不能跟著走** ——
-        # 台帳全域只有一本,否則換個 repo 就能把「這段看過了」洗掉。
+        # 揭露紀錄全域只有一本,否則換個 repo 就能把「這段看過了」洗掉。
         strategy="h2_inst_persistence",
         # 2026-08-16 的 forward 檢驗誤用 `run_golden_path()` 而**沒有帶
         # holdout_protocol**,於是那一次 run 在 2024-11-19 ~ 2026-08-14 的完整
-        # 區間上計分 —— 把 H2 的 locked OS 整段掃過去了。授權從未發生,台帳也
+        # 區間上計分 —— 把 H2 的 locked OS 整段掃過去了。授權從未發生,揭露紀錄也
         # 沒有這筆揭露,所以只能在這裡宣告既成消耗。
         seen_start="2024-11-19",
         seen_end="2026-08-14",
@@ -160,7 +160,7 @@ KNOWN_CONSUMED_HOLDOUTS: Tuple[ConsumedHoldout, ...] = (
         reason=(
             "forward 檢驗為了取 2026-06-23 之後的區間,直接呼叫 run_golden_path "
             "而未帶 holdout_protocol(segment=None),等於繞過資料閘門讓策略看過"
-            "整段 OS。這不是授權揭露:沒有 freeze、沒有 owner 授權、沒有進台帳"
+            "整段 OS。這不是授權揭露:沒有 freeze、沒有 owner 授權、沒有進揭露紀錄"
         ),
         evidence="outputs/2026-08-16 的 forward run(audit.json 的 segment=None)",
         declared_at="2026-08-16",
@@ -214,7 +214,7 @@ def _days(intervals: Sequence[Tuple[pd.Timestamp, pd.Timestamp]]) -> int:
     return int(sum((b - a).days + 1 for a, b in intervals))
 
 
-# ── 台帳讀寫 ──────────────────────────────────────────────────────────────
+# ── 揭露紀錄讀寫 ──────────────────────────────────────────────────────────────
 def ledger_path(path: Optional[Any] = None) -> Path:
     return Path(path) if path is not None else (config.OUTPUT_DIR / LEDGER_NAME)
 
@@ -250,19 +250,19 @@ def _parse_and_verify(fh) -> List[Dict[str, Any]]:
             rec = json.loads(line)
         except json.JSONDecodeError as exc:
             raise HoldoutLedgerError(
-                f"holdout 台帳第 {lineno} 行不是合法 JSON({exc});"
-                "台帳是稽核紀錄,壞掉時不得當成空的繼續寫"
+                f"holdout 揭露紀錄第 {lineno} 行不是合法 JSON({exc});"
+                "揭露紀錄是稽核紀錄,壞掉時不得當成空的繼續寫"
             ) from exc
         expected = _record_hash(rec)
         if rec.get("record_sha256") != expected:
             raise HoldoutLedgerError(
-                f"[fail-closed] holdout 台帳第 {lineno} 行的內容與 record_sha256 "
-                "對不上:這一列被事後改過。append-only 台帳的價值就在於改過看得見,"
+                f"[fail-closed] holdout 揭露紀錄第 {lineno} 行的內容與 record_sha256 "
+                "對不上:這一列被事後改過。append-only 揭露紀錄的價值就在於改過看得見,"
                 "請用版本控制/備份還原,不要覆蓋它"
             )
         if rec.get("prev_sha256") != prev:
             raise HoldoutLedgerError(
-                f"[fail-closed] holdout 台帳第 {lineno} 行的 prev_sha256 接不上前一列:"
+                f"[fail-closed] holdout 揭露紀錄第 {lineno} 行的 prev_sha256 接不上前一列:"
                 "中間有列被刪除或插入(整條鏈是它存在的意義)"
             )
         prev = expected
@@ -271,13 +271,13 @@ def _parse_and_verify(fh) -> List[Dict[str, Any]]:
 
 
 def checkpoint_path(path: Optional[Any] = None) -> Path:
-    """台帳指紋的位置(台帳檔名 + `.checkpoint.json`)。"""
+    """揭露紀錄指紋的位置(揭露紀錄檔名 + `.checkpoint.json`)。"""
     p = ledger_path(path)
     return p.with_name(p.name + CHECKPOINT_SUFFIX)
 
 
 def read_checkpoint(path: Optional[Any] = None) -> Optional[Dict[str, Any]]:
-    """讀台帳指紋。不存在 = 從來沒有揭露過(乾淨 clone),回 None。"""
+    """讀揭露紀錄指紋。不存在 = 從來沒有揭露過(乾淨 clone),回 None。"""
     cp = checkpoint_path(path)
     if not cp.exists():
         return None
@@ -285,11 +285,11 @@ def read_checkpoint(path: Optional[Any] = None) -> Optional[Dict[str, Any]]:
         data = json.loads(cp.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise HoldoutLedgerError(
-            f"[fail-closed] holdout 台帳指紋 {cp.name} 讀不出來({exc}):"
-            "指紋壞掉時不得當成「沒有指紋」放行,否則刪台帳只要順手弄壞指紋即可"
+            f"[fail-closed] holdout 揭露紀錄指紋 {cp.name} 讀不出來({exc}):"
+            "指紋壞掉時不得當成「沒有指紋」放行,否則刪揭露紀錄只要順手弄壞指紋即可"
         ) from exc
     if not isinstance(data, dict) or "rows" not in data:
-        raise HoldoutLedgerError(f"[fail-closed] holdout 台帳指紋 {cp.name} 格式不對")
+        raise HoldoutLedgerError(f"[fail-closed] holdout 揭露紀錄指紋 {cp.name} 格式不對")
     return data
 
 
@@ -304,7 +304,7 @@ def _write_checkpoint(records: Sequence[Mapping[str, Any]],
         "last_record_sha256": (records[-1]["record_sha256"] if records
                                else GENESIS),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "note": ("台帳長度指紋:列數只能增加。列數倒退或末列 hash 對不上 = 台帳"
+        "note": ("揭露紀錄長度指紋:列數只能增加。列數倒退或末列 hash 對不上 = 揭露紀錄"
                  "被整段刪除或截斷,`read_ledger` 會 fail-closed。"),
     }
     cp.parent.mkdir(parents=True, exist_ok=True)
@@ -326,22 +326,22 @@ def _verify_against_checkpoint(records: Sequence[Mapping[str, Any]],
     expected_rows = int(cp.get("rows") or 0)
     if len(records) < expected_rows:
         raise HoldoutLedgerError(
-            f"[fail-closed] holdout 台帳只剩 {len(records)} 列,指紋記的是 "
-            f"{expected_rows} 列({checkpoint_path(path).name}):台帳被刪除或"
+            f"[fail-closed] holdout 揭露紀錄只剩 {len(records)} 列,指紋記的是 "
+            f"{expected_rows} 列({checkpoint_path(path).name}):揭露紀錄被刪除或"
             "截斷了。已經揭露過的 holdout 不會因為紀錄消失而變回 fresh —— "
-            "請從版本控制/備份還原台帳,不要靠刪檔重來"
+            "請從版本控制/備份還原揭露紀錄,不要靠刪檔重來"
         )
     if expected_rows > 0:
         seen = records[expected_rows - 1].get("record_sha256")
         if seen != cp.get("last_record_sha256"):
             raise HoldoutLedgerError(
-                f"[fail-closed] holdout 台帳第 {expected_rows} 列與指紋記錄的 "
-                "record_sha256 不符:台帳被換成另一條鏈(整份重建也算)"
+                f"[fail-closed] holdout 揭露紀錄第 {expected_rows} 列與指紋記錄的 "
+                "record_sha256 不符:揭露紀錄被換成另一條鏈(整份重建也算)"
             )
 
 
 def read_ledger(path: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """讀台帳(順便驗鏈與指紋)。檔案與指紋都不存在 = 還沒有任何揭露,回空 list。"""
+    """讀揭露紀錄(順便驗鏈與指紋)。檔案與指紋都不存在 = 還沒有任何揭露,回空 list。"""
     p = ledger_path(path)
     if not p.exists():
         _verify_against_checkpoint([], path)     # 檔案被刪掉時在這裡 fail-closed
@@ -369,8 +369,8 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
     """這次要揭露的 OS 窗,有多少已經被同一套規則看過。
 
     覆蓋來源有兩個,都算數:
-      1. 台帳裡**同一個 `strategy_hash`** 的既有揭露(規則沒變 = 同一套研究)。
-      2. `KNOWN_CONSUMED_HOLDOUTS` 裡對**同一個策略名**的既成宣告(台帳上線前
+      1. 揭露紀錄裡**同一個 `strategy_hash`** 的既有揭露(規則沒變 = 同一套研究)。
+      2. `KNOWN_CONSUMED_HOLDOUTS` 裡對**同一個策略名**的既成宣告(揭露紀錄上線前
          就被消耗掉的窗,例如 S19)。
 
     不同 `strategy_hash` 的揭露不會讓這次變成 previously_seen(那是另一套規則
@@ -479,7 +479,7 @@ def reveal_status(*, strategy_hash: str, strategy_name: Optional[str],
         "declared_consumed": [c.to_dict() for c in declared],
         "note": (
             blocked_reason if blocked_reason else
-            "這段 OS 在本台帳裡是第一次被任何規則揭露。"
+            "這段 OS 在本揭露紀錄裡是第一次被任何規則揭露。"
         ),
     }
 
@@ -496,12 +496,12 @@ def record_reveal(*, strategy_hash: str, strategy_name: Optional[str],
                   context: Optional[Mapping[str, Any]] = None,
                   now: Optional[datetime] = None,
                   path: Optional[Any] = None) -> Dict[str, Any]:
-    """把一次 OS 揭露 append 進台帳,回傳寫進去的那一列。
+    """把一次 OS 揭露 append 進揭露紀錄,回傳寫進去的那一列。
 
     整段(讀 → 驗鏈 → 判 previously_seen → append)在**同一個排他檔案鎖**內完成:
-    兩個 process 同時揭露時,不可以雙方都讀到「台帳是空的」而各自宣稱 fresh。
+    兩個 process 同時揭露時,不可以雙方都讀到「揭露紀錄是空的」而各自宣稱 fresh。
 
-    `now` 由呼叫端注入,測試才能斷言台帳內容;時間戳不進任何策略 hash。
+    `now` 由呼叫端注入,測試才能斷言揭露紀錄內容;時間戳不進任何策略 hash。
     """
     if not strategy_hash:
         raise HoldoutLedgerError(
@@ -517,7 +517,7 @@ def record_reveal(*, strategy_hash: str, strategy_name: Optional[str],
         _lock(fh, exclusive=True)
         try:
             records = _parse_and_verify(fh)
-            # 指紋在**鎖內**驗:被刪掉的台帳不可以靠「再寫一列」就重新開始,
+            # 指紋在**鎖內**驗:被刪掉的揭露紀錄不可以靠「再寫一列」就重新開始,
             # 否則 `os.remove(ledger)` 仍然是一條無痕的洗白路徑。
             _verify_against_checkpoint(records, path)
             status = reveal_status(strategy_hash=strategy_hash,
@@ -565,7 +565,7 @@ def rules_fingerprint(payload: Mapping[str, Any]) -> str:
     """規則 → 16 位識別碼(canonical JSON 的 sha256 前 16 碼)。
 
     `freeze_manifest.rules_hash` 與所有揭露點共用**這一份**實作:兩份實作遲早
-    會分岔(排序、預設值、非 ASCII 逸出任一個不同就分岔),那樣台帳裡的
+    會分岔(排序、預設值、非 ASCII 逸出任一個不同就分岔),那樣揭露紀錄裡的
     `strategy_hash` 就對不上 manifest 的 `rules_sha256_16`,「這段 OS 是誰看的」
     也就再也答不出來。
     """

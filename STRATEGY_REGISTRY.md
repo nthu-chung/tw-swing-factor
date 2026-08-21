@@ -1,4 +1,4 @@
-# 策略記憶台帳(公開版)
+# 策略登記表(公開版)
 
 > 這是研究狀態帳,不是投資建議或績效排行榜。
 
@@ -127,7 +127,7 @@ IC 衡量的是整個分布的秩相關,而策略只買尾端那幾檔。實測�
 
 **只列留在公開 repo 的。** 其餘已撤出(見本文開頭的公開範圍說明);撤出的策略
 若消耗過 locked OS,消耗紀錄仍留在 `outputs/holdout_ledger.jsonl` 與
-`evaluation/holdout.py` —— 台帳全域只有一本,搬走策略不會讓 OS 回到處女地。
+`evaluation/holdout.py` —— 揭露紀錄全域只有一本,搬走策略不會讓 OS 回到處女地。
 
 | ID | 方向 | 狀態 | 為什麼被證偽 |
 |---|---|---|---|
@@ -184,8 +184,8 @@ IC 衡量的是整個分布的秩相關,而策略只買尾端那幾檔。實測�
 3. **跑滿所有等價相位。** 見 P4。
 4. **IC 只用來決定去查哪幾個。** 見 P5。
 5. **OS 一次性。** 參數選擇只能看 IS;OS 一旦被用來選權重或規則,就只能標為
-   pseudo-OOS。揭露走 single-holdout 協議,一次揭露並進 append-only 台帳。
-6. **搬走策略不會洗掉 holdout 紀錄。** 台帳全域只有一本(設計理由見
+   pseudo-OOS。揭露走 single-holdout 協議,一次揭露並進 append-only 揭露紀錄。
+6. **搬走策略不會洗掉 holdout 紀錄。** 揭露紀錄全域只有一本(設計理由見
    `evaluation/holdout.py`),否則換個 repo 就能把「這段看過了」洗掉。
 
 ---
@@ -196,4 +196,4 @@ IC 衡量的是整個分布的秩相關,而策略只買尾端那幾檔。實測�
 - 資料源與資料本身的邊界:[DATA_SOURCES.md](./DATA_SOURCES.md)
 - 研究作業協議:[RESEARCH_OPERATING_PROTOCOL.md](./RESEARCH_OPERATING_PROTOCOL.md)
 - 台股市場規則:[TAIWAN_MARKET_RULES.md](./TAIWAN_MARKET_RULES.md)
-- holdout 台帳:`outputs/holdout_ledger.jsonl`｜實作 `evaluation/holdout.py`
+- holdout 揭露紀錄:`outputs/holdout_ledger.jsonl`｜實作 `evaluation/holdout.py`

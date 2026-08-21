@@ -243,7 +243,7 @@ ops = op.PanelOps(panel["date"], panel["stock_id"],
 | `execution/costs.py` | 整張／零股代理／研究小數股與券商成本 |
 | `evaluation/splits.py` | IS / embargo / OS 統一切割 |
 | `evaluation/phases.py` | **唯一**的相位掃描實作(AST 守衛禁止第二份) |
-| `evaluation/holdout.py` | append-only 的 OS 揭露台帳 |
+| `evaluation/holdout.py` | append-only 的 OS 揭露紀錄 |
 | **`strategies/`** | **純策略** —— 這個資料夾裡每個 `.py` 都是一支策略,沒有任何機器 |
 | `strategies/h1..h9_*.py` | 可證偽假說;每支只寫 `score()`,其餘由 signal_builder 統一處理 |
 | `strategies/s19_chip_momentum.py` | legacy 端到端模組(**會改全域 config,不適合平行 GA**) |
@@ -261,7 +261,7 @@ ops = op.PanelOps(panel["date"], panel["stock_id"],
 | `.github/workflows/ci.yml` | 離線 CI:語法 smoke + preflight + 全部 unittest |
 | `data/twse_disposition.py` / `data/tpex_disposition.py` | 注意/處置資料層 |
 | `DATA_SOURCES.md` | **免費資料源實測盤點 —— 找資料先看這裡** |
-| `STRATEGY_REGISTRY.md` | 策略台帳(狀態/證據/已證偽) |
+| `STRATEGY_REGISTRY.md` | 策略揭露紀錄(狀態/證據/已證偽) |
 | `RESEARCH_OPERATING_PROTOCOL.md` | 研究鐵則 |
 
 ## 架構備註
